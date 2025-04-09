@@ -56,6 +56,24 @@ if(${DOIR_ENABLE_TESTS})
 	set_property(TARGET tst PROPERTY CXX_STANDARD 23)
 	set_property(TARGET tst PROPERTY C_STANDARD 23)
 
+	# Build CLOX
+	file(GLOB clox_sources "thirdparty/craftinginterpreters/c/*.c")
+	add_executable(clox ${clox_sources})
+
+	# Build JLOX
+	find_package(Java REQUIRED)
+	include(UseJava)
+	file(GLOB jlox_sources "thirdparty/craftinginterpreters/java/com/craftinginterpreters/lox/*.java")
+	add_jar(jlox ${jlox_sources} ENTRY_POINT com.craftinginterpreters.lox.Lox)
+
+	# Build Benchmark
+	add_executable(benchmark "tests/benchmark_lox.cpp.bench")
+	set_source_files_properties("tests/benchmark_lox.cpp.bench" PROPERTIES LANGUAGE CXX)
+	target_link_libraries(benchmark PUBLIC libfp::fp lox nanobench)
+	add_dependencies(benchmark clox jlox)
+	set_property(TARGET benchmark PROPERTY CXX_STANDARD 23)
+	set_property(TARGET benchmark PROPERTY C_STANDARD 23)
+
 	if(${DOIR_ENABLE_CODE_COVERAGE})
 		include(${CMAKE_SOURCE_DIR}/cmake/CodeCoverage.cmake)
 		append_coverage_compiler_flags_to_target(tst)

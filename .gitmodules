@@ -4,3 +4,6 @@
 [submodule "thirdparty/nowide-standalone"]
 	path = thirdparty/nowide-standalone
 	url = https://github.com/nephatrine/nowide-standalone.git
+[submodule "thirdparty/craftinginterpreters"]
+	path = thirdparty/craftinginterpreters
+	url = https://github.com/munificent/craftinginterpreters.git
