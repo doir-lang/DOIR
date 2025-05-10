@@ -16,6 +16,8 @@ namespace doir::ecs {
 	using entity_t = size_t;
 	static constexpr size_t invalid_entity = 0;
 
+	using component_t = size_t;
+
 	template<typename T>
 	struct with_entity {
 		T value;
@@ -44,7 +46,24 @@ namespace doir::ecs {
 		}
 	};
 
+	template<typename T>
+	struct is_tag_t : public std::false_type {};
+	template<typename T>
+	requires(requires(T t) {{ T::is_tag } -> std::convertible_to<bool>; })
+	struct is_tag_t<T> { constexpr static bool value = T::is_tag; };
+	template<typename T>
+	constexpr static bool is_tag_v = is_tag_t<T>::value;
+
+	struct Tag { constexpr static bool is_tag = true; };
+
 	namespace detail {
+		template<typename T>
+		requires(is_tag_v<T>)
+		T& tag_value() {
+			static T value;
+			return value;
+		}
+
 		template<typename T>
 		struct is_with_entity : public std::false_type {};
 		template<typename T>
@@ -254,7 +273,7 @@ namespace doir::ecs {
 
 		size_t entity_count() { return fpda_size(entity_component_indices); }
 
-		Storage& get_storage(size_t componentID, size_t element_size = Storage::invalid) noexcept {
+		Storage& get_storage(component_t componentID, size_t element_size = Storage::invalid) noexcept {
 			DOIR_ZONE_SCOPED_AGGRO;
 			if(!storages || fpda_size(storages) <= componentID) {
 				size_t old = fpda_size(storages);
@@ -268,7 +287,7 @@ namespace doir::ecs {
 			}
 			return storages[componentID];
 		}
-		inline const Storage& get_storage(size_t componentID, size_t element_size = Storage::invalid) const noexcept {
+		inline const Storage& get_storage(component_t componentID, size_t element_size = Storage::invalid) const noexcept {
 			DOIR_ZONE_SCOPED_AGGRO;
 			assert(fpda_size(storages) > componentID);
 			assert(storages[componentID].element_size != Storage::invalid);
@@ -280,7 +299,7 @@ namespace doir::ecs {
 		template<typename T, size_t Unique = 0>
 		inline const Storage& get_storage() const noexcept { DOIR_ZONE_SCOPED_AGGRO; return get_storage(get_global_component_id<T, Unique>(), sizeof(T)); }
 
-		bool release_storage(size_t componentID, bool update_entities = true) noexcept {
+		bool release_storage(component_t componentID, bool update_entities = true) noexcept {
 			DOIR_ZONE_SCOPED_AGGRO;
 			if(fpda_size(storages) <= componentID) return false;
 			if(storages[componentID].element_size == Storage::invalid) return false;
@@ -326,23 +345,30 @@ namespace doir::ecs {
 			return true;
 		}
 
-		#define DOIR_ECS_ADD_COMPONENT_COMMON(componentID, element_size)\
+		#define DOIR_ECS_ADD_COMPONENT_COMMON_A(componentID, element_size)\
 			assert(fpda_size(entity_component_indices) > e);\
 			if(!entity_component_indices[e] || fpda_empty(entity_component_indices[e]) || fpda_size(entity_component_indices[e]) <= componentID)\
-				fpda_grow_to_size_and_initialize(entity_component_indices[e], componentID + 1, Storage::invalid);\
+				fpda_grow_to_size_and_initialize(entity_component_indices[e], componentID + 1, Storage::invalid);
+		#define DOIR_ECS_ADD_COMPONENT_COMMON_B(componentID, element_size)\
 			auto& storage = get_storage(componentID, element_size);\
 			entity_component_indices[e][componentID] = storage.size()
-		void* add_component(entity_t e, size_t componentID, size_t element_size) noexcept {
+		void* add_component(entity_t e, component_t componentID, size_t element_size) noexcept {
 			DOIR_ZONE_SCOPED_AGGRO;
-			DOIR_ECS_ADD_COMPONENT_COMMON(componentID, element_size);
+			DOIR_ECS_ADD_COMPONENT_COMMON_A(componentID, element_size);
+			DOIR_ECS_ADD_COMPONENT_COMMON_B(componentID, element_size);
 			return storage.get_or_allocate(e);
 		}
 		template<typename T, size_t Unique = 0>
 		T& add_component(entity_t e) noexcept {
 			DOIR_ZONE_SCOPED_AGGRO;
-			size_t componentID = get_global_component_id<T, Unique>();
+			component_t componentID = get_global_component_id<T, Unique>();
 			{ DOIR_ZONE_SCOPED_NAMED_AGGRO("Rest");
-				DOIR_ECS_ADD_COMPONENT_COMMON(componentID, sizeof(T));
+				DOIR_ECS_ADD_COMPONENT_COMMON_A(componentID, sizeof(T));
+				if constexpr(is_tag_v<T>) {
+					entity_component_indices[e][componentID] = true; // Mark the tag as present
+					return detail::tag_value<T>();
+				}
+				DOIR_ECS_ADD_COMPONENT_COMMON_B(componentID, sizeof(T));
 				auto& res = storage.template get_or_allocate<T>(entity_component_indices[e][componentID]);
 
 				if constexpr(detail::is_with_entity_v<T>)
@@ -352,12 +378,18 @@ namespace doir::ecs {
 		}
 		#undef DOIR_ECS_ADD_COMPONENT_COMMON
 
-		bool remove_component(entity_t e, size_t componentID) noexcept {
+		bool remove_component(entity_t e, component_t componentID) noexcept {
 			DOIR_ZONE_SCOPED_AGGRO;
 			return get_storage(componentID).remove(*this, e, componentID);
 		}
 		template<typename Tcomponent, size_t Unique = 0>
-		bool remove_component(entity_t e) noexcept { DOIR_ZONE_SCOPED_AGGRO; return get_storage<Tcomponent, Unique>().template remove<Tcomponent>(*this, e); }
+		bool remove_component(entity_t e) noexcept {
+			DOIR_ZONE_SCOPED_AGGRO;
+			if constexpr(is_tag_v<Tcomponent>) {
+				if(has_component<Tcomponent, Unique>(e))
+					entity_component_indices[e][get_global_component_id<Tcomponent, Unique>()] = Storage::invalid;
+			} else return get_storage<Tcomponent, Unique>().template remove<Tcomponent>(*this, e);
+		}
 
 		#define DOIR_ECS_GET_COMPONENT_COMMON(componentID)\
 			assert(entity_component_indices);\
@@ -365,12 +397,12 @@ namespace doir::ecs {
 			assert(entity_component_indices[e]);\
 			assert(fpda_size(entity_component_indices[e]) > componentID);\
 			assert(entity_component_indices[e][componentID] != Storage::invalid);
-		void* get_component(entity_t e, size_t componentID) noexcept {
+		void* get_component(entity_t e, component_t componentID) noexcept {
 			DOIR_ZONE_SCOPED_AGGRO;
 			DOIR_ECS_GET_COMPONENT_COMMON(componentID);
 			return get_storage(componentID).get(entity_component_indices[e][componentID]);
 		}
-		const void* get_component(entity_t e, size_t componentID) const noexcept {
+		const void* get_component(entity_t e, component_t componentID) const noexcept {
 			DOIR_ZONE_SCOPED_AGGRO;
 			DOIR_ECS_GET_COMPONENT_COMMON(componentID);
 			return get_storage(componentID).get(entity_component_indices[e][componentID]);
@@ -378,20 +410,22 @@ namespace doir::ecs {
 		template<typename T, size_t Unique = 0>
 		T& get_component(entity_t e) noexcept {
 			DOIR_ZONE_SCOPED_AGGRO;
-			size_t componentID = get_global_component_id<T, Unique>();
+			if constexpr (is_tag_v<T>) return detail::tag_value<T>();
+			component_t componentID = get_global_component_id<T, Unique>();
 			DOIR_ECS_GET_COMPONENT_COMMON(componentID);
 			return get_storage(componentID).template get<T>(entity_component_indices[e][componentID]);
 		}
 		template<typename T, size_t Unique = 0>
 		const T& get_component(entity_t e) const noexcept {
 			DOIR_ZONE_SCOPED_AGGRO;
-			size_t componentID = get_global_component_id<T, Unique>();
+			if constexpr (is_tag_v<T>) return detail::tag_value<T>();
+			component_t componentID = get_global_component_id<T, Unique>();
 			DOIR_ECS_GET_COMPONENT_COMMON(componentID);
 			return get_storage(componentID).template get<T>(entity_component_indices[e][componentID]);
 		}
 		#undef DOIR_ECS_GET_COMPONENT_COMMON
 
-		inline bool has_component(entity_t e, size_t componentID) const noexcept {
+		inline bool has_component(entity_t e, component_t componentID) const noexcept {
 			DOIR_ZONE_SCOPED_AGGRO;
 			return entity_component_indices && fpda_size(entity_component_indices) > e
 				&& entity_component_indices[e] && fpda_size(entity_component_indices[e]) > componentID
@@ -403,7 +437,7 @@ namespace doir::ecs {
 			return has_component(e, get_global_component_id<T, Unique>());
 		}
 
-		void* get_or_add_component(entity_t e, size_t componentID, size_t element_size) noexcept {
+		void* get_or_add_component(entity_t e, component_t componentID, size_t element_size) noexcept {
 			if(has_component(e, componentID))
 				return get_component(e, componentID);
 			else return add_component(e, componentID, element_size);
@@ -472,7 +506,7 @@ namespace doir::ecs {
 		void reorder_entities(fp_view(size_t) order) {
             DOIR_ECS_REORDER_ENTITIES_COMMON(order, swap_entities<Tcomponents2notify...>(swaps[i], i));
 			// auto& _order = order;
-			
+
 			// assert(fp_view_size(_order) == entity_count()); /* Require order to have an entry for every element in the array */
 			// auto swaps = fp_alloca(size_t, size);
 			// /* Transpose the order (it now stores what needs to be swapped with what) */
