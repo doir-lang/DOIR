@@ -40,9 +40,9 @@ int main() {
 	marg.add_component<female>();
 	jackie.add_component<female>();
 
-	auto grandparent = [](const kr::Term& child, const kr::Term& grandparent) -> kr::Goal {
-		return kr::next_variables([=](kr::Variable tmp) -> kr::Goal {
-			return doir::ecs::related_entities<parent>(child, {tmp}) & doir::ecs::related_entities<parent>({tmp}, grandparent);
+	auto grandparent = [](const kr::Term& child, const kr::Term& grandparent) -> kr::Goal auto {
+		return kr::next_variables([=](kr::Variable tmp) -> kr::Goal auto {
+			return kr::conjunction(doir::ecs::related_entities<parent>(child, {tmp}), doir::ecs::related_entities<parent>({tmp}, grandparent));
 		});
 	};
 

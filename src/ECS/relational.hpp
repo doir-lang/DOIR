@@ -59,7 +59,7 @@ namespace doir::ecs { inline namespace relational {
 		}
 	};
 
-	kanren::Goal has_component(const kanren::Term& var, doir::ecs::component_t componentID) {
+	kanren::Goal auto has_component(const kanren::Term& var, doir::ecs::component_t componentID) {
 		return [=](kanren::State state) -> std::generator<kanren::State> {
 			auto [m, s, c] = state;
 	
@@ -72,7 +72,7 @@ namespace doir::ecs { inline namespace relational {
 					for(size_t e = 0, size = fp_size(m->entity_component_indices); e < size; ++e) {
 						auto comps = m->entity_component_indices[e];
 						if(fp_size(comps) > componentID && comps[componentID] != doir::ecs::Storage::invalid) {
-							s.emplace_front(std::get<kanren::Variable>(*var_), e);
+							s.emplace_front(std::get<kanren::Variable>(*var_), kanren::Term{e});
 							co_yield {m, s, c};
 							s.pop_front();
 						}
@@ -80,10 +80,10 @@ namespace doir::ecs { inline namespace relational {
 		};
 	}
 	template<typename T, size_t Unique = 0>
-	inline kanren::Goal has_component(const kanren::Term& var) { return has_component(var, get_global_component_id<T, Unique>()); }
+	inline kanren::Goal auto has_component(const kanren::Term& var) { return has_component(var, get_global_component_id<T, Unique>()); }
 	
 	template<typename T, size_t Unique = 0>
-	kanren::Goal related_entities(const kanren::Term& base, const kanren::Term& relate) {
+	kanren::Goal auto related_entities(const kanren::Term& base, const kanren::Term& relate) {
 		const auto componentID = get_global_component_id<T, Unique>();
 		return [=](kanren::State state) -> std::generator<kanren::State> {
 			auto [m, s, c] = state;
@@ -97,9 +97,9 @@ namespace doir::ecs { inline namespace relational {
 						if(m->has_component<T, Unique>(e)) {
 							auto related = m->get_component<T, Unique>(e).related;
 							if(related.size()) {
-								s.emplace_front(std::get<kanren::Variable>(*base_), e);
+								s.emplace_front(std::get<kanren::Variable>(*base_), kanren::Term{e});
 								for(auto r: related) {
-									s.emplace_front(std::get<kanren::Variable>(*relate_), r);
+									s.emplace_front(std::get<kanren::Variable>(*relate_), kanren::Term{r});
 									co_yield {m, s, c};
 									s.pop_front();
 								}
@@ -113,7 +113,7 @@ namespace doir::ecs { inline namespace relational {
 						if(m->has_component<T, Unique>(e)) {
 							for(auto r: m->get_component<T, Unique>(e).related)
 								if(r == std::get<doir::ecs::Entity>(*relate_)) {
-									s.emplace_front(std::get<kanren::Variable>(*base_), e);
+									s.emplace_front(std::get<kanren::Variable>(*base_), kanren::Term{e});
 									co_yield {m, s, c};
 									s.pop_front();
 								}
@@ -124,7 +124,7 @@ namespace doir::ecs { inline namespace relational {
 					auto e = std::get<doir::ecs::Entity>(*base_);
 					if(m->has_component<T, Unique>(e)) {
 						for(auto r: m->get_component<T, Unique>(e).related) {
-							s.emplace_front(std::get<kanren::Variable>(*relate_), r);
+							s.emplace_front(std::get<kanren::Variable>(*relate_), kanren::Term{r});
 							co_yield {m, s, c};
 							s.pop_front();
 						}
