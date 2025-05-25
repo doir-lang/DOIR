@@ -1,13 +1,13 @@
 #include "ecs.hpp"
 #include "entity.hpp"
 
-// #include <concepts>
+#include <compare>
 #include <list>
 #include <optional>
-// #include <type_traits>
 #include <utility>
 #include <functional>
 #include <generator>
+#include <unordered_set>
 
 namespace doir::kanren {
 
@@ -55,17 +55,29 @@ namespace doir::kanren {
 	struct Variable {
 		size_t id;
 		bool operator==(const Variable& other) const { return id == other.id; }
+		std::strong_ordering operator<=>(const Variable& other) const { return id <=> other.id; }
+		explicit operator size_t() { return id; }
 
 		static Variable next(struct State&);
 		void become_next_variable(struct State& s) { *this = next(s); }
 	};
 
 	struct Term: public std::variant<Variable, /* std::pair<Term*, Term*>, */ ecs::Entity> {};
+	size_t term2size_t(const Term& term) {
+		size_t out;
+		std::visit([&out](auto a) {
+			out = (size_t)a;
+		}, term);
+		return out;
+	}
+
 	using Substitution = std::list<std::pair<Variable, Term>>;
 	struct State {
 		ecs::TrivialModule* module;
 		Substitution sub;
 		size_t counter = 0;
+		
+		Variable next_variable() { return Variable::next(*this); }
 	};
 	using Goal = std::function<std::generator<State>(State)>;
 
@@ -205,3 +217,55 @@ namespace doir::kanren {
 		return g & condition(cond);
 	}
 }
+
+namespace std {
+	template<>
+	struct hash<std::pair<doir::kanren::Variable, doir::kanren::Term>> {
+		size_t operator()(const std::pair<doir::kanren::Variable, doir::kanren::Term>& pair) const {
+			return pair.first.id ^ doir::kanren::term2size_t(pair.second);
+		}
+	};
+
+	bool operator==(const std::pair<doir::kanren::Variable, doir::kanren::Term>& a, const std::pair<doir::kanren::Variable, doir::kanren::Term>& b) {
+		return a.first == b.first && doir::kanren::term2size_t(a.second) == doir::kanren::term2size_t(b.second);
+	}
+}
+
+namespace doir::kanren { inline namespace query {
+	std::generator<std::pair<Variable, Term>> unique_substitutions(auto& substitutions, std::unordered_set<std::pair<Variable, Term>>& found)
+		requires(std::convertible_to<decltype(*substitutions.begin()), std::pair<Variable, Term>>)
+	{
+		for(auto& sub: substitutions)
+			if(!found.contains(sub)) {
+				found.insert(sub);
+				co_yield sub;
+			}
+	}
+
+	std::generator<std::pair<Variable, Term>> unique_substitutions(auto& substitutions)
+		requires(std::convertible_to<decltype(*substitutions.begin()), std::pair<Variable, Term>>)
+	{
+		std::unordered_set<std::pair<Variable, Term>> found;
+		co_yield std::ranges::elements_of(unique_substitutions(substitutions, found));
+	}
+
+	std::generator<std::pair<Variable, Term>> unique_substitutions(std::convertible_to<std::generator<State>> auto states) {
+		std::unordered_set<std::pair<Variable, Term>> found;
+		for (const auto& [module, sub, counter] : states)
+			co_yield std::ranges::elements_of(unique_substitutions(sub, found));
+	}
+
+	std::generator<std::pair<Variable, Term>> unique_substitutions(Goal& goal, State& state) {
+		co_yield std::ranges::elements_of(unique_substitutions(goal(state)));
+	}
+
+	std::generator<std::pair<Variable, Term>> all_substitutions(std::convertible_to<std::generator<State>> auto states) {
+		for (const auto& [module, subs, counter] : states)
+			for(const auto& sub: subs)
+				co_yield sub;
+	}
+
+	std::generator<std::pair<Variable, Term>> all_substitutions(Goal auto& goal, State& state) {
+		co_yield std::ranges::elements_of(all_substitutions(goal(state)));
+	}
+}}

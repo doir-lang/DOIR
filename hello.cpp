@@ -47,14 +47,13 @@ int main() {
 	};
 
 	kr::State state{&mod};
-	auto x = kr::Variable::next(state);
-	auto y = kr::Variable::next(state);
+	auto x = state.next_variable();
+	auto y = state.next_variable();
 	auto g = doir::ecs::has_component<male>({x}) | grandparent({bart}, {x});
 
-	for (const auto& [m, sub, c] : g(state))
-		for (const auto& [v, val] : sub)
-			if (std::holds_alternative<doir::ecs::Entity>(val)) {
-				auto e = std::get<doir::ecs::Entity>(val);
-				std::cout << "Var " << v.id << " = " << e.get_component<std::string>() << "\n";
-			}
+	for (const auto& [v, val] : kr::unique_substitutions(g, state))
+		if (std::holds_alternative<doir::ecs::Entity>(val)) {
+			auto e = std::get<doir::ecs::Entity>(val);
+			std::cout << "Var " << v.id << " = " << e.get_component<std::string>() << "\n";
+		}
 }
