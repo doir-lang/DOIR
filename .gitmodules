@@ -1,6 +1,6 @@
 [submodule "thirdparty/libfp"]
 	path = thirdparty/libfp
-	url = https://github.com/joshuadahlunr/libfp.git
+	url = https://github.com/data-oriented-ir/libfp.git
 [submodule "thirdparty/nowide-standalone"]
 	path = thirdparty/nowide-standalone
 	url = https://github.com/nephatrine/nowide-standalone.git

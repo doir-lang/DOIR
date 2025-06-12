@@ -73,7 +73,7 @@ namespace doir::Lox {
 		for(ecs::Entity e = module.get_component<doir::children>(1).reverse_iteration_start(1); e--; ) {
 			if(!e.has_component<addresses>(module)) continue;
 			if(e.has_component<literal>(module)) {
-				fp::raii::string lit = dump_literal(module, e);
+				auto lit = fp::raii::string{dump_literal(module, e)};
 				out << e << " ← " << lit << " immediate\n";
 				continue;
 			}

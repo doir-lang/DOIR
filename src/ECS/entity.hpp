@@ -171,6 +171,6 @@ struct std::formatter<doir::ecs::Entity, char> : public std::formatter<doir::ecs
 
 	template<class FmtContext>
 	FmtContext::iterator format(doir::ecs::Entity e, FmtContext& ctx) const {
-		return super::format(e, ctx);
+		return super::format(e.entity, ctx);
 	}
 };

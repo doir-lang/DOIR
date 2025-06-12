@@ -35,11 +35,11 @@ namespace doir::Lox {
 		};
 		fp::builder::string res = nullptr;
 		if(module.has_component<literal>(root)) {
-			fp::raii::string lit = dump_literal(module, root);
+			auto lit = fp::raii::string{dump_literal(module, root)};
 			end(res << indent << lit);
 		} else if(module.has_component<variable>(root)) {
 			auto& ref = module.get_component<entity_reference>(root);
-			auto target = ref.looked_up() ? fp::builder::string{} << ref.entity : "???";
+			auto target = ref.looked_up() ? fp::builder::string{} << ref.entity : fp::builder::string{"???"};
 			end(res << indent << "var:" << ref.lexeme.view(module.buffer) << " -> " << target);
 		} else if(module.has_component<not_>(root)) {
 			auto& op = module.get_component<operation>(root);
