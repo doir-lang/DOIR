@@ -3,6 +3,7 @@
 #include "ecs.hpp"
 #include <compare>
 #include <format>
+#include <cstdint>
 
 namespace doir::ecs {
 

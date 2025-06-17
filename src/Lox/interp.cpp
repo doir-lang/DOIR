@@ -93,8 +93,8 @@ namespace doir::Lox {
 			return true;
 		}
 		if(determine_runtime_type(module, op.a) != determine_runtime_type(module, op.b))
-			nowide::cerr << "Operands have different types: " << (int)determine_runtime_type(module, op.a) << " and " << (int)determine_runtime_type(module, op.b) << std::endl;
-		else nowide::cerr << "Only strings and numbers can be added!" << std::endl;
+			nowide::cerr << target.entity << ": Operands have different types: " << (int)determine_runtime_type(module, op.a) << " and " << (int)determine_runtime_type(module, op.b) << std::endl;
+		else nowide::cerr << target.entity << ": Only strings and numbers can be added!" << std::endl;
 		return false;
 	}
 	
@@ -107,8 +107,8 @@ namespace doir::Lox {
 			return true;
 		}
 		if(determine_runtime_type(module, op.a) != determine_runtime_type(module, op.b))
-			nowide::cerr << "Operands have different types: " << (int)determine_runtime_type(module, op.a) << " and " << (int)determine_runtime_type(module, op.b) << std::endl;
-		else nowide::cerr << "Only numbers can be subtracted!" << std::endl;
+			nowide::cerr << target.entity << ": Operands have different types: " << (int)determine_runtime_type(module, op.a) << " and " << (int)determine_runtime_type(module, op.b) << std::endl;
+		else nowide::cerr << target.entity << ": Only numbers can be subtracted!" << std::endl;
 		return false;
 	}
 	
@@ -121,8 +121,8 @@ namespace doir::Lox {
 			return true;
 		}
 		if(determine_runtime_type(module, op.a) != determine_runtime_type(module, op.b))
-			nowide::cerr << "Operands have different types: " << (int)determine_runtime_type(module, op.a) << " and " << (int)determine_runtime_type(module, op.b) << std::endl;
-		else nowide::cerr << "Only numbers can be multiplied!" << std::endl;
+			nowide::cerr << target.entity << ": Operands have different types: " << (int)determine_runtime_type(module, op.a) << " and " << (int)determine_runtime_type(module, op.b) << std::endl;
+		else nowide::cerr << target.entity << ": Only numbers can be multiplied!" << std::endl;
 		return false;
 	}
 	
@@ -138,8 +138,8 @@ namespace doir::Lox {
 			return true;
 		}
 		if(determine_runtime_type(module, op.a) != determine_runtime_type(module, op.b))
-			nowide::cerr << "Operands have different types: " << (int)determine_runtime_type(module, op.a) << " and " << (int)determine_runtime_type(module, op.b) << std::endl;
-		else nowide::cerr << "Only numbers can be divided!" << std::endl;
+			nowide::cerr << target.entity << ": Operands have different types: " << (int)determine_runtime_type(module, op.a) << " and " << (int)determine_runtime_type(module, op.b) << std::endl;
+		else nowide::cerr << target.entity << ": Only numbers can be divided!" << std::endl;
 		return false;
 	}
 	
@@ -152,8 +152,8 @@ namespace doir::Lox {
 			return true;
 		}
 		if(determine_runtime_type(module, op.a) != determine_runtime_type(module, op.b))
-			nowide::cerr << "Operands have different types: " << (int)determine_runtime_type(module, op.a) << " and " << (int)determine_runtime_type(module, op.b) << std::endl;
-		else nowide::cerr << "Only numbers can be ordinally compared!" << std::endl;
+			nowide::cerr << target.entity << ": Operands have different types: " << (int)determine_runtime_type(module, op.a) << " and " << (int)determine_runtime_type(module, op.b) << std::endl;
+		else nowide::cerr << target.entity << ": Only numbers can be ordinally compared!" << std::endl;
 		return false;
 	}
 	
@@ -166,8 +166,8 @@ namespace doir::Lox {
 			return true;
 		}
 		if(determine_runtime_type(module, op.a) != determine_runtime_type(module, op.b))
-			nowide::cerr << "Operands have different types: " << (int)determine_runtime_type(module, op.a) << " and " << (int)determine_runtime_type(module, op.b) << std::endl;
-		else nowide::cerr << "Only numbers can be ordinally compared!" << std::endl;
+			nowide::cerr << target.entity << ": Operands have different types: " << (int)determine_runtime_type(module, op.a) << " and " << (int)determine_runtime_type(module, op.b) << std::endl;
+		else nowide::cerr << target.entity << ": Only numbers can be ordinally compared!" << std::endl;
 		return false;
 	}
 	
@@ -180,8 +180,8 @@ namespace doir::Lox {
 			return true;
 		}
 		if(determine_runtime_type(module, op.a) != determine_runtime_type(module, op.b))
-			nowide::cerr << "Operands have different types: " << (int)determine_runtime_type(module, op.a) << " and " << (int)determine_runtime_type(module, op.b) << std::endl;
-		else nowide::cerr << "Only numbers can be ordinally compared!" << std::endl;
+			nowide::cerr << target.entity << ": Operands have different types: " << (int)determine_runtime_type(module, op.a) << " and " << (int)determine_runtime_type(module, op.b) << std::endl;
+		else nowide::cerr << target.entity << ": Only numbers can be ordinally compared!" << std::endl;
 		return false;
 	}
 	
@@ -194,8 +194,8 @@ namespace doir::Lox {
 			return true;
 		}
 		if(determine_runtime_type(module, op.a) != determine_runtime_type(module, op.b))
-			nowide::cerr << "Operands have different types: " << (int)determine_runtime_type(module, op.a) << " and " << (int)determine_runtime_type(module, op.b) << std::endl;
-		else nowide::cerr << "Only numbers can be ordinally compared!" << std::endl;
+			nowide::cerr << target.entity << ": Operands have different types: " << (int)determine_runtime_type(module, op.a) << " and " << (int)determine_runtime_type(module, op.b) << std::endl;
+		else nowide::cerr << target.entity << ": Only numbers can be ordinally compared!" << std::endl;
 		return false;
 	}
 	
@@ -207,7 +207,7 @@ namespace doir::Lox {
 			auto dbg = target.get_or_add_component<double>() = -op.a.get_component<double>();
 			return true;
 		}
-		nowide::cerr << "Only numbers can be negated!" << std::endl;
+		nowide::cerr << target.entity << ": Only numbers can be negated!" << std::endl;
 		return false;
 	}
 	
@@ -252,7 +252,7 @@ namespace doir::Lox {
 			nowide::cout << get_token_string(module, op.a) << std::endl;
 			return true;
 		break; default:
-			nowide::cerr << "Attempted to print something with no value!" << std::endl;
+			nowide::cerr << target.entity << ": Attempted to print something with no value!" << std::endl;
 			return false;
 		}
 		return false; // Necessary?
@@ -349,9 +349,9 @@ namespace doir::Lox {
 	
 				std::tie(valid, should_return) << interpret(module, condition, returnTo);
 				if(is_truthy(module, condition))
-					std::tie(valid, should_return) << interpret(module, then, returnTo, then);
+					std::tie(valid, should_return) << interpret(module, then, returnTo, e);
 				else if(else_ != 0)
-					std::tie(valid, should_return) << interpret(module, else_, returnTo, else_);
+					std::tie(valid, should_return) << interpret(module, else_, returnTo, e);
 			} else if(e.has_component<while_>()) {
 				auto& op = e.get_component<operation>();
 	

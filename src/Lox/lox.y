@@ -89,9 +89,17 @@ ifStmt: IF '(' expression ')' statement { current_block().pop_back_child(*module
 	auto& lexeme = $$.add_component<doir::comp::lexeme>() = $3.get_component<doir::comp::lexeme>() + $5.get_component<doir::comp::lexeme>();
 	if($7) lexeme = lexeme + $7.get_component<doir::comp::lexeme>();
 	$$.add_component<if_>();
-	$$.add_component<operation>() = {$3, $5, $7};
+	auto& op = $$.add_component<operation>() = {$3, $5, $7};
+	auto last = $7 ? $7 : $5;
+	if(!last.has_component<block>()) {
+		auto marker_block = ecs::Entity::create(*module);
+		marker_block.add_component<doir::comp::lexeme>() = last.get_component<doir::comp::lexeme>();
+		marker_block.add_component<block>().push_back_child(*module, last);
+		add_body_marker(marker_block, $$);
+		if($7) op.c = marker_block;
+		else op.b = marker_block;
+	} else add_body_marker(last, $$);
 	current_block().push_back_child(*module, $$);
-	add_body_marker($$);
 };
 ifStmtTail: ELSE statement { $$ = $2; current_block().pop_back_child(*module); } | { $$ = 0; };
 
