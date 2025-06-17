@@ -47,6 +47,11 @@ namespace doir::Lox {
 
 			void pop_back_child(TrivialModule& module) {
 				auto& back = module.get_component<block_children_entry>(children_end);
+				if(back.previous == ecs::invalid_entity) {
+					children = {ecs::invalid_entity}; 
+					children_end = ecs::invalid_entity;
+					return;
+				}
 				auto& second_back = module.get_component<block_children_entry>(back.previous);
 
 				second_back.next = ecs::invalid_entity;
