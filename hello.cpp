@@ -46,6 +46,18 @@ int main() {
 		});
 	};
 
+	auto ancestor = [](const kr::Term& child, const kr::Term& grandparent) -> kr::Goal auto {
+        auto impl = [](const kr::Term& child, const kr::Term& grandparent, auto impl) -> std::function<std::generator<kr::State>(kr::State)> {
+            return kr::next_variables([=](kr::Variable tmp) -> kr::Goal auto {
+                return kr::disjunction(
+                    doir::ecs::related_entities<parent>(child, grandparent), 
+                    kr::conjunction(doir::ecs::related_entities<parent>(child, {tmp}), impl({tmp}, grandparent, impl))
+                );
+            });
+        };
+        return impl(child, grandparent, impl);
+    };
+
 	kr::State state{&mod};
 	auto x = state.next_variable();
 	auto y = state.next_variable();

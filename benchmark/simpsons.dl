@@ -1,0 +1,28 @@
+// Declarations
+.decl parent(child: symbol, parent: symbol)
+.decl male(person: symbol)
+.decl female(person: symbol)
+.decl ancestor(child: symbol, ancestor: symbol)
+
+// Output relation
+.output ancestor
+
+// Facts
+parent("bart", "homer").
+parent("bart", "marg").
+parent("lisa", "homer").
+parent("lisa", "marg").
+parent("homer", "abraham").
+parent("marg", "jackie").
+
+male("bart").
+male("homer").
+male("abraham").
+
+female("lisa").
+female("marg").
+female("jackie").
+
+// Rules
+ancestor(C, A) :- parent(C, A).
+ancestor(C, A) :- parent(C, P), ancestor(P, A).

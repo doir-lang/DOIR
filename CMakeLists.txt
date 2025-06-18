@@ -56,6 +56,8 @@ if(${DOIR_ENABLE_TESTS})
 	set_property(TARGET tst PROPERTY CXX_STANDARD 23)
 	set_property(TARGET tst PROPERTY C_STANDARD 23)
 
+	add_subdirectory(benchmark)
+
 	if(${DOIR_ENABLE_CODE_COVERAGE})
 		include(${CMAKE_SOURCE_DIR}/cmake/CodeCoverage.cmake)
 		append_coverage_compiler_flags_to_target(tst)

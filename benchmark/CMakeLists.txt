@@ -1,0 +1,5 @@
+add_executable(bench_simpsons simpsons.cpp)
+target_link_libraries(bench_simpsons PUBLIC libfp::fp nanobench)
+target_compile_definitions(bench_simpsons PUBLIC -DBENCHMARK_PATH="${CMAKE_CURRENT_SOURCE_DIR}")
+set_property(TARGET bench_simpsons PROPERTY CXX_STANDARD 23)
+set_property(TARGET bench_simpsons PROPERTY C_STANDARD 23)
