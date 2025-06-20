@@ -60,9 +60,10 @@ int main() {
 		auto g = ancestor({x}, {y});
 
 		for (const auto& [v, val] : kr::all_substitutions(g, state))
-			if (std::holds_alternative<doir::ecs::Entity>(val)) {
+			if (std::holds_alternative<kr::Variable>(v) && std::holds_alternative<doir::ecs::Entity>(val)) {
 				auto e = std::get<doir::ecs::Entity>(val);
-				nowide::cout << "Var " << v.id << " = " << e.get_component<std::string>() << "\n";
+				auto id = std::get<kr::Variable>(v).id;
+				nowide::cout << "Var " << id << " = " << e.get_component<std::string>() << "\n";
 			}
 	});
 

@@ -1,0 +1,40 @@
+// ---------- Input ----------
+
+.decl List(name: symbol, idx: number, val: symbol)
+//.input List
+
+.decl Append(x: symbol, y: symbol, z: symbol)
+//.input Append
+
+// List A = [a, b]
+List("A", 0, "a").
+List("A", 1, "b").
+
+// List B = [c, d]
+List("B", 0, "c").
+List("B", 1, "d").
+
+// Define the append operation: A + B = C
+Append("A", "B", "C").
+
+// ---------- Output ----------
+.decl AppendedList(z: symbol, idx: number, val: symbol)
+.output AppendedList
+
+// ---------- Compute max index of each list ----------
+.decl MaxIdx(name: symbol, maxIdx: number)
+MaxIdx(n, max i : List(n, i, _)).
+
+.decl Len(name: symbol, len: number)
+Len(n, i + 1) :- MaxIdx(n, i).
+
+// ---------- Copy elements from first list ----------
+AppendedList(Z, I, V) :-
+    Append(X, Y, Z),
+    List(X, I, V).
+
+// ---------- Copy elements from second list, offset by length of first ----------
+AppendedList(Z, I + LX, V) :-
+    Append(X, Y, Z),
+    List(Y, I, V),
+    Len(X, LX).
