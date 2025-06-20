@@ -175,3 +175,12 @@ struct std::formatter<doir::ecs::Entity, char> : public std::formatter<doir::ecs
 		return super::format(e.entity, ctx);
 	}
 };
+
+template<>
+struct std::hash<doir::ecs::Entity> : public std::hash<doir::ecs::entity_t> {
+	using super = std::hash<doir::ecs::entity_t>;
+	
+	std::uint64_t operator()(const doir::ecs::Entity& e) const {
+		return super::operator()(e);
+	}
+};

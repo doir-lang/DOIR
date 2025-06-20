@@ -1,14 +1,12 @@
-#include "ecs.hpp"
+#pragma once
 #include "entity.hpp"
 
-#include <compare>
 #include <functional>
 #include <generator>
 #include <list>
-#include <optional>
 #include <unordered_set>
-#include <utility>
-#include <variant>
+
+// Based on: https://github.com/jasonhemann/microKanren-DLS-16
 
 namespace doir::kanren {
 
@@ -63,16 +61,46 @@ namespace doir::kanren {
 		void become_next_variable(struct State& s) { *this = next(s); }
 	};
 
-	struct Term: public std::variant<Variable, /* std::pair<Term*, Term*>, */ ecs::Entity> {};
-	size_t term2size_t(const Term& term) {
-		size_t out;
-		std::visit([&out](auto a) {
-			out = (size_t)a;
-		}, term);
-		return out;
+	struct Term: public std::variant<Variable, ecs::Entity, std::list<Term>> {};
+	size_t term2size_t(const Term& t) {
+		switch (t.index()) {
+		case 0: // Variable
+			return std::get<Variable>(t).id;
+		case 1: // ecs::Entity
+			return std::get<ecs::Entity>(t);
+		case 2: { // std::list<Term>
+			size_t out = 0;
+			for(const auto& term: std::get<std::list<Term>>(t))
+				out ^= term2size_t(term);
+			return out;
+		}
+		default: return -1;
+		}
+	}
+	bool term_equivalence(const Term& a, const Term& b) {
+		if(a.index() != b.index()) return false;
+		switch (a.index()) {
+		case 0: // Variable
+			return std::get<Variable>(a).id == std::get<Variable>(b).id;
+		case 1: // ecs::Entity
+			return std::get<ecs::Entity>(a) == std::get<ecs::Entity>(b);
+		case 2: { // std::list<Term>
+			auto& la = std::get<std::list<Term>>(a);
+			auto& lb = std::get<std::list<Term>>(b);
+			if(la.size() != lb.size()) return false;
+			auto u = la.begin();
+			auto v = lb.begin();
+			auto end = la.end();
+			for(; u != end; ++u, ++v)
+				if(!term_equivalence(*u, *v))
+					return false;
+			return true;
+		}
+		default: return false;
+		}
 	}
 
-	using Substitution = std::pair<Variable, Term>;
+	using Substitution = std::pair<Term, Term>;
 	using Substitutions = std::list<Substitution>;
 	struct State {
 		ecs::TrivialModule* module;
@@ -81,50 +109,70 @@ namespace doir::kanren {
 
 		Variable next_variable() { return Variable::next(*this); }
 	};
-	// using Goal = std::function<std::generator<State>(State)>;
+	using OwnedGoal = std::function<std::generator<State>(State)>;
 	template<typename T>
-	concept Goal = std::convertible_to<T, std::function<std::generator<State>(State)>>;
+	concept Goal = std::convertible_to<T, OwnedGoal> || std::is_same_v<T, OwnedGoal>;
 
 	Variable Variable::next(State& state) {
 		return {state.counter++};
 	}
 
 	inline namespace micro {
-		std::optional<Term> walk(const Term& u, const Substitutions& s) {
-			if (std::holds_alternative<Variable>(u)) {
-				const Variable& var = std::get<Variable>(u);
-				for (const auto& [v, val] : s)
-					if (var == v)
-						return walk(val, s);
-			}
+		std::optional<Term> assoc(const Term& key, const Substitutions& s) {
+			for (const auto& [k, v] : s)
+				if (term_equivalence(k, key))
+					return v;
+			return std::nullopt;
+		}
+
+		Term find(const Term& u, const Substitutions& s) {
+			if (std::holds_alternative<Variable>(u))
+				if (auto res = assoc(u, s); res)
+					return find(*res, s);
 			return u;
 		}
+
+		bool occurs(const Term& x, const Term& u, const Substitutions& s) {
+			Term u_ = find(u, s);
+			if (std::holds_alternative<Variable>(u_)) return term_equivalence(x, u_);
+			if (std::holds_alternative<std::list<Term>>(u_)) {
+				auto& l = std::get<std::list<Term>>(u_);
+				if(l.empty()) return false; // Unify empty lists
+				for(const auto& t:l)
+					if(occurs(x, t, s)) return true;
+			}
+			return false;
+		}
+
+		std::optional<Substitutions> extend_substitutions(const Term& x, const Term& v, const Substitutions& s) {
+			if (occurs(x, v, s)) return std::nullopt;
+			auto new_s = s;
+			new_s.emplace_back(x, v);
+			return new_s;
+		}
+
 		std::optional<Substitutions> unify(const Term& u, const Term& v, Substitutions s) {
-			auto u_ = walk(u, s);
-			auto v_ = walk(v, s);
-			if (!u_ || !v_) return std::nullopt;
-
-			if (std::holds_alternative<Variable>(*u_)) {
-				if (std::holds_alternative<Variable>(*v_) && std::get<Variable>(*u_) == std::get<Variable>(*v_)) return s;
-				s.emplace_front(std::get<Variable>(*u_), *v_);
-				return s;
+			Term u_ = find(u, s);
+			Term v_ = find(v, s);
+			if (term_equivalence(u_, v_)) return s;
+			if (std::holds_alternative<Variable>(u_)) return extend_substitutions(u_, v_, s);
+			if (std::holds_alternative<Variable>(v_)) return unify(v_, u_, s);
+			if (std::holds_alternative<std::list<Term>>(u_) && std::holds_alternative<std::list<Term>>(v_)) {
+				auto lu = std::get<std::list<Term>>(u_);
+				auto lv = std::get<std::list<Term>>(v_);
+				if(lu.size() != lv.size()) return std::nullopt;
+				auto u = lu.begin();
+				auto v = lv.begin();
+				auto end = lu.end();
+				for(--end; u != end; ++u, ++v)
+					if(auto sNew = unify(*u, *v, s); !sNew)
+						return std::nullopt;
+					else s = *sNew;
+				// ++u, ++v; // TODO: Needed?
+				return unify(*u, *v, s);
 			}
-
-			if (std::holds_alternative<Variable>(*v_)) {
-				s.emplace_front(std::get<Variable>(*v_), *u_);
-				return s;
-			}
-
-			// if (std::holds_alternative<std::pair<Term*, Term*>>(*u_) && std::holds_alternative<std::pair<Term*, Term*>>(*v_)) {
-			// 	const auto& p1 = std::get<std::pair<Term*, Term*>>(*u_);
-			// 	const auto& p2 = std::get<std::pair<Term*, Term*>>(*v_);
-			// 	auto s1 = unify(*p1.first, *p2.first, s);
-			// 	if (!s1) return std::nullopt;
-			// 	return unify(*p1.second, *p2.second, *s1);
-			// }
-
-			if (std::get<ecs::Entity>(*u_) == std::get<ecs::Entity>(*v_)) return s;
-
+			// if(std::holds_alternative<ecs::Entity>(u_) && std::holds_alternative<ecs::Entity>(v_))
+			// 	if(std::get<ecs::Entity>(u_) == std::get<ecs::Entity>(v_)) return s;
 			return std::nullopt;
 		}
 
@@ -132,7 +180,7 @@ namespace doir::kanren {
 			co_yield s;
 		}
 
-		std::generator<State> null() {
+		std::generator<State> null(State s) {
 			co_return;
 		}
 
@@ -149,7 +197,9 @@ namespace doir::kanren {
 		Goal auto next_variable(std::convertible_to<std::function<G(Variable)>> auto f) {
 			return [f](State state) -> std::generator<State> {
 				Variable next{state.counter++};
-				co_yield std::ranges::elements_of(f(next)(state));
+				auto f_next = f(next);
+				for(auto s: f_next(state))
+					co_yield s;
 			};
 		}
 		template<Goal G>
@@ -163,14 +213,17 @@ namespace doir::kanren {
 					auto b = [f, next](auto... args){
 						return f(next, args...);
 					};
-					co_yield std::ranges::elements_of(next_variables<decltype(b), arity - 1>(b)(state));
-				} else co_yield std::ranges::elements_of(f(next)(state));
+					auto f_next = next_variables<decltype(b), arity - 1>(b);
+					for(auto s: f_next(state))
+						co_yield s;
+				} else {
+					auto f_next = f(next);
+					for(auto s: f_next(state)) co_yield s;
+				}
 			};
 		}
 
-		std::generator<State> mplus(std::generator<State> g1, std::generator<State> g2) {
-			// co_yield std::ranges::elements_of(g1);
-			// co_yield std::ranges::elements_of(g2);
+		std::generator<State> append(std::generator<State> g1, std::generator<State> g2) {
 			auto it1 = g1.begin();
 			auto it2 = g2.begin();
 
@@ -188,29 +241,214 @@ namespace doir::kanren {
 
 		Goal auto disjunction(Goal auto g1, Goal auto g2) {
 			return [=](State state) {
-				return mplus(g1(state), g2(state));
+				return append(g1(state), g2(state));
 			};
 		}
 		inline Goal auto operator|(Goal auto g1, Goal auto g2) { return disjunction(g1, g2); }
 
-		std::generator<State> bind(std::generator<State> g, Goal auto f) {
-			for (auto s : g)
-				co_yield std::ranges::elements_of(f(s));
+		template <Goal... Goals>
+		Goal auto disjunction(Goal auto g1, Goal auto g2, Goals... rest) {
+			return disjunction(g1, disjunction(g2, rest...));
+		}
+
+		std::generator<State> append_map(std::generator<State> g, Goal auto goal) {
+			for (auto s1 : g)
+				for(auto s2: goal(s1))
+					co_yield s2;
 		}
 
 		Goal auto conjunction(Goal auto g1, Goal auto g2) {
 			return [=](State state) {
-				return bind(g1(state), g2);
+				return append_map(g1(state), g2);
 			};
 		}
 		inline Goal auto operator&(Goal auto g1, Goal auto g2) { return conjunction(g1, g2); }
 
+		template <Goal... Goals>
+		Goal auto conjunction(Goal auto g1, Goal auto g2, Goals... rest) {
+			return conjunction(g1, conjunction(g2, rest...));
+		}
 	} // kanren::micro
 
-	inline namespace alpha {
-		template<typename F>
-		Goal auto exists(F&& f) { return next_variables<F, detail::function_traits<F>::arity>(f); }
-	} // kanren::alpha
+	inline namespace mini {
+		Goal auto split_head(const Term& out, const Term& list) {
+			return [=](State state) -> std::generator<State> {
+				auto& [m, subs, c] = state;
+				auto out_ = find(out, subs);
+				auto list_ = find(list, subs);
+
+				switch(list_.index()) {
+				break; case 0: // Variable
+					if(auto s = unify({std::list<Term>{out_}}, list_, subs); s)
+						co_yield {m, *s, c};
+				break; case 1: // ecs::Entity
+					if(auto s = unify(out, list_, subs); s)
+						co_yield {m, *s, c};
+				break; case 2: // std::list<Term>
+					if(auto& l = std::get<std::list<Term>>(list_); l.size() > 0)
+						if(auto s = unify(out_, l.front(), subs); s)
+							co_yield {m, *s, c};
+				}
+			};
+		}
+
+		Goal auto split_tail(const Term& out, const Term& list) {
+			return [=](State state) -> std::generator<State> {
+				auto& [m, subs, c] = state;
+				auto out_ = find(out, subs);
+				auto list_ = find(list, subs);
+
+				switch(list_.index()) {
+				break; case 0: // Variable
+					if(auto s = unify(out_, list_, subs); s)
+						co_yield {m, *s, c};
+				break; case 1: // ecs::Entity
+					if(auto s = unify(out_, {std::list<Term>{list_}}, subs); s)
+						co_yield {m, *s, c};
+				break; case 2: // std::list<Term>
+					if(auto& l = std::get<std::list<Term>>(list_); l.size() <= 1) {
+						if(auto s = unify(out_, {std::list<Term>{}}, subs); s)
+							co_yield {m, *s, c};
+					} else if(l.size() == 2 && !std::holds_alternative<std::list<Term>>(out)) {
+						if(auto s = unify(out_, {l.back()}, subs); s)
+							co_yield {m, *s, c};
+					} else {
+						auto copy = l;
+						copy.pop_front();
+						if(auto s = unify(out_, {copy}, subs); s)
+							co_yield {m, *s, c};
+					}
+				}
+			};
+		}
+
+		Goal auto split_head_and_tail(const Term& head, const Term& tail, const Term& list) {
+			return [=](State state) -> std::generator<State> {
+				auto& [m, subs, c] = state;
+				auto tail_ = find(tail, subs);
+				auto list_ = find(list, subs);
+				auto head_ = find(head, subs);
+
+				if(std::holds_alternative<std::list<Term>>(tail_) && std::holds_alternative<Variable>(list_)) {
+					auto l = std::get<std::list<Term>>(tail_);
+					l.push_front(head_);
+					if(auto s = unify({l}, list_, subs); s)
+						co_yield {m, *s, c};
+				} else if(std::holds_alternative<Variable>(tail_) && std::holds_alternative<Variable>(list_)) {
+					if(auto sub = unify({std::list<Term>{}}, tail_, subs); sub) {
+						auto split = split_head(head_, list);
+						for(const auto& s: split({m, *sub, c}))
+							co_yield s;
+					}
+				} else {
+					auto head = split_head(head_, list_);
+					auto tail = split_tail(tail_, list_);
+					for(const auto& s1: head(state))
+						for(const auto& s: tail(s1))
+							co_yield s;
+				}
+			};
+		}
+
+		Goal auto append(const Term& a, const Term& b, const Term& out) {
+			return [=](State state) -> std::generator<State> {
+				auto& [m, subs, c] = state;
+				auto a_ = find(a, subs);
+				auto b_ = find(b, subs);
+				auto out_ = find(out, subs);
+
+				if(std::holds_alternative<doir::ecs::Entity>(a_))
+					a_ = {std::list<Term>{a_}};
+				if(std::holds_alternative<doir::ecs::Entity>(b_))
+					b_ = {std::list<Term>{b_}};
+				if(std::holds_alternative<doir::ecs::Entity>(out_))
+					out_ = {std::list<Term>{out_}};
+
+				if(std::holds_alternative<std::list<Term>>(a_) && std::holds_alternative<std::list<Term>>(b_)) {
+					auto appended = std::get<std::list<Term>>(a_);
+					auto& bl = std::get<std::list<Term>>(b_);
+					std::copy(bl.begin(), bl.end(), std::back_inserter(appended));
+					if(auto s = unify({appended}, out, subs); s)
+						co_yield {m, *s, c};
+				} else if(std::holds_alternative<Variable>(a_) && std::holds_alternative<Variable>(b_) && std::holds_alternative<std::list<Term>>(out_)) {
+					auto& full = std::get<std::list<Term>>(out_);
+					auto mid = full.begin();
+					for( ; mid != full.end(); ++mid) {
+						auto first = std::list(full.begin(), mid);
+						auto second = std::list(mid, full.end());
+						if(auto sub = unify(a, {first}, subs); sub)
+							if(auto s = unify(b, {second}, *sub); s)
+								co_yield {m, *s, c};
+					}
+					if(auto sub = unify(a, {full}, subs); sub)
+						if(auto s = unify(b, {std::list<Term>{}}, *sub); s)
+							co_yield {m, *s, c};
+				} else if(std::holds_alternative<std::list<Term>>(a_) && std::holds_alternative<std::list<Term>>(out_)) {
+					auto& al = std::get<std::list<Term>>(a_);
+					auto& full = std::get<std::list<Term>>(out_);
+					if(al.size() > full.size()) co_return;
+
+					auto mid = full.begin();
+					for(size_t i = 0; i < al.size(); ++i) ++mid;
+					auto first = std::list(full.begin(), mid);
+					auto second = std::list(mid, full.end());
+					if(auto sub = unify(a, {first}, subs); sub)
+						if(auto s = unify(b, {second}, *sub); s)
+							co_yield {m, *s, c};
+				} else if(std::holds_alternative<std::list<Term>>(b_) && std::holds_alternative<std::list<Term>>(out_)) {
+					auto& bl = std::get<std::list<Term>>(b_);
+					auto& full = std::get<std::list<Term>>(out_);
+					if(bl.size() > full.size()) co_return;
+
+					auto mid = full.end();
+					for(size_t i = 0; i < bl.size(); ++i) --mid;
+					auto first = std::list(full.begin(), mid);
+					auto second = std::list(mid, full.end());
+					if(auto sub = unify(a, {first}, subs); sub)
+						if(auto s = unify(b, {second}, *sub); s)
+							co_yield {m, *s, c};
+				}
+			};
+		}
+
+		Goal auto member_of(const Term& list, const Term& element) {
+			return [=](State state) -> std::generator<State> {
+				auto& [m, subs, c] = state;
+				auto list_ = find(list, subs);
+				auto element_ = find(element, subs);
+
+				switch(list_.index()) {
+				break; case 0: [[fallthrough]]; // Variable
+				case 1: // ecs::Entity
+					if(auto s = unify(list_, element_, subs); s)
+						co_yield {m, *s, c};
+				break; case 2: { // std::list<Term>
+					auto elem = std::holds_alternative<Variable>(element_) ? std::optional<Variable>{std::get<Variable>(element_)} : std::optional<Variable>{};
+
+					for(auto& term: std::get<std::list<Term>>(list_))
+						if(elem || term_equivalence(term, element_)) {
+							subs.emplace_front(element_, term);
+							co_yield {m, subs, c};
+							subs.pop_front();
+						} else if(std::holds_alternative<Variable>(term) && !std::holds_alternative<Variable>(element_)) {
+							subs.emplace_front(term, element_);
+							term = element_; // TODO: Is this bad?
+							co_yield {m, subs, c};
+							subs.pop_front();
+						}
+				}
+				}
+			};
+		}
+
+		Goal auto passthrough_if_not(Goal auto goal) {
+			return [=](State state) -> std::generator<State> {
+				for(auto s: goal(state))
+					co_return;
+				co_yield state;
+			};
+		}
+	}
 
 	Goal auto condition(bool condition) {
 		return [=](State state) -> std::generator<State> {
@@ -226,20 +464,20 @@ namespace doir::kanren {
 
 namespace std {
 	template<>
-	struct hash<std::pair<doir::kanren::Variable, doir::kanren::Term>> {
-		size_t operator()(const std::pair<doir::kanren::Variable, doir::kanren::Term>& pair) const {
-			return pair.first.id ^ doir::kanren::term2size_t(pair.second);
+	struct hash<std::pair<doir::kanren::Term, doir::kanren::Term>> {
+		size_t operator()(const std::pair<doir::kanren::Term, doir::kanren::Term>& pair) const {
+			return doir::kanren::term2size_t(pair.first) ^ doir::kanren::term2size_t(pair.second);
 		}
 	};
 
-	bool operator==(const std::pair<doir::kanren::Variable, doir::kanren::Term>& a, const std::pair<doir::kanren::Variable, doir::kanren::Term>& b) {
-		return a.first == b.first && doir::kanren::term2size_t(a.second) == doir::kanren::term2size_t(b.second);
+	bool operator==(const std::pair<doir::kanren::Term, doir::kanren::Term>& a, const std::pair<doir::kanren::Term, doir::kanren::Term>& b) {
+		return doir::kanren::term_equivalence(a.first, b.first) && doir::kanren::term_equivalence(a.second, b.second);
 	}
 }
 
 namespace doir::kanren { inline namespace query {
-	std::generator<std::pair<Variable, Term>> unique_substitutions(auto& substitutions, std::unordered_set<std::pair<Variable, Term>>& found)
-		requires(std::convertible_to<decltype(*substitutions.begin()), std::pair<Variable, Term>>)
+	std::generator<Substitution> unique_substitutions(auto& substitutions, std::unordered_set<Substitution>& found)
+		requires(std::convertible_to<decltype(*substitutions.begin()), Substitution>)
 	{
 		for(auto& sub: substitutions)
 			if(!found.contains(sub)) {
@@ -248,30 +486,34 @@ namespace doir::kanren { inline namespace query {
 			}
 	}
 
-	std::generator<std::pair<Variable, Term>> unique_substitutions(auto& substitutions)
-		requires(std::convertible_to<decltype(*substitutions.begin()), std::pair<Variable, Term>>)
+	std::generator<Substitution> unique_substitutions(auto& substitutions)
+		requires(std::convertible_to<decltype(*substitutions.begin()), Substitution>)
 	{
-		std::unordered_set<std::pair<Variable, Term>> found;
-		co_yield std::ranges::elements_of(unique_substitutions(substitutions, found));
+		std::unordered_set<Substitution> found;
+		for(const auto& sub: unique_substitutions(substitutions, found))
+			co_yield sub;
 	}
 
-	std::generator<std::pair<Variable, Term>> unique_substitutions(std::convertible_to<std::generator<State>> auto states) {
-		std::unordered_set<std::pair<Variable, Term>> found;
-		for (const auto& [module, sub, counter] : states)
-			co_yield std::ranges::elements_of(unique_substitutions(sub, found));
+	std::generator<Substitution> unique_substitutions(std::convertible_to<std::generator<State>> auto states) {
+		std::unordered_set<Substitution> found;
+		for (const auto& [module, subs, counter] : states)
+			for(auto sub: unique_substitutions(subs, found))
+				co_yield sub;
 	}
 
-	std::generator<std::pair<Variable, Term>> unique_substitutions(Goal auto& goal, State& state) {
-		co_yield std::ranges::elements_of(unique_substitutions(goal(state)));
+	std::generator<Substitution> unique_substitutions(Goal auto& goal, State& state) {
+		for(const auto& s: unique_substitutions(goal(state)))
+			co_yield s;
 	}
 
-	std::generator<std::pair<Variable, Term>> all_substitutions(std::convertible_to<std::generator<State>> auto states) {
+	std::generator<Substitution> all_substitutions(std::convertible_to<std::generator<State>> auto states) {
 		for (const auto& [module, subs, counter] : states)
 			for(const auto& sub: subs)
 				co_yield sub;
 	}
 
-	std::generator<std::pair<Variable, Term>> all_substitutions(Goal auto& goal, State& state) {
-		co_yield std::ranges::elements_of(all_substitutions(goal(state)));
+	std::generator<Substitution> all_substitutions(Goal auto& goal, State& state) {
+		for(const auto& s: all_substitutions(goal(state)))
+			co_yield s;
 	}
 }}
