@@ -54,6 +54,7 @@ int main() {
 	for (const auto& [v, val] : kr::unique_substitutions(g, state))
 		if (std::holds_alternative<doir::ecs::Entity>(val)) {
 			auto e = std::get<doir::ecs::Entity>(val);
-			std::cout << "Var " << v.id << " = " << e.get_component<std::string>() << "\n";
+			auto id = std::get<kr::Variable>(v).id;
+			std::cout << "Var " << id << " = " << e.get_component<std::string>() << "\n";
 		}
 }

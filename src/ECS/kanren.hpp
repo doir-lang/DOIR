@@ -5,6 +5,7 @@
 #include <generator>
 #include <list>
 #include <unordered_set>
+#include <variant>
 
 // Based on: https://github.com/jasonhemann/microKanren-DLS-16
 
@@ -271,7 +272,7 @@ namespace doir::kanren {
 	} // kanren::micro
 
 	inline namespace mini {
-		Goal auto split_head(const Term& out, const Term& list) {
+		Goal auto split_head(const Term& list, const Term& out) {
 			return [=](State state) -> std::generator<State> {
 				auto& [m, subs, c] = state;
 				auto out_ = find(out, subs);
@@ -292,7 +293,7 @@ namespace doir::kanren {
 			};
 		}
 
-		Goal auto split_tail(const Term& out, const Term& list) {
+		Goal auto split_tail(const Term& list, const Term& out) {
 			return [=](State state) -> std::generator<State> {
 				auto& [m, subs, c] = state;
 				auto out_ = find(out, subs);
@@ -322,12 +323,36 @@ namespace doir::kanren {
 			};
 		}
 
-		Goal auto split_head_and_tail(const Term& head, const Term& tail, const Term& list) {
+		Goal auto wrap_list(const Term& var, const Term& list) {
 			return [=](State state) -> std::generator<State> {
 				auto& [m, subs, c] = state;
-				auto tail_ = find(tail, subs);
+				auto var_ = find(var, subs);
+				auto list_ = find(list, subs);
+
+				switch(var_.index()) {
+				case 0: [[fallthrough]]; // Variable
+				case 1: // ecs::Entity
+					if(auto s = unify(list_, {std::list<Term>{var_}}, subs); s)
+						co_yield {m, *s, c};
+				break; case 2: // std::list<Term>
+					if(auto s = unify(list_, var_, subs); s)
+						co_yield {m, *s, c};
+				}
+			};
+		}
+
+		Goal auto split_tail_ensure_list(const Term& list, const Term& out) {
+			return next_variables([=](Variable tmp){
+				return split_tail(list, {tmp}) & wrap_list({tmp}, out);
+			});
+		}
+
+		Goal auto split_head_and_tail(const Term& list, const Term& head, const Term& tail) {
+			return [=](State state) -> std::generator<State> {
+				auto& [m, subs, c] = state;
 				auto list_ = find(list, subs);
 				auto head_ = find(head, subs);
+				auto tail_ = find(tail, subs);
 
 				if(std::holds_alternative<std::list<Term>>(tail_) && std::holds_alternative<Variable>(list_)) {
 					auto l = std::get<std::list<Term>>(tail_);
@@ -336,13 +361,13 @@ namespace doir::kanren {
 						co_yield {m, *s, c};
 				} else if(std::holds_alternative<Variable>(tail_) && std::holds_alternative<Variable>(list_)) {
 					if(auto sub = unify({std::list<Term>{}}, tail_, subs); sub) {
-						auto split = split_head(head_, list);
+						auto split = split_head(list, head_);
 						for(const auto& s: split({m, *sub, c}))
 							co_yield s;
 					}
 				} else {
-					auto head = split_head(head_, list_);
-					auto tail = split_tail(tail_, list_);
+					auto head = split_head(list_, head_);
+					auto tail = split_tail_ensure_list(list_, tail_);
 					for(const auto& s1: head(state))
 						for(const auto& s: tail(s1))
 							co_yield s;
@@ -411,7 +436,7 @@ namespace doir::kanren {
 			};
 		}
 
-		Goal auto member_of(const Term& list, const Term& element) {
+		Goal auto element_of(const Term& list, const Term& element) {
 			return [=](State state) -> std::generator<State> {
 				auto& [m, subs, c] = state;
 				auto list_ = find(list, subs);
@@ -439,6 +464,21 @@ namespace doir::kanren {
 				}
 				}
 			};
+		}
+
+		OwnedGoal map(const Term& a, const Term& b, auto f) {
+			return next_variables([=](Variable aHead, Variable aTail, Variable bHead, Variable bTail){
+				return disjunction(
+					conjunction(eq(a, {std::list<Term>{}}), eq(b, {std::list<Term>{}})),
+					conjunction(
+						split_head(a, {aHead}),
+						split_tail_ensure_list(a, {aTail}),
+						f(Term{aHead}, Term{bHead}),
+						map({aTail}, {bTail}, f),
+						append({bHead}, {bTail}, {b})
+					)
+				);
+			});
 		}
 
 		Goal auto passthrough_if_not(Goal auto goal) {
