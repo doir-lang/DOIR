@@ -1,0 +1,43 @@
+// --- Type Declarations ---
+.symbol_type Symbol
+.type Index = number
+.type TypeSymbol = symbol
+
+// --- Facts ---
+
+.decl type_of(entity: Symbol, type: TypeSymbol)
+type_of("a", "i32").
+type_of("b", "i32").
+
+// Function type: function_type(Function, Index, Type)
+// Index 0 = return type, 1+ = arguments
+.decl function_type(func: Symbol, index: Index, type: TypeSymbol)
+function_type("add", 0, "i32").
+function_type("add", 1, "i32").
+function_type("add", 2, "i32").
+
+// Function call setup
+.decl call_entity(call: Symbol, func: Symbol)
+call_entity("call", "add").
+
+.decl argument(call: Symbol, index: Index, entity: Symbol)
+argument("call", 1, "a").
+argument("call", 2, "b").
+
+// --- Derived Relations ---
+
+// Get argument types
+.decl arg_type(call: Symbol, index: Index, type: TypeSymbol)
+arg_type(C, I, T) :-
+    argument(C, I, A),
+    type_of(A, T).
+
+// Typecheck: ensure argument types match function parameter types
+.decl typecheck_function(func: Symbol, call: Symbol)
+typecheck_function(F, C) :-
+    arg_type(C, 1, T1),
+    arg_type(C, 2, T2),
+    function_type(F, 1, T1),
+    function_type(F, 2, T2).
+
+.output typecheck_function

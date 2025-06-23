@@ -9,3 +9,6 @@ target_link_libraries(bench_simpsons PUBLIC bench_common)
 
 add_executable(bench_list list.cpp)
 target_link_libraries(bench_list PUBLIC bench_common)
+
+add_executable(bench_typecheck type_check.cpp)
+target_link_libraries(bench_typecheck PUBLIC bench_common)
