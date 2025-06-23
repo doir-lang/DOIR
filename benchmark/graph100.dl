@@ -1,0 +1,115 @@
+// --- Types ---
+.type Node <: symbol
+
+// --- Edges (undirected) ---
+.decl edge(x: Node, y: Node)
+//.output edge
+
+// --- Path relation ---
+.decl path(x: Node, y: Node)
+.output path
+
+// --- Edge Facts ---
+edge("n0", "n1").
+edge("n1", "n2").
+edge("n2", "n3").
+edge("n3", "n4").
+edge("n4", "n5").
+edge("n5", "n6").
+edge("n6", "n7").
+edge("n7", "n8").
+edge("n8", "n9").
+edge("n9", "n10").
+edge("n10", "n11").
+edge("n11", "n12").
+edge("n12", "n13").
+edge("n13", "n14").
+edge("n14", "n15").
+edge("n15", "n16").
+edge("n16", "n17").
+edge("n17", "n18").
+edge("n18", "n19").
+edge("n19", "n20").
+edge("n20", "n21").
+edge("n21", "n22").
+edge("n22", "n23").
+edge("n23", "n24").
+edge("n24", "n25").
+edge("n25", "n26").
+edge("n26", "n27").
+edge("n27", "n28").
+edge("n28", "n29").
+edge("n29", "n30").
+edge("n30", "n31").
+edge("n31", "n32").
+edge("n32", "n33").
+edge("n33", "n34").
+edge("n34", "n35").
+edge("n35", "n36").
+edge("n36", "n37").
+edge("n37", "n38").
+edge("n38", "n39").
+edge("n39", "n40").
+edge("n40", "n41").
+edge("n41", "n42").
+edge("n42", "n43").
+edge("n43", "n44").
+edge("n44", "n45").
+edge("n45", "n46").
+edge("n46", "n47").
+edge("n47", "n48").
+edge("n48", "n49").
+edge("n49", "n50").
+edge("n50", "n51").
+edge("n51", "n52").
+edge("n52", "n53").
+edge("n53", "n54").
+edge("n54", "n55").
+edge("n55", "n56").
+edge("n56", "n57").
+edge("n57", "n58").
+edge("n58", "n59").
+edge("n59", "n60").
+edge("n60", "n61").
+edge("n61", "n62").
+edge("n62", "n63").
+edge("n63", "n64").
+edge("n64", "n65").
+edge("n65", "n66").
+edge("n66", "n67").
+edge("n67", "n68").
+edge("n68", "n69").
+edge("n69", "n70").
+edge("n70", "n71").
+edge("n71", "n72").
+edge("n72", "n73").
+edge("n73", "n74").
+edge("n74", "n75").
+edge("n75", "n76").
+edge("n76", "n77").
+edge("n77", "n78").
+edge("n78", "n79").
+edge("n79", "n80").
+edge("n80", "n81").
+edge("n81", "n82").
+edge("n82", "n83").
+edge("n83", "n84").
+edge("n84", "n85").
+edge("n85", "n86").
+edge("n86", "n87").
+edge("n87", "n88").
+edge("n88", "n89").
+edge("n89", "n90").
+edge("n90", "n91").
+edge("n91", "n92").
+edge("n92", "n93").
+edge("n93", "n94").
+edge("n94", "n95").
+edge("n95", "n96").
+edge("n96", "n97").
+edge("n97", "n98").
+edge("n98", "n99").
+
+// --- Path Rules ---
+path(x, y) :- edge(x, y).
+path(x, y) :- edge(x, z), path(z, y), x != y.

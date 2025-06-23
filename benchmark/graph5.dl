@@ -1,0 +1,20 @@
+// --- Types ---
+.type Node <: symbol
+
+// --- Edges (undirected) ---
+.decl edge(x: Node, y: Node)
+//.output edge
+
+// --- Path relation ---
+.decl path(x: Node, y: Node)
+.output path
+
+// --- Edge Facts ---
+edge("n0", "n1").
+edge("n1", "n2").
+edge("n2", "n3").
+edge("n3", "n4").
+
+// --- Path Rules ---
+path(x, y) :- edge(x, y).
+path(x, y) :- edge(x, z), path(z, y), x != y.
