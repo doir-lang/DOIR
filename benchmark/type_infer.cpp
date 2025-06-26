@@ -52,8 +52,9 @@ int main() {
 	B.add_component<type_of>() = {{{i32}}};
 	B.add_component<std::string>() = "B";
 
+	auto T = mod.next_logic_variable();
 	doir::ecs::Entity add = mod.create_entity();
-	add.add_component<function_types>() = {{{i32}, {i32}, {i32}}};
+	add.add_component<function_types>() = {{{T}, {T}, {T}}};
 	add.add_component<std::string>() = "add";
 
 	doir::ecs::Entity call = mod.create_entity();
