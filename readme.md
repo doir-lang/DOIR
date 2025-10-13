@@ -101,12 +101,13 @@ This project is **experimental**. Expect breaking changes, incomplete features, 
 
 This project is academic work. **If you use DOIR in your research or publications, please cite:**
 
-> Joshua Dahl, and Fredrick C. Harris Jr. "An Argument for the Practicality of Entity Component Systems as the Primary Data Structure for an Interpreter or Compiler." In Onward! '25: Proceedings of the 2025 ACM SIGPLAN International Symposium on New Ideas, New Paradigms, and Reflections on Programming and Software. [https://doi.org/10.1145/3759429.3762622](https://doi.org/10.1145/3759429.3762622)
+> Joshua Dahl and Frederick C. Harris. 2025. An Argument for the Practicality of Entity Component Systems as the Primary Data Structure for an Interpreter or Compiler. In Proceedings of the 2025 ACM SIGPLAN International Symposium on New Ideas, New Paradigms, and Reflections on Programming and Software (Onward! '25). Association for Computing Machinery, New York, NY, USA, 85–98. https://doi.org/10.1145/3759429.3762622
 
 ---
 
 ## 📝 License
 
 [MIT](LICENSE)
+
 
 
