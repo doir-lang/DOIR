@@ -1,3 +1,4 @@
+R"~(
 program <- _ assignment* !. # `!.` indicates end of input
 assignment <- (<'export'>_)? Identifier _ ':'_ Type wsc (_ '='_ (Constant wsc / Block wsc / function_call / Identifier wsc / Type wsc))? (SourceInfo wsc)? Terminator _
 
