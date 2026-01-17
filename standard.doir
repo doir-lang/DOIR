@@ -1,0 +1,159 @@
+// Assumes the assembler provides types: u1, u8, pointer_sized
+// Likely will get: u1, u/i8, u/i16, u/i32, u/i64, f32, f64 (from a standard amd64 processor)
+
+type : namespace = {
+	modifier_function_nocomp : type = (in: type) -> type
+	modifier_function : type = type.comptime(type.modifier_function_nocomp) // NOTE: If lookup can be out of order then this works...
+	export comptime : type.modifier_function // Marks the provided type as being a compile time constant
+
+	export pointer : type.modifier_function // Adds a pointer to the given type
+	export union : type.modifier_function // Converts a C "struct" to a C "union"
+	export pack : type.modifier_function // Reorganizes the type to be as tightly packed as possible
+	export unique : type.modifier_function // Forces a type alias to be a completely unique type
+
+	export self : type = byte // Stores the value of whatever type we are currently inside of
+}
+
+export byte : alias = u8
+export byte_pointer : type = type.pointer(byte)
+export null_terminated_byte_pointer : alias = byte_pointer // NOTE: Indicates that the function expects a null terminated `c-string`
+export index : alias = pointer_sized
+
+import_t_nocomp : type = (path: null_terminated_byte_pointer)
+import_t : type = type.comptime(import_t_nocomp)
+export import : import_t
+
+meta : namespace = {
+	type : namespace = {
+		get_t_nocomp : type = (T: deduced type, register: T) -> type
+		get_t : type = type.comptime(meta.type.get_t_nocomp)
+		export get : meta.type.get_t
+
+		set_attribute_id_t_nocomp : type = (T: type, attribute_id: index) -> type
+		set_attribute_id_t : type = type.comptime(meta.type.set_attribute_id_t_nocomp)
+		export set_attribute_id : meta.type.set_attribute_id_t
+	}
+
+	source_location : namespace = {
+		%0 : type = {
+			file : null_terminated_byte_pointer
+			start_byte : index
+			end_byte : index
+		}
+		%1 : index = 1 // This needs to stay in sync with source_location in core compiler!
+		export location : type = meta.type.set_attribute_id(%0, %1)
+
+		get_t_nocomp : type = (T: deduced type, register: T) -> meta.source_location.location
+		get_t : type = type.comptime(meta.source_location.get_t_nocomp)
+		export get : meta.source_location.get_t
+		export get_start_line : (location: meta.source_location.location) -> index
+		export get_start_column : (location: meta.source_location.location) -> index
+		export get_start_line : (location: meta.source_location.location) -> index
+		export get_start_column : (location: meta.source_location.location) -> index
+	}
+}
+
+function : namespace = {
+	// NOTE: Every function in this namespace will error if not provided a function or function type
+	export forcibly_inline : type.modifier_function
+	export always_flatten : type.modifier_function
+
+	add_overload_t_nocomp : type = (Tset : deduced type, Tnew : deduced type, overload_set: Tset, function: Tnew) -> _
+	add_overload_t : type = type.comptime(function.add_overload_t_nocomp)
+	export add_overload : function.add_overload_t // Return type is a (flattened) union of Tset and Tnew
+
+	abi_rename_t_nocomp : type = (T: deduced type, function: T, new_name: null_terminated_byte_pointer) -> T
+	abi_rename_t : type = type.comptime(function.abi_rename_t_nocomp)
+	export abi_rename : function.abi_rename_t
+}
+
+export diagnostic : namespace = { // NOTE: Exporting a namespace exports everything inside it
+	info : (message: null_terminated_byte_pointer, help: null_terminated_byte_pointer, location: source_location)
+	warning : (message: null_terminated_byte_pointer, help: null_terminated_byte_pointer, location: source_location)
+	error : (message: null_terminated_byte_pointer, help: null_terminated_byte_pointer, location: source_location)
+}
+
+export cast : (Tin: deduced type, in: Tin, Tout: type) -> Tout
+
+export execute : (body: block) -> _ // returns type yielded by `body`
+export defer : (body: block) // executes `body` at each exit point from the current block
+export while : (condition : u1, body: block) -> _ // returns pointer(meta.type.get(execute(body)))
+export if : (condition: u1, then: block, else: block) -> _ // returns union(type{a: meta.type.get(execute(then)) b: meta.type.get(execute(else))})
+
+attribute : namespace = {
+	%0 : type = (T: type) -> index
+	%1 : type = type.comptime(%0)
+	%2 : %1
+	%3 : type = (name: null_terminated_byte_pointer) -> index
+	%4 : type = type.comptime(%3)
+	%5 : %4
+	get_id : _ = function.add_overload(%2, %5)
+
+	attribute_function_t_nocomp : type = (T: deduced type, register: T, attribute_id: index) -> _
+	attribute_function_t : type = type.comptime(attribute_function_t_nocomp)
+	get : attribute_function_t
+	add : attribute_function_t
+	get_or_add : attribute_function_t
+}
+
+// Mizu Core
+label : (name: null_terminated_byte_pointer)
+find_label : (name: null_terminated_byte_pointer) -> byte_pointer // returns address of label
+
+halt : ()
+
+debug_print : (value : index)
+debug_print_binary : (value : index)
+
+// load_immediate handled by assembly layer
+// convert_* handled by cast
+
+load : (T : deduced type, stack_offset : index) -> T
+store : (T : deduced type, value : T, stack_offset : index) -> T
+
+pointer : namespace = {
+	load : (Tptr : deduced type, Tvalue : deduced type, pointer : Tptr) -> Tvalue // NOTE: Errors if Tptr != pointer(Tvalue)
+	store : (Tptr : deduced type, Tvalue : deduced type, pointer : Tptr, value : Tvalue) -> Tvalue
+
+	immutable : type.type_modifier_function // Marks the pointer as immutable (any stores to an immutable pointer become an error)
+}
+
+stack : namespace = {
+	push : (amount : index) -> byte_pointer
+	pop : (amount : index) -> byte_pointer
+	allocate : (T : type) -> byte_pointer
+	bottom : () -> byte_pointer
+}
+
+// Both return a pointer to the next instruction
+jump_relative : (instructions_to_jump: index) -> byte_pointer
+jump_to : (target: byte_pointer) -> byte_pointer
+
+branch_relative : (condition: u1, instructions_to_jump: index) -> byte_pointer
+branch_to : (condition: u1, target: byte_pointer) -> byte_pointer
+
+is_equal : (T: deduced type, a: T, b: T) -> u1
+is_not_equal : (T: deduced type, a: T, b: T) -> u1
+is_less : (T: deduced type, a: T, b: T) -> u1
+is_greater_equal : (T: deduced type, a: T, b: T) -> u1
+
+add : (T: deduced type, a: T, b: T) -> T
+subtract : (T: deduced type, a: T, b: T) -> T
+divide : (T: deduced type, a: T, b: T) -> T
+multiply : (T: deduced type, a: T, b: T) -> T
+modulus : (T: deduced type, a: T, b: T) -> T
+
+max : (T: deduced type, a: T, b: T) -> T
+min : (T: deduced type, a: T, b: T) -> T
+sqrt : (T: deduced type, a: T, b: T) -> T
+
+shift_left : (T: deduced type, a: T, b: T) -> T
+shift_right : (T: deduced type, a: T, b: T) -> T
+bitwise_xor : (T: deduced type, a: T, b: T) -> T
+bitwise_or : (T: deduced type, a: T, b: T) -> T
+bitwise_and : (T: deduced type, a: T, b: T) -> T
+
+is_negative : (T: deduced type, v: T) -> u1
+is_positive : (T: deduced type, v: T) -> u1
+is_infinity : (T: deduced type, v: T) -> u1
+is_nan : (T: deduced type, v: T) -> u1
