@@ -1,0 +1,6 @@
+[submodule "libecrs"]
+	path = libecrs
+	url = https://github.com/doir-lang/libecrs
+[submodule "cpp-peglib"]
+	path = cpp-peglib
+	url = https://github.com/yhirose/cpp-peglib
