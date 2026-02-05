@@ -48,8 +48,8 @@ meta : namespace = {
 		export get : meta.source_location.get_t
 		export get_start_line : (location: meta.source_location.location) -> index
 		export get_start_column : (location: meta.source_location.location) -> index
-		export get_start_line : (location: meta.source_location.location) -> index
-		export get_start_column : (location: meta.source_location.location) -> index
+		export get_end_line : (location: meta.source_location.location) -> index
+		export get_end_column : (location: meta.source_location.location) -> index
 	}
 }
 
