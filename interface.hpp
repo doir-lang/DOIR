@@ -1,163 +1,173 @@
-#include <cassert>
-#include <cstddef>
-#include <cstdint>
-#include <optional>
-#include <span>
+#pragma once
+
+#include "libecrs/relation.hpp"
+#include "string_helpers.hpp"
 #include <string_view>
 #include <variant>
-#include <vector>
 
-using entity_t = size_t;
-
-struct RelationBase {}; // Used for constraints
-
-// Base
-template<size_t N = std::dynamic_extent, bool CAN_BE_TERM = false>
-struct Relation : public RelationBase {
-	constexpr static bool can_be_term = CAN_BE_TERM;
-	std::array<entity_t, N> related;
-
-	constexpr Relation() {}
-	constexpr Relation(std::array<entity_t, N> a): related(a) {}
-	constexpr Relation(std::initializer_list<entity_t> initializer) {
-		assert(initializer.size() <= N);
-		auto init = initializer.begin();
-		for(size_t i = 0; i < initializer.size(); ++i, ++init)
-			related[i] = *init;
-	}
-	Relation(Relation&&) = default;
-	Relation(const Relation&) = default;
-	Relation& operator=(Relation&&) = default;
-	Relation& operator=(const Relation&) = default;
-};
-template<bool CAN_BE_TERM>
-
-struct Relation<std::dynamic_extent, CAN_BE_TERM> : public RelationBase {
-	constexpr static bool can_be_term = CAN_BE_TERM;
-	std::vector<entity_t> related;
-
-	Relation() {}
-	Relation(std::vector<entity_t> a): related(a) {}
-	Relation(std::initializer_list<entity_t> e) : related(e) {}
-	Relation(Relation&&) = default;
-	Relation(const Relation&) = default;
-	Relation& operator=(Relation&&) = default;
-	Relation& operator=(const Relation&) = default;
-};
-
-
-// Tags
-struct flags {
-    enum impl : uint8_t {
-        Public = (1 << 1),
-        Comptime = (1 << 2), // On a function implies that the function can access the emitter object
-        Constant = (1 << 3),
-        Pure = (1 << 4),
-		Inline = (1 << 5),
-		Tail = (1 << 6),
-    } flags;
-
-    inline bool is_public() const { return flags & Public; }
-    inline bool is_comptime() const { return flags & Comptime; }
-    inline bool is_constant() const { return flags & Constant; }
-    inline bool is_pure() const { return flags & Pure; }
-};
-struct public_ {};
-struct comptime {}; // On a function implies that the function can access the emitter object
-struct valueless {}; // Represents undefined values and external functions/aliases
-struct namespace_ {}; // On a type element indicates that the namespace should be inherited
-
-struct pointer { size_t size = 0; }; // Size == 0 implies no bounds information
-
-struct name : public std::string_view {};
-
-struct function_return_type : public Relation<1> {};  // Also expects function_inputs and block/valueless attached
-struct function_inputs : public Relation<> {};
-
-struct block : public Relation<> {}; // When alone (no type_of etc...) represents a quoted block
-
-struct type_definition { // Also expects block attached
-	size_t size, align;
-};
-
-struct alias : public Relation<1> {}; // Can be INVALID if a valueless is attached
-
-struct type_of : public Relation<1> {}; // Expects a number, string, valueless, or block attached
-
-struct number {
-	long double value; // TODO: should use bigint rational instead?
-};
-
-struct string {
-	std::string_view value;
-};
-
-struct call : public Relation<1> {}; // Also expects function_inputs attached
-
-struct source_location {
-	struct pair {
-		size_t line, column;
-	};
-
-	std::string_view file;
-	pair start, end;
-};
-
-namespace lookup {
-	struct lookup : public std::variant<entity_t, std::string_view> {
-		bool resolved() { return std::holds_alternative<entity_t>(*this); }
-		entity_t& entity() { return std::get<entity_t>(*this); }
-		std::string_view& name() { return std::get<std::string_view>(*this); }
-	};
-	struct function_return_type : public lookup {};
-	struct function_inputs : public std::vector<lookup> {};
-	struct block : public std::vector<lookup> {};
-	struct alias : public lookup {};
-	struct type_of : public lookup {};
-	struct call : public lookup {};
+namespace ecrs {
+	using entity_t = uint32_t;
 }
 
-struct function_builder;
+namespace doir {
 
-struct block_builder {
-	entity_t end(std::optional<source_location> location = {});
+	struct module;
 
-	// "type_of" spec
-	// %0 : i32 = 5
-	entity_t number(std::string_view name, entity_t type, long double value, std::optional<source_location> location = {});
-	// %1 : u8p = "hello world"
-	entity_t string(std::string_view name, entity_t type, std::string_view value, std::optional<source_location> location = {});
-	// %2 : i32
-	entity_t valueless(std::string_view name, entity_t type, std::optional<source_location> location = {});
-	// %4 : i32 = add(%0, %2)
-	entity_t call(std::string_view name, entity_t type, entity_t function, std::span<entity_t> arguments, std::optional<source_location> location = {});
-	// %5 : i32 = { built block... }
-	block_builder subblock(std::string_view name, entity_t type, std::optional<source_location> location = {});
+	// Tags
+	struct flags {
+		enum impl : uint8_t {
+			Export = (1 << 1),
+			Comptime = (1 << 2), // On a function implies that the function can access the emitter object
+			Constant = (1 << 3),
+			Pure = (1 << 4),
+			Inline = (1 << 5),
+			Tail = (1 << 6),
+		} flags;
 
-	// "function" spec
-	// add : (a: i32, b: i32 = 5) i32 = { built block... }
-	function_builder function(std::string_view name, entity_t return_type, std::optional<source_location> location = {});
-	// foo : () void = extern
-	function_builder extern_function(std::string_view name, entity_t return_type, std::optional<source_location> location = {});
+		inline bool export_set() const { return flags & Export; }
+		inline bool comptime_set() const { return flags & Comptime; }
+		inline bool constant_set() const { return flags & Constant; }
+		inline bool pure_set() const { return flags & Pure; }
+	};
 
-	// "type" spec
-	// vec3 : type = { x : f32; y : f32; z : f32; }
-	block_builder type(std::string_view name, std::optional<source_location> location = {});
+	struct valueless {}; // Represents undefined values and external functions/aliases
+	struct namespace_ {}; // On a type element indicates that the namespace should be inherited
 
-	// "alias" spec
-	// color : alias = vec3
-	entity_t alias(std::string_view name, entity_t ref, std::optional<source_location> location = {});
+	struct pointer { size_t size = 0; }; // Size == 0 implies no bounds information
 
-	// "block" spec
-	// then : block = { built block... }
-	block_builder quoted_block(std::string_view name, std::optional<source_location> location = {});
-};
+	struct name : public interned_string {};
 
-struct function_builder: public block_builder {
-	// (a : i32 = 5)
-	entity_t number_paremeter(std::string_view name, entity_t type, long double value, std::optional<source_location> location = {});
-	// (b : u8p = "hello")
-	entity_t string_parameter(std::string_view name, entity_t type, std::string_view value, std::optional<source_location> location = {});
-	// (c : i32)
-	entity_t valueless_parameter(std::string_view name, entity_t type, std::optional<source_location> location = {});
-};
+	struct function_return_type : public ecrs::relation<1> {};  // Also expects function_inputs and block/valueless attached
+	struct function_inputs : public ecrs::relation<> {};
+
+	struct block : public ecrs::relation<> {}; // When alone (no type_of etc...) represents a quoted block
+
+	struct type_definition { // Also expects block attached
+		size_t size, align;
+	};
+
+	struct alias : public ecrs::relation<1> {}; // Can be INVALID if a valueless is attached
+
+	struct type_of : public ecrs::relation<1> {}; // Expects a number, string, valueless, or block attached
+
+	struct number {
+		long double value; // TODO: should use bigint rational instead?
+	};
+
+	struct string {
+		interned_string value;
+	};
+
+	struct call : public ecrs::relation<1> {}; // Also expects function_inputs attached
+
+	struct source_location {
+		struct pair {
+			size_t line, column;
+		};
+
+		std::string_view file;
+		size_t start_byte, end_byte;
+
+	 	pair find_pair(std::string_view source, size_t target_byte) const {
+			assert(target_byte < source.size());
+			auto lines = split(source, '\n');
+			pair out;
+			for(size_t i = 0; i < start_byte; ++i) {
+				if(++out.column > lines[out.line].size()) {
+					out.column = 0;
+					++out.line;
+				}
+			}
+			return out;
+		}
+
+		pair start(std::string_view source) const { return find_pair(source, start_byte); }
+		size_t start_line(std::string_view source) const { return start(source).line; }
+		size_t start_column(std::string_view source) const { return start(source).column; }
+
+		pair end(std::string_view source) const { return find_pair(source, end_byte); }
+		size_t end_line(std::string_view source) const { return end(source).line; }
+		size_t end_column(std::string_view source) const { return end(source).column; }
+	};
+
+	namespace lookup {
+		struct lookup : public std::variant<ecrs::entity_t, interned_string> {
+			using super = std::variant<ecrs::entity_t, interned_string>;
+			using super::super;
+			using super::operator=;
+
+			bool resolved() const { return std::holds_alternative<ecrs::entity_t>(*this); }
+			ecrs::entity_t& entity() { return std::get<ecrs::entity_t>(*this); }
+			const ecrs::entity_t& entity() const { return std::get<ecrs::entity_t>(*this); }
+			interned_string& name() { return std::get<interned_string>(*this); }
+			const interned_string& name() const { return std::get<interned_string>(*this); }
+		};
+		struct function_return_type : public lookup {};
+		struct function_inputs : public std::vector<lookup> {};
+		struct block : public std::vector<lookup> {};
+		struct alias : public lookup {};
+		struct type_of : public lookup {};
+		struct call : public lookup {};
+	}
+
+	struct function_builder;
+
+	struct block_builder {
+		ecrs::entity_t block = 0;
+		doir::module* mod = nullptr;
+		static block_builder create(doir::module& mod);
+
+		ecrs::entity_t end(std::optional<source_location> location = {});
+
+		// "type_of" spec
+		// %0 : i32 = 5
+		ecrs::entity_t push_number(interned_string name, ecrs::entity_t type, long double value, std::optional<source_location> location = {});
+		ecrs::entity_t push_number(interned_string name, interned_string type_lookup, long double value, std::optional<source_location> location = {});
+		// %1 : u8p = "hello world"
+		ecrs::entity_t push_string(interned_string name, ecrs::entity_t type, interned_string value, std::optional<source_location> location = {});
+		ecrs::entity_t push_string(interned_string name, interned_string type_lookup, interned_string value, std::optional<source_location> location = {});
+		// %2 : i32
+		ecrs::entity_t push_valueless(interned_string name, ecrs::entity_t type, std::optional<source_location> location = {});
+		ecrs::entity_t push_valueless(interned_string name, interned_string type_lookup, std::optional<source_location> location = {});
+		// %4 : i32 = add(%0, %2)
+		ecrs::entity_t push_call(interned_string name, ecrs::entity_t type, ecrs::entity_t function, std::span<ecrs::entity_t> arguments, std::optional<source_location> location = {});
+		ecrs::entity_t push_call(interned_string name, interned_string type_lookup, ecrs::entity_t function, std::span<ecrs::entity_t> arguments, std::optional<source_location> location = {});
+		ecrs::entity_t push_call(interned_string name, ecrs::entity_t type, interned_string function_lookup, std::span<ecrs::entity_t> arguments, std::optional<source_location> location = {});
+		ecrs::entity_t push_call(interned_string name, interned_string type_lookup, interned_string function_lookup, std::span<ecrs::entity_t> arguments, std::optional<source_location> location = {});
+
+		// %5 : i32 = { built block... }
+		block_builder push_subblock(interned_string name, ecrs::entity_t type, std::optional<source_location> location = {});
+		block_builder push_subblock(interned_string name, interned_string type_lookup, std::optional<source_location> location = {});
+
+		// "function" spec
+		// add : (a: i32, b: i32 = 5) i32 = { built block... }
+		function_builder push_function(interned_string name, ecrs::entity_t return_type, std::optional<source_location> location = {});
+		// foo : () void
+		function_builder push_extern_function(interned_string name, ecrs::entity_t return_type, std::optional<source_location> location = {});
+
+		// "type" spec
+		// vec3 : type = { x : f32; y : f32; z : f32; }
+		block_builder push_type(interned_string name, std::optional<source_location> location = {});
+
+		// "alias" spec
+		// color : alias = vec3
+		ecrs::entity_t push_alias(interned_string name, ecrs::entity_t ref, std::optional<source_location> location = {});
+
+		// "block" spec
+		// then : block = { built block... }
+		block_builder push_quoted_block(interned_string name, std::optional<source_location> location = {});
+	};
+
+	struct function_builder: public block_builder {
+		// (a : i32 = 5)
+		ecrs::entity_t push_number_paremeter(interned_string name, ecrs::entity_t type, long double value, std::optional<source_location> location = {});
+		ecrs::entity_t push_number_paremeter(interned_string name, interned_string type_lookup, long double value, std::optional<source_location> location = {});
+		// (b : u8p = "hello")
+		ecrs::entity_t push_string_parameter(interned_string name, ecrs::entity_t type, interned_string value, std::optional<source_location> location = {});
+		ecrs::entity_t push_string_parameter(interned_string name, interned_string type_lookup, interned_string value, std::optional<source_location> location = {});
+		// (c : i32)
+		ecrs::entity_t push_valueless_parameter(interned_string name, ecrs::entity_t type, std::optional<source_location> location = {});
+		ecrs::entity_t push_valueless_parameter(interned_string name, interned_string type_lookup, std::optional<source_location> location = {});
+	};
+
+}

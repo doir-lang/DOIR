@@ -4,28 +4,27 @@
 #include <peglib.h>
 #include <string_view>
 
+#include "libecrs/context.hpp"
+
 #include "file_manager.hpp"
+#include "interface.hpp"
+#include "module.hpp"
+#include "parser.hpp"
+#include "print.hpp"
+#include "string_helpers.hpp"
 
 int main() {
-	peg::parser parser;
+	doir::module mod;
+	std::vector<doir::block_builder> builders;
+	builders.push_back(doir::block_builder::create(mod));
 
-	parser.set_logger([](size_t line, size_t col, const std::string& msg, const std::string &rule) {
-		std::cerr << line << ":" << col << ": " << msg << std::endl;
-	});
+	doir::string_interner interner;
+	auto parser = initialize_parser(builders, interner);
 
-	auto grammar =
-#include "grammar.peg"
-	;
-	auto ok = parser.load_grammar(grammar);
-	assert(ok);
+	// auto test = doir::file_manager::singleton().get_file_string("../standard.doir");
+	auto test = doir::file_manager::singleton().get_file_string("../test.doir");
+	if(!parser.parse(test))
+		return -1;
 
-	auto test = file_manager::singleton().get_file_string("../standard.doir");
-
-	parser.enable_ast();
-
-	std::shared_ptr<peg::Ast> ast;
-	if (parser.parse(test, ast)) {
-		// ast = parser.optimize_ast(ast);
-		std::cout << peg::ast_to_s(ast) << std::endl;
-	}
+	doir::print(std::cout, mod, builders.front().block, true, true);
 }
