@@ -7,5 +7,5 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 add_subdirectory(cpp-peglib)
 add_subdirectory(libecrs)
 
-add_executable(doir driver.cpp interface.cpp print.cpp parser.cpp)
+add_executable(doir driver.cpp interface.cpp module.cpp print.cpp parser.cpp)
 target_link_libraries(doir PUBLIC libecrs peglib)
