@@ -1,8 +1,11 @@
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN 
+
 #define FP_IMPLEMENTATION
 #define ECRS_IMPLEMENTATION
+#include "module.hpp"
 #include "parser.hpp"
 #include "interface.hpp"
-#include "module.hpp"
 #include "file_manager.hpp"
 #include <variant>
 
