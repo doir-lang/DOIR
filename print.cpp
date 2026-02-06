@@ -6,13 +6,18 @@ std::string assignment_type(const doir::module& mod, ecrs::entity_t type, bool d
 	return "TODO: Implement";
 }
 
-std::ostream& print_location(std::ostream& out, const doir::module& mod, const doir::source_location& loc) {
-	auto start = loc.start(mod.source);
-	auto end = loc.end(mod.source);
-	return out << '<' << loc.file << ":" << start.line << "-" << end.line << ":" << start.column << "-" << end.column << ">";
+std::ostream& print_location(std::ostream& out, const doir::source_location::detailed& loc, bool pretty) {
+	out << (pretty ? " <" : "<") << loc.file << ":";
+	if(loc.start.line == loc.end.line)
+		out << loc.start.line << ":";
+	else out << loc.start.line << "-" << loc.end.line << ":";
+	if(loc.start.column == loc.end.column)
+		out << loc.start.column << ">";
+	else out << loc.start.column << "-" << loc.end.column << ">";
+	return out;
 }
 
-std::tuple<std::string, std::string, std::optional<doir::source_location>, std::string> get_common_assignment_elements(const doir::module& mod, ecrs::entity_t root, bool debug) {
+std::tuple<std::string, std::string, std::optional<doir::source_location::detailed>, std::string> get_common_assignment_elements(const doir::module& mod, ecrs::entity_t root, bool debug) {
 	std::string ident = std::string(mod.get_component<doir::name>(root));
 	if(debug) ident += "(" + std::to_string(root) + ")";
 
@@ -24,9 +29,11 @@ std::tuple<std::string, std::string, std::optional<doir::source_location>, std::
 			"lookup(" + std::string(mod.get_component<doir::lookup::type_of>(root).name()) + ")"
 			: std::string(mod.get_component<doir::lookup::type_of>(root).name());
 
-	std::optional<doir::source_location> location = {};
-	if(mod.has_component<doir::source_location>(root))
-		location = mod.get_component<doir::source_location>(root);
+	std::optional<doir::source_location::detailed> location = {};
+	if(mod.has_component<doir::source_location::detailed>(root))
+		location = mod.get_component<doir::source_location::detailed>(root);
+	else if(mod.has_component<doir::source_location>(root))
+		location = mod.get_component<doir::source_location>(root).to_detailed(mod.source);
 
 	std::string Export = "";
 	if(mod.has_component<doir::flags>(root))
@@ -40,19 +47,19 @@ std::ostream& print_impl(std::ostream& out, const doir::module& mod, ecrs::entit
 	if(mod.has_component<doir::valueless>(root)) {
 		auto [ident, type, location, Export] = get_common_assignment_elements(mod, root, debug);
 		out << indent_string << Export << ident << (pretty ? ": " : ":") << type;
-		if(location) print_location(out, mod, *location);
+		if(location) print_location(out, *location, pretty);
 
 	} else if(mod.has_component<doir::number>(root)) {
 		auto [ident, type, location, Export] = get_common_assignment_elements(mod, root, debug);
 		auto value = mod.get_component<doir::number>(root).value;
 		out << indent_string << Export << ident << (pretty ? ": " : ":") << type << (pretty ? " = " : "=") << value;
-		if(location) print_location(out, mod, *location);
+		if(location) print_location(out, *location, pretty);
 
 	} else if(mod.has_component<doir::string>(root)) {
 		auto [ident, type, location, Export] = get_common_assignment_elements(mod, root, debug);
 		auto value = mod.get_component<doir::string>(root).value;
 		out << indent_string << Export << ident << (pretty ? ": " : ":") << type << (pretty ? " = " : "=") << value;
-		if(location) print_location(out, mod, *location);
+		if(location) print_location(out, *location, pretty);
 
 	} else out << "<error>";
 	return out;

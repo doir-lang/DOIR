@@ -23,7 +23,8 @@ int main() {
 
 	// auto test = doir::file_manager::singleton().get_file_string("../standard.doir");
 	auto test = doir::file_manager::singleton().get_file_string("../test.doir");
-	if(!parser.parse(test))
+	mod.source = test;
+	if(!mod.parse(parser, "../test.doir"))
 		return -1;
 
 	doir::print(std::cout, mod, builders.front().block, true, true);
