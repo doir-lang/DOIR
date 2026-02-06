@@ -71,7 +71,7 @@ namespace doir {
 			size_t n = s.size() + 1; // +1 for null terminator
 
 			if (offset + n > block_size) {
-				add_block(std::max(block_size, n));
+				add_block((std::max)(block_size, n));
 			}
 
 			char* dst = blocks.back().get() + offset;

@@ -1,13 +1,17 @@
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN 
+#define FP_OSTREAM_SUPPORT 
+
+#include "module.hpp"
 #include "print.hpp"
 #include "interface.hpp"
-#include "module.hpp"
 
 std::string assignment_type(const doir::module& mod, ecrs::entity_t type, bool debug) {
 	return "TODO: Implement";
 }
 
 std::ostream& print_location(std::ostream& out, const doir::source_location::detailed& loc, bool pretty) {
-	out << (pretty ? " <" : "<") << loc.file << ":";
+	out << (pretty ? " <\"" : "<\"") << loc.file << "\":";
 	if(loc.start.line == loc.end.line)
 		out << loc.start.line << ":";
 	else out << loc.start.line << "-" << loc.end.line << ":";
