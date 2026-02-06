@@ -4,8 +4,11 @@ project(DOIR CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-add_subdirectory(cpp-peglib)
+add_subdirectory(cpp-peglib) 
 add_subdirectory(libecrs)
 
 add_executable(doir driver.cpp interface.cpp module.cpp print.cpp parser.cpp)
 target_link_libraries(doir PUBLIC libecrs peglib)
+if(MSVC)
+	target_compile_options(doir PUBLIC /std:c++latest)
+endif()
