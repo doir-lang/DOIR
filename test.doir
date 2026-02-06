@@ -1,5 +1,5 @@
 a : i32
-b : i32 <test.doir:2:0>
+b : i32 <../test.doir:2:0>
 x : i32 = 5
-y : i32 = 6 <test.doir:4:0>
-export z : i32 = 7 <test.doir:5:0>
+y : i32 = 6 <../test.doir:4:0>
+export z : i32 = 7 <../test.doir:5:0>
