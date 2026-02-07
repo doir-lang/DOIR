@@ -4,3 +4,6 @@
 [submodule "cpp-peglib"]
 	path = cpp-peglib
 	url = https://github.com/yhirose/cpp-peglib
+[submodule "libdiagnose"]
+	path = libdiagnose
+	url = https://github.com/doir-lang/libdiagnose
