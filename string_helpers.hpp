@@ -93,21 +93,17 @@ namespace doir {
 		std::unordered_set<std::string_view> table;
 	};
 
-	inline std::vector<std::string_view> split(std::string_view str, char delimiter) {
-	    std::vector<std::string_view> result;
+	inline std::string& replace_all(std::string& haystack, std::string_view needle, std::string_view replacement) {
+		if (needle.empty())
+			return haystack; // avoid infinite loop
 
-	    size_t start = 0;
-	    while (true) {
-	        size_t pos = str.find(delimiter, start);
-	        if (pos == std::string_view::npos) {
-	            result.emplace_back(str.substr(start));
-	            break;
-	        }
-	        result.emplace_back(str.substr(start, pos - start));
-	        start = pos + 1;
-	    }
+		std::size_t pos = 0;
+		while ((pos = haystack.find(needle, pos)) != std::string::npos) {
+			haystack.replace(pos, needle.length(), replacement);
+			pos += replacement.length(); // move past the replacement
+		}
 
-	    return result;
+		return haystack;
 	}
 
 	namespace detail {
