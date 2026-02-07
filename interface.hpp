@@ -1,7 +1,8 @@
 #pragma once
 
 #include "libecrs/relation.hpp"
-#include "source_location.hpp"
+#include "string_helpers.hpp"
+#include <diagnose/source_location.hpp>
 #include <string_view>
 #include <variant>
 
@@ -87,7 +88,7 @@ namespace doir {
 		doir::module* mod = nullptr;
 		static block_builder create(doir::module& mod);
 
-		ecrs::entity_t end(std::optional<source_location> location = {});
+		ecrs::entity_t end(std::optional<diagnose::source_location> location = {});
 
 		// "type_of" spec
 		// %0 : i32 = 5
