@@ -22,13 +22,17 @@ namespace doir {
 			Constant = (1 << 3),
 			Pure = (1 << 4),
 			Inline = (1 << 5),
-			Tail = (1 << 6),
+			Flatten = (1 << 6),
+			Tail = (1 << 7),
 		} flags;
 
 		inline bool export_set() const { return flags & Export; }
 		inline bool comptime_set() const { return flags & Comptime; }
 		inline bool constant_set() const { return flags & Constant; }
 		inline bool pure_set() const { return flags & Pure; }
+		inline bool inline_set() const { return flags & Inline; }
+		inline bool flatten_set() const { return flags & Flatten; }
+		inline bool tail_set() const { return flags & Tail; }
 	};
 
 	struct valueless {}; // Represents undefined values and external functions/aliases
@@ -39,7 +43,10 @@ namespace doir {
 	struct name : public interned_string {};
 
 	struct function_return_type : public ecrs::relation<1> {};  // Also expects function_inputs and block/valueless attached
-	struct function_inputs : public ecrs::relation<> {};
+	struct function_inputs : public ecrs::relation<> {
+		ecrs::entity_t call_function() { return related.front(); }
+		std::span<ecrs::entity_t> call_arguments() { return std::span<ecrs::entity_t>{related}.subspan(1); }
+	}; // In a call the first input is the function to call
 
 	struct block : public ecrs::relation<> {}; // When alone (no type_of etc...) represents a quoted block
 
@@ -74,7 +81,10 @@ namespace doir {
 			const interned_string& name() const { return std::get<interned_string>(*this); }
 		};
 		struct function_return_type : public lookup {};
-		struct function_inputs : public std::vector<lookup> {};
+		struct function_inputs : public std::vector<lookup> {
+			lookup call_function() { return this->front(); }
+			std::span<lookup> call_arguments() { return std::span<lookup>{*this}.subspan(1); }
+		};
 		struct block : public std::vector<lookup> {};
 		struct alias : public lookup {};
 		struct type_of : public lookup {};
@@ -103,8 +113,10 @@ namespace doir {
 		// %4 : i32 = add(%0, %2)
 		ecrs::entity_t push_call(interned_string name, ecrs::entity_t type, ecrs::entity_t function, std::span<ecrs::entity_t> arguments);
 		ecrs::entity_t push_call(interned_string name, interned_string type_lookup, ecrs::entity_t function, std::span<ecrs::entity_t> arguments);
-		ecrs::entity_t push_call(interned_string name, ecrs::entity_t type, interned_string function_lookup, std::span<ecrs::entity_t> arguments);
-		ecrs::entity_t push_call(interned_string name, interned_string type_lookup, interned_string function_lookup, std::span<ecrs::entity_t> arguments);
+		ecrs::entity_t push_call(interned_string name, ecrs::entity_t type, interned_string function_lookup, std::span<lookup::lookup> arguments);
+		ecrs::entity_t push_call(interned_string name, interned_string type_lookup, interned_string function_lookup, std::span<lookup::lookup> arguments);
+		ecrs::entity_t push_call(interned_string name, ecrs::entity_t type, ecrs::entity_t function, std::span<lookup::lookup> arguments);
+		ecrs::entity_t push_call(interned_string name, interned_string type_lookup, ecrs::entity_t function, std::span<lookup::lookup> arguments);
 
 		// %5 : i32 = { built block... }
 		block_builder push_subblock(interned_string name, ecrs::entity_t type);

@@ -9,19 +9,29 @@ std::string assignment_type(const doir::module& mod, ecrs::entity_t type, bool d
 	return "TODO: Implement";
 }
 
+std::string print_lookup_name(const doir::module& mod, doir::lookup::lookup lookup, bool debug) {
+	if(!lookup.resolved())
+		return debug ? "lookup(" + std::string(lookup.name()) + ")" : std::string(lookup.name());
+
+	if(mod.has_component<doir::name>(lookup.entity()))
+		return std::string(mod.get_component<doir::name>(lookup.entity()));
+
+	return "%" + std::to_string(lookup.entity());
+}
 
 
 std::tuple<std::string, std::string, std::optional<diagnose::source_location::detailed>, std::string> get_common_assignment_elements(const doir::module& mod, ecrs::entity_t root, bool debug) {
-	std::string ident = std::string(mod.get_component<doir::name>(root));
-	if(debug) ident += "(" + std::to_string(root) + ")";
+	std::string ident;
+	if(mod.has_component<doir::name>(root)) {
+		ident = std::string(mod.get_component<doir::name>(root));
+		if(debug) ident += "(" + std::to_string(root) + ")";
+	} else ident = "%" + std::to_string(root);
 
 	std::string type = "<error>";
 	if(mod.has_component<doir::type_of>(root))
 		type = assignment_type(mod, mod.get_component<doir::type_of>(root).related[0], debug);
 	else if(mod.has_component<doir::lookup::type_of>(root))
-		type = debug ?
-			"lookup(" + std::string(mod.get_component<doir::lookup::type_of>(root).name()) + ")"
-			: std::string(mod.get_component<doir::lookup::type_of>(root).name());
+		type = print_lookup_name(mod, mod.get_component<doir::lookup::type_of>(root), debug);
 
 	std::optional<diagnose::source_location::detailed> location = {};
 	if(mod.has_component<diagnose::source_location::detailed>(root))
@@ -54,6 +64,46 @@ std::ostream& print_impl(std::ostream& out, const doir::module& mod, ecrs::entit
 		auto value = mod.get_component<doir::string>(root).value;
 		out << indent_string << Export << ident << (pretty ? ": " : ":") << type << (pretty ? " = " : "=") << value;
 		if(location) out << *location;
+
+	} else if(mod.has_component<doir::function_inputs>(root)) {
+		auto [ident, type, location, Export] = get_common_assignment_elements(mod, root, debug);
+		auto call = mod.get_component<doir::function_inputs>(root);
+		auto args = call.call_arguments();
+		std::string flags = "";
+		if(mod.has_component<doir::flags>(root)) {
+			auto f = mod.get_component<doir::flags>(root);
+			if(f.inline_set()) flags += "inline ";
+			if(f.flatten_set()) flags += "flatten ";
+			if(f.tail_set()) flags += "tail ";
+		}
+		out << indent_string << Export << ident << (pretty ? ": " : ":") << type << (pretty ? " = " : "=")
+			<< flags << print_lookup_name(mod, call.call_function(), debug) << "(";
+
+		for(size_t i = 0, size = args.size(); i < size; ++i) {
+			if(i > 0) out << (pretty ? ", " : ",");
+			out << print_lookup_name(mod, args[i], debug);
+		}
+		out << ")";
+
+	} else if(mod.has_component<doir::lookup::function_inputs>(root)) {
+		auto [ident, type, location, Export] = get_common_assignment_elements(mod, root, debug);
+		auto call = mod.get_component<doir::lookup::function_inputs>(root);
+		auto args = call.call_arguments();
+		std::string flags = "";
+		if(mod.has_component<doir::flags>(root)) {
+			auto f = mod.get_component<doir::flags>(root);
+			if(f.inline_set()) flags += "inline ";
+			if(f.flatten_set()) flags += "flatten ";
+			if(f.tail_set()) flags += "tail ";
+		}
+		out << indent_string << Export << ident << (pretty ? ": " : ":") << type << (pretty ? " = " : "=")
+			<< flags << print_lookup_name(mod, call.call_function(), debug) << "(";
+
+		for(size_t i = 0, size = args.size(); i < size; ++i) {
+			if(i > 0) out << (pretty ? ", " : ",");
+			out << print_lookup_name(mod, args[i], debug);
+		}
+		out << ")";
 
 	} else out << "<error>";
 	return out;
