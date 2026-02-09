@@ -30,5 +30,5 @@ int main(int argc, char** argv) {
 		if(doir::diagnostics().has_errors()) return -1;
 	}
 
-	doir::print(std::cout, mod, builders.front().block, true, false);
+	doir::print(std::cout, mod, builders.front().block, true, true);
 }

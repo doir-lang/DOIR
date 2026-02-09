@@ -13,9 +13,15 @@ namespace doir {
 
 	enum class diagnostic_type {
 		Invalid,
+
+		// Errors
 		FileDoesNotExist,
 		NumberingStartsAt1,
 		NumberingOutOfOrder,
+		AliasNotAllowed,
+
+		// Warnings
+		CompilerNamespaceReserved,
 	};
 
 	diagnose::diagnostic generate_diagnostic(diagnostic_type type, diagnose::source_location::detailed location, std::string_view source, std::string_view path);

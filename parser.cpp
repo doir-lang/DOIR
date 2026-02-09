@@ -27,7 +27,7 @@ struct call_info {
 	doir::lookup::function_inputs inputs;
 };
 
-using assignment_value_t = std::variant<long double, doir::interned_string, call_info>;
+using assignment_value_t = std::variant<long double, doir::interned_string, call_info, ecrs::entity_t>;
 
 peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, doir::string_interner& interner, bool guarantee_source_location /*= false */) {
 	auto grammar =
@@ -56,7 +56,12 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, do
 	// auto ok = parser.load_grammar(grammar);
 	// assert(ok);
 
-	parser["assignment"] = [&blocks, guarantee_source_location](const peg::SemanticValues &vs) {
+	auto compiler_interned = interner.intern("compiler");
+	auto type_interned = interner.intern("type");
+	auto namespace_interned = interner.intern("namespace");
+	auto alias_interned = interner.intern("alias");
+
+	parser["assignment"] = [&, guarantee_source_location, compiler_interned, type_interned, namespace_interned, alias_interned](const peg::SemanticValues &vs) {
 		bool Export = false;
 		if(vs.tokens.size())
 			if(vs.token(0) == "export")
@@ -107,6 +112,35 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, do
 				auto f = (doir::flags::Inline * call.Inline) | (doir::flags::Flatten * call.flatten) | (doir::flags::Tail * call.tail);
 				blocks.back().mod->add_component<doir::flags>(e) = (doir::flags&)f;
 			}
+		} else if(std::holds_alternative<ecrs::entity_t>(*value)) {
+			block_builder builder;
+			if(type.type() == typeid(doir::lookup::type_of)) {
+				auto type_name = std::any_cast<doir::lookup::type_of>(type).name();
+				if(type_name == type_interned)
+					builder = blocks.back().push_type(ident);
+				else if(type_name == namespace_interned) {
+					builder = blocks.back().push_namespace(ident);
+					if(ident == compiler_interned) {
+						mod.get_component<doir::name>(builder.block) = {interner.intern("compiler_ignored")};
+						auto& diag = push_diagnostic(diagnostic_type::CompilerNamespaceReserved, get_location(mod, vs), mod.source, *mod.working_file);
+						diag.push_annotation_at_start({
+							.message = "Use of reserved "s + doir::ansi::type + "compiler" + diagnose::ansi::reset + " namespace has been ignored",
+							.color = doir::ansi::type
+						});
+						return builder.block;
+					}
+				} else if(type_name == alias_interned) {
+					auto& diag = push_diagnostic(diagnostic_type::AliasNotAllowed, get_location(mod, vs), mod.source, *mod.working_file);
+					diag.additional_note = "Aliases aren't allowed to reference blocks";
+				} else
+					builder = blocks.back().push_subblock(ident, interned_string(type_name));
+
+			} else {/* TODO: implement */}
+
+			e = builder.block;
+			auto& src_block = blocks.back().mod->get_component<doir::block>(std::get<ecrs::entity_t>(*value));
+			auto& dst_block = blocks.back().mod->get_component<doir::block>(e);
+			dst_block.related.insert(dst_block.related.end(), src_block.related.begin(), src_block.related.end());
 		}
 
 		if(location) mod.add_component<diagnose::source_location::detailed>(e) = *location;
@@ -126,6 +160,18 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, do
 		}
 		}
 		throw std::runtime_error("Type Unreachable");
+	};
+
+	parser["Block"] = [&](const peg::SemanticValues &vs) -> assignment_value_t {
+		auto out = blocks.back().block;
+		blocks.pop_back();
+		return out;
+	};
+
+	parser["block_start"] = [&](const peg::SemanticValues &vs) {
+		auto mod = blocks.back().mod;
+		auto& builder = blocks.emplace_back(mod->add_entity(), mod);
+		mod->add_component<doir::block>(builder.block);
 	};
 
 	parser["function_call"] = [&](const peg::SemanticValues &vs) -> assignment_value_t {

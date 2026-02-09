@@ -12,7 +12,8 @@ parameter <- Identifier _ ':'_ deducible_type ('='_ Constant _)?
 FunctionType <- '('_ (parameter (','_ parameter)*)? ')' (_ <'->'>_ Type)?
 Type <- FunctionType / Identifier
 
-Block <- '{'_ assignment* '}'
+Block <- block_start assignment* '}'
+block_start <- '{'_
 function_call <- (<'flatten' | 'inline' | 'tail'>_)? Identifier _ '('_ (Identifier _ (','_ Identifier _)*)? ')'wsc
 
 Terminator <- ';' | '\n' | '\r\n' | '\r'

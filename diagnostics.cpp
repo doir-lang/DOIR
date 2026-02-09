@@ -16,6 +16,7 @@ diagnose::diagnostic doir::generate_diagnostic(doir::diagnostic_type type, diagn
 	out.code = (size_t)type;
 	out.location = location;
 	switch(type){
+	// Errors
 	break; case diagnostic_type::FileDoesNotExist:
 		out.kind = diagnose::diagnostic::error;
 		out.message = "File does not exist";
@@ -25,6 +26,14 @@ diagnose::diagnostic doir::generate_diagnostic(doir::diagnostic_type type, diagn
 	break; case diagnostic_type::NumberingOutOfOrder:
 		out.kind = diagnose::diagnostic::error;
 		out.message = "Numbering out of order";
+	break; case diagnostic_type::AliasNotAllowed:
+		out.kind = diagnose::diagnostic::error;
+		out.message = "Alias not allowed";
+
+	// Warnings
+	break; case diagnostic_type::CompilerNamespaceReserved:
+		out.kind = diagnose::diagnostic::warning;
+		out.message = "`compiler` namespace reserved";
     }
     return out;
 }
