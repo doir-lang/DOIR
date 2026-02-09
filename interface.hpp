@@ -143,8 +143,8 @@ namespace doir {
 
 	struct function_builder: public block_builder {
 		// (a : i32 = 5)
-		ecrs::entity_t push_number_paremeter(interned_string name, ecrs::entity_t type, long double value);
-		ecrs::entity_t push_number_paremeter(interned_string name, interned_string type_lookup, long double value);
+		ecrs::entity_t push_number_parameter(interned_string name, ecrs::entity_t type, long double value);
+		ecrs::entity_t push_number_parameter(interned_string name, interned_string type_lookup, long double value);
 		// (b : u8p = "hello")
 		ecrs::entity_t push_string_parameter(interned_string name, ecrs::entity_t type, interned_string value);
 		ecrs::entity_t push_string_parameter(interned_string name, interned_string type_lookup, interned_string value);
