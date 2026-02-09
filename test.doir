@@ -4,5 +4,15 @@ x : i32 = 5
 y : i32 = 6 <../test.doir:4:0>
 export z : i32 = 7 <../test.doir:5:0>
 
-%0 : compiler.byte = 0x6a
+compiler : namespace = {
+	//base_type : (size_bits : pointer_sized, align_bits : pointer_sized) -> type
+	%64 : pointer_sized = 64
+	//pointer_sized : type = base_type(%64, %64)
+	%8 : pointer_sized = 8
+	byte : type = base_type(%8, %8)
+
+	//emit : (out : byte) -> byte
+}
+
+%0 : compiler.byte = 0x64
 %1 : compiler.byte = compiler.emit(%0)

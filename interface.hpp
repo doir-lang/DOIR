@@ -36,7 +36,7 @@ namespace doir {
 	};
 
 	struct valueless {}; // Represents undefined values and external functions/aliases
-	struct namespace_ {}; // On a type element indicates that the namespace should be inherited
+	struct Namespace {}; // On a type element indicates that the namespace should be inherited
 
 	struct pointer { size_t size = 0; }; // Size == 0 implies no bounds information
 
@@ -139,6 +139,10 @@ namespace doir {
 		// "block" spec
 		// then : block = { built block... }
 		block_builder push_quoted_block(interned_string name);
+
+		// "namespace" spec
+		// math : namespace = { built block... }
+		block_builder push_namespace(interned_string name);
 	};
 
 	struct function_builder: public block_builder {

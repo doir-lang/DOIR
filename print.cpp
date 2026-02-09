@@ -5,6 +5,8 @@
 #include "print.hpp"
 #include "interface.hpp"
 
+std::ostream& print_impl(std::ostream& out, const doir::module& mod, ecrs::entity_t root, bool pretty, bool debug, size_t indent = 0);
+
 std::string assignment_type(const doir::module& mod, ecrs::entity_t type, bool debug) {
 	return "TODO: Implement";
 }
@@ -32,6 +34,10 @@ std::tuple<std::string, std::string, std::optional<diagnose::source_location::de
 		type = assignment_type(mod, mod.get_component<doir::type_of>(root).related[0], debug);
 	else if(mod.has_component<doir::lookup::type_of>(root))
 		type = print_lookup_name(mod, mod.get_component<doir::lookup::type_of>(root), debug);
+	else if(mod.has_component<doir::type_definition>(root))
+		type = "type";
+	else if(mod.has_component<doir::Namespace>(root))
+		type = "namespace";
 
 	std::optional<diagnose::source_location::detailed> location = {};
 	if(mod.has_component<diagnose::source_location::detailed>(root))
@@ -46,8 +52,19 @@ std::tuple<std::string, std::string, std::optional<diagnose::source_location::de
 	return {ident, type, location, Export};
 }
 
-std::ostream& print_impl(std::ostream& out, const doir::module& mod, ecrs::entity_t root, bool pretty, bool debug, size_t indent = 0) {
-	auto indent_string = std::string(indent, '\t');
+std::ostream& print_block(std::ostream& out, const doir::module& mod, const doir::block& block, bool pretty, bool debug, size_t indent) {
+	out << "{" << (pretty ? "\n" : "");
+	for(auto& elem: block.related) {
+		print_impl(out, mod, elem, pretty, debug, indent + 1);
+		if(pretty) out << std::endl;
+		else out << ";";
+	}
+	out << (pretty ? std::string(indent, '\t') : "") << "}";
+	return out;
+}
+
+std::ostream& print_type_of(std::ostream& out, const doir::module& mod, ecrs::entity_t root, bool pretty, bool debug, size_t indent) {
+	auto indent_string = pretty ? std::string(indent, '\t') : "";
 	if(mod.has_component<doir::valueless>(root)) {
 		auto [ident, type, location, Export] = get_common_assignment_elements(mod, root, debug);
 		out << indent_string << Export << ident << (pretty ? ": " : ":") << type;
@@ -104,6 +121,30 @@ std::ostream& print_impl(std::ostream& out, const doir::module& mod, ecrs::entit
 			out << print_lookup_name(mod, args[i], debug);
 		}
 		out << ")";
+
+	} else if(mod.has_component<doir::block>(root)) {
+		auto [ident, type, location, Export] = get_common_assignment_elements(mod, root, debug);
+		out << indent_string << Export << ident << (pretty ? ": " : ":") << type << (pretty ? " = " : "=");
+		print_block(out, mod, mod.get_component<doir::block>(root), pretty, debug, indent);
+
+	} else out << "<type_of error>";
+	return out;
+}
+
+std::ostream& print_impl(std::ostream& out, const doir::module& mod, ecrs::entity_t root, bool pretty, bool debug, size_t indent /*= 0*/) {
+	auto indent_string = pretty ? std::string(indent, '\t') : "";
+
+	if(mod.has_component<doir::type_of>(root) || mod.has_component<doir::lookup::type_of>(root))
+		print_type_of(out, mod, root, pretty, debug, indent);
+	else if(mod.has_component<doir::type_definition>(root)) {
+		auto [ident, type, location, Export] = get_common_assignment_elements(mod, root, debug);
+		out << indent_string << Export << ident << (pretty ? ": " : ":") << type << (pretty ? " = " : "=");
+		print_block(out, mod, mod.get_component<doir::block>(root), pretty, debug, indent);
+
+	} else if(mod.has_component<doir::Namespace>(root)) {
+		auto [ident, type, location, Export] = get_common_assignment_elements(mod, root, debug);
+		out << indent_string << Export << ident << (pretty ? ": " : ":") << type << (pretty ? " = " : "=");
+		print_block(out, mod, mod.get_component<doir::block>(root), pretty, debug, indent);
 
 	} else out << "<error>";
 	return out;
