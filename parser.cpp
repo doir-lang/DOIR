@@ -29,7 +29,7 @@ struct call_info {
 
 using assignment_value_t = std::variant<long double, doir::interned_string, call_info>;
 
-peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, doir::string_interner& interner, bool garuntee_source_location /*= false */) {
+peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, doir::string_interner& interner, bool guarantee_source_location /*= false */) {
 	auto grammar =
 #include "grammar.peg"
 	;
@@ -56,7 +56,7 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, do
 	// auto ok = parser.load_grammar(grammar);
 	// assert(ok);
 
-	parser["assignment"] = [&blocks, garuntee_source_location](const peg::SemanticValues &vs) {
+	parser["assignment"] = [&blocks, guarantee_source_location](const peg::SemanticValues &vs) {
 		bool Export = false;
 		if(vs.tokens.size())
 			if(vs.token(0) == "export")
@@ -110,7 +110,7 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, do
 		}
 
 		if(location) mod.add_component<diagnose::source_location::detailed>(e) = *location;
-		else if(garuntee_source_location) mod.add_component<diagnose::source_location>(e) = get_location(*blocks.back().mod, vs);
+		else if(guarantee_source_location) mod.add_component<diagnose::source_location>(e) = get_location(*blocks.back().mod, vs);
 
 		if(Export) blocks.back().mod->get_or_add_component<doir::flags>(e) = {doir::flags::Export};
 		return e;
