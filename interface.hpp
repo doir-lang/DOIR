@@ -43,10 +43,10 @@ namespace doir {
 	struct name : public interned_string {};
 
 	struct function_return_type : public ecrs::relation<1> {};  // Also expects function_inputs and block/valueless attached
-	struct function_inputs : public ecrs::relation<> {
-		ecrs::entity_t call_function() { return related.front(); }
-		std::span<ecrs::entity_t> call_arguments() { return std::span<ecrs::entity_t>{related}.subspan(1); }
-	}; // In a call the first input is the function to call
+	struct function_inputs : public ecrs::relation<> {}; // In a call the first input is the function to call
+	struct function_parameter {
+		size_t index; // Increments to indicate the order of the parameters
+	};
 
 	struct block : public ecrs::relation<> {}; // When alone (no type_of etc...) represents a quoted block
 
@@ -84,12 +84,23 @@ namespace doir {
 		struct function_inputs : public std::vector<lookup> {
 			lookup call_function() { return this->front(); }
 			std::span<lookup> call_arguments() { return std::span<lookup>{*this}.subspan(1); }
+
+			static function_inputs to_lookup(const doir::function_inputs& inputs) {
+				function_inputs out; out.reserve(inputs.related.size());
+				for(auto& i: inputs.related)
+					out.emplace_back(i);
+				return out;
+			}
 		};
 		struct block : public std::vector<lookup> {};
 		struct alias : public lookup {};
 		struct type_of : public lookup {};
 		struct call : public lookup {};
 	}
+
+	// (inputs...) -> return_type
+	ecrs::entity_t make_function_type(doir::module &mod, std::span<ecrs::entity_t> argument_types, std::optional<ecrs::entity_t> return_type = {});
+	ecrs::entity_t make_function_type(doir::module &mod, std::span<lookup::lookup> argument_types, std::optional<lookup::lookup> return_type = {});
 
 	struct function_builder;
 
@@ -124,9 +135,9 @@ namespace doir {
 
 		// "function" spec
 		// add : (a: i32, b: i32 = 5) i32 = { built block... }
-		function_builder push_function(interned_string name, ecrs::entity_t return_type);
+		function_builder push_function(interned_string name, ecrs::entity_t function_type);
 		// foo : () void
-		function_builder push_extern_function(interned_string name, ecrs::entity_t return_type);
+		ecrs::entity_t push_valueless_function(interned_string name, ecrs::entity_t function_type);
 
 		// "type" spec
 		// vec3 : type = { x : f32; y : f32; z : f32; }
@@ -147,14 +158,14 @@ namespace doir {
 
 	struct function_builder: public block_builder {
 		// (a : i32 = 5)
-		ecrs::entity_t push_number_parameter(interned_string name, ecrs::entity_t type, long double value);
-		ecrs::entity_t push_number_parameter(interned_string name, interned_string type_lookup, long double value);
+		ecrs::entity_t push_number_parameter(size_t index, interned_string name, ecrs::entity_t type, long double value);
+		ecrs::entity_t push_number_parameter(size_t index, interned_string name, interned_string type_lookup, long double value);
 		// (b : u8p = "hello")
-		ecrs::entity_t push_string_parameter(interned_string name, ecrs::entity_t type, interned_string value);
-		ecrs::entity_t push_string_parameter(interned_string name, interned_string type_lookup, interned_string value);
+		ecrs::entity_t push_string_parameter(size_t index, interned_string name, ecrs::entity_t type, interned_string value);
+		ecrs::entity_t push_string_parameter(size_t index, interned_string name, interned_string type_lookup, interned_string value);
 		// (c : i32)
-		ecrs::entity_t push_valueless_parameter(interned_string name, ecrs::entity_t type);
-		ecrs::entity_t push_valueless_parameter(interned_string name, interned_string type_lookup);
+		ecrs::entity_t push_valueless_parameter(size_t index, interned_string name, ecrs::entity_t type);
+		ecrs::entity_t push_valueless_parameter(size_t index, interned_string name, interned_string type_lookup);
 	};
 
 }
