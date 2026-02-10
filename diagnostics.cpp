@@ -17,6 +17,9 @@ diagnose::diagnostic doir::generate_diagnostic(doir::diagnostic_type type, diagn
 	out.location = location;
 	switch(type){
 	// Errors
+	break; case diagnostic_type::LanguageChangeNotSupported:
+		out.kind = diagnose::diagnostic::error;
+		out.message = "Changing languages is not supported in the prototype";
 	break; case diagnostic_type::FileDoesNotExist:
 		out.kind = diagnose::diagnostic::error;
 		out.message = "File does not exist";

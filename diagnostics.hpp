@@ -15,6 +15,7 @@ namespace doir {
 		Invalid,
 
 		// Errors
+		LanguageChangeNotSupported,
 		FileDoesNotExist,
 		NumberingStartsAt1,
 		NumberingOutOfOrder,

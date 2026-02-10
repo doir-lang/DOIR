@@ -5,7 +5,25 @@
 #include "module.hpp"
 #include "string_helpers.hpp"
 
+#include <unordered_map>
+
 namespace doir {
+
+	ecrs::entity_t make_function_type(doir::module &mod, std::span<ecrs::entity_t> argument_types, std::optional<ecrs::entity_t> return_type /*= {} */) {
+		auto out = mod.add_entity();
+		mod.add_component<type_definition>(out);
+		mod.add_component<function_inputs>(out).related = {argument_types.begin(), argument_types.end()};
+		if(return_type) mod.add_component<function_return_type>(out).related = {*return_type};
+		return out;
+	}
+	ecrs::entity_t make_function_type(doir::module &mod, std::span<lookup::lookup> argument_types, std::optional<lookup::lookup> return_type /*= {} */) {
+		auto out = mod.add_entity();
+		mod.add_component<type_definition>(out);
+		mod.add_component<lookup::function_inputs>(out) = {{argument_types.begin(), argument_types.end()}};
+		if(return_type) mod.add_component<lookup::function_return_type>(out) = {*return_type};
+		return out;
+	}
+
 	block_builder block_builder::create(doir::module &mod) {
 		block_builder out;
 		out.mod = &mod;
@@ -60,37 +78,37 @@ namespace doir {
 	}
 
 	#define PUSH_CALL_BODY(TYPE_OF_TYPE, COMPONENT_TYPE, VECTOR_TYPE,\
-							 FUNCTION_VALUE, ARGUMENTS)\
+						CALL_TYPE, FUNCTION_VALUE, ARGUMENTS)\
 		auto out = push_common(mod, block, name);\
 		mod->add_component<TYPE_OF_TYPE>(out) = {{type}};\
-		auto &r = (VECTOR_TYPE &)mod->add_component<COMPONENT_TYPE>(out) = {\
+		(VECTOR_TYPE &)mod->add_component<COMPONENT_TYPE>(out) = {\
 			ARGUMENTS.begin(), ARGUMENTS.end()\
 		};\
-		r.insert(r.begin(), FUNCTION_VALUE);\
+		mod->add_component<CALL_TYPE>(out) = {{FUNCTION_VALUE}};\
 		return out;
 
 	ecrs::entity_t block_builder::push_call(interned_string name, ecrs::entity_t type, ecrs::entity_t function, std::span<ecrs::entity_t> arguments){
-		PUSH_CALL_BODY(doir::type_of, function_inputs, std::vector<ecrs::entity_t>, function, arguments);
+		PUSH_CALL_BODY(doir::type_of, doir::function_inputs, std::vector<ecrs::entity_t>, doir::call, function, arguments);
 	}
 
 	ecrs::entity_t block_builder::push_call(interned_string name, interned_string type, ecrs::entity_t function, std::span<ecrs::entity_t> arguments){
-		PUSH_CALL_BODY(doir::lookup::type_of, function_inputs, std::vector<ecrs::entity_t>, function, arguments);
+		PUSH_CALL_BODY(doir::lookup::type_of, doir::function_inputs, std::vector<ecrs::entity_t>, doir::call, function, arguments);
 	}
 
 	ecrs::entity_t block_builder::push_call(interned_string name, ecrs::entity_t type, interned_string function_lookup, std::span<lookup::lookup> arguments){
-		PUSH_CALL_BODY(doir::type_of, lookup::function_inputs, std::vector<lookup::lookup>, function_lookup, arguments);
+		PUSH_CALL_BODY(doir::type_of, doir::lookup::function_inputs, std::vector<lookup::lookup>, doir::lookup::call, function_lookup, arguments);
 	}
 
 	ecrs::entity_t block_builder::push_call(interned_string name, interned_string type, interned_string function_lookup, std::span<lookup::lookup> arguments){
-		PUSH_CALL_BODY(doir::lookup::type_of, lookup::function_inputs, std::vector<lookup::lookup>, function_lookup, arguments);
+		PUSH_CALL_BODY(doir::lookup::type_of, doir::lookup::function_inputs, std::vector<lookup::lookup>, doir::lookup::call, function_lookup, arguments);
 	}
 
 	ecrs::entity_t block_builder::push_call(interned_string name, ecrs::entity_t type, ecrs::entity_t function, std::span<lookup::lookup> arguments){
-		PUSH_CALL_BODY(doir::type_of, lookup::function_inputs, std::vector<lookup::lookup>, function, arguments);
+		PUSH_CALL_BODY(doir::type_of, doir::lookup::function_inputs, std::vector<lookup::lookup>, doir::call, function, arguments);
 	}
 
 	ecrs::entity_t block_builder::push_call(interned_string name, interned_string type, ecrs::entity_t function, std::span<lookup::lookup> arguments) {
-		PUSH_CALL_BODY(doir::lookup::type_of, lookup::function_inputs, std::vector<lookup::lookup>, function, arguments);
+		PUSH_CALL_BODY(doir::lookup::type_of, doir::lookup::function_inputs, std::vector<lookup::lookup>, doir::call, function, arguments);
 	}
 
 	block_builder block_builder::push_subblock(interned_string name, ecrs::entity_t type) {
@@ -107,6 +125,24 @@ namespace doir {
 		return {out, mod};
 	}
 
+	function_builder block_builder::push_function(interned_string name, ecrs::entity_t function_type) {
+		auto out = push_common(mod, block, name);
+		mod->add_component<doir::type_of>(out) = {{function_type}};
+		mod->add_component<doir::block>(out);
+		if(mod->has_component<doir::function_return_type>(function_type))
+			mod->add_component<doir::function_return_type>(out) = mod->get_component<doir::function_return_type>(function_type);
+		else mod->add_component<lookup::function_return_type>(out) = mod->get_component<lookup::function_return_type>(function_type);
+		return {out, mod};
+	}
+	ecrs::entity_t block_builder::push_valueless_function(interned_string name, ecrs::entity_t function_type) {
+		auto out = push_common(mod, block, name);
+		mod->add_component<doir::type_of>(out) = {{function_type}};
+		if(mod->has_component<doir::function_return_type>(function_type))
+			mod->add_component<doir::function_return_type>(out) = mod->get_component<doir::function_return_type>(function_type);
+		else mod->add_component<lookup::function_return_type>(out) = mod->get_component<lookup::function_return_type>(function_type);
+		return out;
+	}
+
 	block_builder block_builder::push_type(interned_string name) {
 		auto out = push_common(mod, block, name);
 		mod->add_component<doir::type_definition>(out);
@@ -119,6 +155,37 @@ namespace doir {
 		mod->add_component<doir::Namespace>(out);
 		mod->add_component<doir::block>(out);
 		return {out, mod};
+	}
+
+	ecrs::entity_t function_builder::push_number_parameter(size_t index, interned_string name, ecrs::entity_t type, long double value) {
+		auto out = push_number(name, type, value);
+		mod->add_component<doir::function_parameter>(out) = {index};
+		return out;
+	}
+	ecrs::entity_t function_builder::push_number_parameter(size_t index, interned_string name, interned_string type_lookup, long double value) {
+		auto out = push_number(name, type_lookup, value);
+		mod->add_component<doir::function_parameter>(out) = {index};
+		return out;
+	}
+	ecrs::entity_t function_builder::push_string_parameter(size_t index, interned_string name, ecrs::entity_t type, interned_string value) {
+		auto out = push_string(name, type, value);
+		mod->add_component<doir::function_parameter>(out) = {index};
+		return out;
+	}
+	ecrs::entity_t function_builder::push_string_parameter(size_t index, interned_string name, interned_string type_lookup, interned_string value) {
+		auto out = push_string(name, type_lookup, value);
+		mod->add_component<doir::function_parameter>(out) = {index};
+		return out;
+	}
+	ecrs::entity_t function_builder::push_valueless_parameter(size_t index, interned_string name, ecrs::entity_t type) {
+		auto out = push_valueless(name, type);
+		mod->add_component<doir::function_parameter>(out) = {index};
+		return out;
+	}
+	ecrs::entity_t function_builder::push_valueless_parameter(size_t index, interned_string name, interned_string type_lookup) {
+		auto out = push_valueless(name, type_lookup);
+		mod->add_component<doir::function_parameter>(out) = {index};
+		return out;
 	}
 
 } // namespace doir

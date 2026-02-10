@@ -1,8 +1,6 @@
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 
-#define FP_IMPLEMENTATION
-#define ECRS_IMPLEMENTATION
 #include "module.hpp"
 #include "diagnostics.hpp"
 #include "parser.hpp"
@@ -38,23 +36,66 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, do
 	parser.set_logger([&](size_t line, size_t col, std::string_view msg) {
 		auto& mod = *blocks.back().mod;
 		auto working_file = mod.working_file.value();
-		auto message_segments = diagnose::split(msg, ',');
+		// auto working_file = "../grammar.peg"; mod.source = doir::file_manager::singleton().get_file_string(working_file);
 		diagnostics().register_source(working_file, mod.source);
 
+		auto message_segments = diagnose::split(msg, ',');
 		diagnose::diagnostic diagnostic;
 		diagnostic.kind = diagnose::diagnostic::error;
 		diagnostic.message = std::string(message_segments[1].substr(1));
 		diagnostic.location = {.file = working_file, .start = {line, col}, .end = {line, col + 1}};
 
-		diagnose::diagnostic::annotation annotation;
-		annotation.message = "expecting"s + diagnose::ansi::magenta + std::string(message_segments[2].substr(10));
-		annotation.position = diagnostic.location.start;
-		diagnostic.annotations.push_back(annotation);
+		if(message_segments.size() == 3) {
+			diagnose::diagnostic::annotation annotation;
+			annotation.message = "expecting"s + diagnose::ansi::magenta + std::string(message_segments[2].substr(10));
+			annotation.position = diagnostic.location.start;
+			diagnostic.annotations.push_back(annotation);
+		}
 		diagnostics().push(diagnostic);
 	});
 
 	// auto ok = parser.load_grammar(grammar);
 	// assert(ok);
+
+	struct function_type_t {
+		struct parameter {
+			interned_string name;
+			doir::lookup::lookup type;
+			std::optional<assignment_value_t> value = {};
+		};
+		std::vector<parameter> inputs;
+		std::optional<doir::lookup::lookup> return_type = {};
+
+		ecrs::entity_t make_function_type(doir::module& mod){
+			std::vector<doir::lookup::lookup> inputs; inputs.reserve(this->inputs.size());
+			for(auto& i: this->inputs)
+				inputs.push_back(i.type);
+			return doir::make_function_type(mod, inputs, return_type);
+		}
+
+		function_builder push_function(doir::block_builder& builder, interned_string name) {
+			auto out = builder.push_function(name, make_function_type(*builder.mod));
+			for(size_t i = 0; i < inputs.size(); ++i)
+				if(inputs[i].value && std::holds_alternative<long double>(*inputs[i].value)) {
+					if(inputs[i].type.resolved())
+						out.push_number_parameter(i, inputs[i].name, inputs[i].type.entity(), std::get<long double>(*inputs[i].value));
+					else out.push_number_parameter(i, inputs[i].name, inputs[i].type.name(), std::get<long double>(*inputs[i].value));
+				} else if(inputs[i].value && std::holds_alternative<interned_string>(*inputs[i].value)) {
+					if(inputs[i].type.resolved())
+						out.push_string_parameter(i, inputs[i].name, inputs[i].type.entity(), std::get<interned_string>(*inputs[i].value));
+					else out.push_string_parameter(i, inputs[i].name, inputs[i].type.name(), std::get<interned_string>(*inputs[i].value));
+				} else {
+					if(inputs[i].type.resolved())
+						out.push_valueless_parameter(i, inputs[i].name, inputs[i].type.entity());
+					else out.push_valueless_parameter(i, inputs[i].name, inputs[i].type.name());
+				}
+			return out;
+		}
+
+		ecrs::entity_t push_valueless_function(doir::block_builder& builder, interned_string name) {
+			return builder.push_valueless_function(name, make_function_type(*builder.mod));
+		}
+	};
 
 	auto compiler_interned = interner.intern("compiler");
 	auto type_interned = interner.intern("type");
@@ -62,6 +103,12 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, do
 	auto alias_interned = interner.intern("alias");
 
 	parser["assignment"] = [&, guarantee_source_location, compiler_interned, type_interned, namespace_interned, alias_interned](const peg::SemanticValues &vs) {
+		if(vs.choice() == 0) { // Changing languages is not supported in the prototype!
+			auto& mod = *blocks.back().mod;
+			auto& diag = push_diagnostic(diagnostic_type::LanguageChangeNotSupported, get_location(mod, vs), mod.source, *mod.working_file);
+			return ecrs::invalid_entity;
+		}
+
 		bool Export = false;
 		if(vs.tokens.size())
 			if(vs.token(0) == "export")
@@ -93,7 +140,10 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, do
 		if(!value) {
 			if(type.type() == typeid(doir::lookup::type_of))
 				e = blocks.back().push_valueless(ident, std::any_cast<doir::lookup::type_of>(type).name());
-			else {/* TODO: implement */}
+			else {
+				auto ft = std::any_cast<function_type_t>(type);
+				e = ft.push_valueless_function(blocks.back(), ident);
+			}
 		} else if(std::holds_alternative<long double>(*value)) {
 			if(type.type() == typeid(doir::lookup::type_of))
 				e = blocks.back().push_number(ident, std::any_cast<doir::lookup::type_of>(type).name(), std::get<long double>(*value));
@@ -106,7 +156,7 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, do
 			auto call = std::get<call_info>(*value);
 			if(type.type() == typeid(doir::lookup::type_of))
 				e = blocks.back().push_call(ident, std::any_cast<doir::lookup::type_of>(type).name(), call.function, call.inputs);
-			else {/* TODO: implement */}
+			else e = blocks.back().push_call(ident, std::any_cast<function_type_t>(type).make_function_type(mod), call.function, call.inputs);
 
 			if(call.Inline || call.flatten || call.tail) {
 				auto f = (doir::flags::Inline * call.Inline) | (doir::flags::Flatten * call.flatten) | (doir::flags::Tail * call.tail);
@@ -135,7 +185,10 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, do
 				} else
 					builder = blocks.back().push_subblock(ident, interned_string(type_name));
 
-			} else {/* TODO: implement */}
+			} else {
+				auto ft = std::any_cast<function_type_t>(type);
+				builder = ft.push_function(blocks.back(), ident);
+			}
 
 			e = builder.block;
 			auto& src_block = blocks.back().mod->get_component<doir::block>(std::get<ecrs::entity_t>(*value));
@@ -150,10 +203,46 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, do
 		return e;
 	};
 
+	parser["deducible_type"] = [](const peg::SemanticValues &vs) {
+		auto dbg = vs.size();
+		if(vs.tokens.size())
+			throw std::runtime_error("Deducible types not yet supported!");
+		return vs[0];
+	};
+
+	parser["parameter"] = [&](const peg::SemanticValues &vs) -> function_type_t::parameter {
+		function_type_t::parameter out;
+		out.name = std::any_cast<interned_string>(vs[0]);
+
+		auto dbg = vs.size();
+		if(vs[3].type() == typeid(doir::lookup::type_of))
+			out.type = std::any_cast<doir::lookup::type_of>(vs[3]);
+		else out.type = std::any_cast<function_type_t>(vs[3]).make_function_type(*blocks.back().mod);
+
+		if(vs.size() == 6)
+			out.value = std::any_cast<assignment_value_t>(vs[5]);
+		return out;
+	};
+
+	parser["FunctionType"] = [](const peg::SemanticValues &vs) -> function_type_t {
+		bool has_return_type = vs.tokens.size();
+		function_type_t out;
+		for(size_t i = 1, size = vs.size() - 3 * has_return_type; i < size; i += 2)
+			out.inputs.emplace_back(std::any_cast<function_type_t::parameter>(vs[i]));
+
+		if(has_return_type) {
+			size_t i = vs.size() - 1;
+			if(vs[i].type() == typeid(doir::lookup::type_of))
+				out.return_type = std::any_cast<doir::lookup::type_of>(vs[i]);
+			else out.return_type = std::any_cast<ecrs::entity_t>(vs[i]);
+		}
+		return out;
+	};
+
 	parser["Type"] = [](const peg::SemanticValues &vs) -> std::any {
 		switch(vs.choice()) {
 		break; case 0: // FunctionType
-			throw std::runtime_error("TODO: Implement");
+			return vs[0];
 		break; case 1: { // Identifier
 			auto ident = std::any_cast<interned_string>(vs[0]);
 			return doir::lookup::type_of(ident);
@@ -264,10 +353,12 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, do
 
 	parser["Constant"] = [&](const peg::SemanticValues &vs) -> assignment_value_t {
 		switch (vs.choice()) {
-			break; case 0: case 1:
-				if( !(vs.token(0).contains(".") || vs.token(0).contains("e") || vs.token(0).contains("E")) )
+			break; case 0: case 1: {
+				auto out = vs.token_to_number<long double>();
+				if(out == 0)
 					return (long double)std::stoi(vs.token_to_string(0), nullptr, 0);
-				return vs.token_to_number<long double>();
+				else return out;
+			}
 			break; case 2: case 3: {
 				auto unescaped = unescape_python_string(vs.token(0));
 				return interner.intern(unescaped);

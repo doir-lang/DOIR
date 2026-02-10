@@ -1,6 +1,9 @@
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
+#define FP_DEFAULT_HASH_TABLE_BASE_SIZE 16
 
+#define FP_IMPLEMENTATION
+#define ECRS_IMPLEMENTATION
 #include "module.hpp"
 #include "file_manager.hpp"
 #include "diagnostics.hpp"
