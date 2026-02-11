@@ -3,6 +3,7 @@
 #include "libecrs/relation.hpp"
 #include "string_helpers.hpp"
 #include <diagnose/source_location.hpp>
+#include <optional>
 #include <string_view>
 #include <variant>
 
@@ -54,7 +55,9 @@ namespace doir {
 		size_t size, align;
 	};
 
-	struct alias : public ecrs::relation<1> {}; // Can be INVALID if a valueless is attached
+	struct alias : public ecrs::relation<1> { // Can be INVALID if a valueless is attached
+		std::optional<std::string_view> file = {}; // Aliases can reference other files
+	};
 
 	struct type_of : public ecrs::relation<1> {}; // Expects a number, string, valueless, or block attached
 

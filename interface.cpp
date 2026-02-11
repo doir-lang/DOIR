@@ -34,7 +34,8 @@ namespace doir {
 
 	ecrs::entity_t push_common(doir::module *mod, ecrs::entity_t block, interned_string name) {
 		auto out = mod->add_entity();
-		mod->add_component<doir::name>(out) = {name};
+		if(std::string_view{name} != "_")
+			mod->add_component<doir::name>(out) = {name};
 		return mod->get_component<doir::block>(block).related.emplace_back(out);
 	}
 

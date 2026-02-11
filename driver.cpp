@@ -11,8 +11,11 @@
 #include "parser.hpp"
 #include "print.hpp"
 
+#include "temp_byte_dumper.hpp"
+
 #include <filesystem>
 #include <iostream>
+#include <fstream>
 
 int main(int argc, char** argv) {
 	if (argc != 2) {
@@ -33,5 +36,12 @@ int main(int argc, char** argv) {
 		if(doir::diagnostics().has_errors()) return -1;
 	}
 
-	doir::print(std::cout, mod, builders.front().block, true, true);
+	auto root = builders.front().block;
+	doir::print(std::cout, mod, root, true, false);
+
+	{
+		auto bytes = doir::byte_dumper(interner).interpret(mod, root);
+		std::ofstream fout("res.bin", std::ios::binary);
+		fout.write((char*)bytes.data(), bytes.size());
+	}
 }
