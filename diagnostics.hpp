@@ -20,6 +20,7 @@ namespace doir {
 		NumberingStartsAt1,
 		NumberingOutOfOrder,
 		AliasNotAllowed,
+		InvalidIdentifier,
 
 		// Warnings
 		CompilerNamespaceReserved,

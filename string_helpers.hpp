@@ -12,6 +12,9 @@
 #include <algorithm>
 
 namespace doir {
+	inline static bool contains(std::string_view big, std::string_view small) {
+		return small.data() < big.data() + big.size() && small.data() + small.size() <= big.data() + big.size();
+	}
 
 	struct interned_string: public std::string_view {
 		using std::string_view::string_view;

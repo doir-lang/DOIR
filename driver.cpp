@@ -37,7 +37,8 @@ int main(int argc, char** argv) {
 	}
 
 	auto root = builders.front().block;
-	doir::print(std::cout, mod, root, true, false);
+	doir::verify::structure(doir::diagnostics(), mod, root);
+	doir::print(std::cout, mod, root, true, true);
 
 	{
 		auto bytes = doir::byte_dumper(interner).interpret(mod, root);

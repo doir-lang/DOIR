@@ -1,3 +1,5 @@
+#include "diagnostics.hpp"
+#include <string>
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 
@@ -13,8 +15,11 @@ std::string print_lookup_name(const doir::module& mod, doir::lookup::lookup look
 	if(!lookup.resolved())
 		return debug ? "lookup(" + std::string(lookup.name()) + ")" : std::string(lookup.name());
 
-	if(mod.has_component<doir::name>(lookup.entity()))
-		return std::string(mod.get_component<doir::name>(lookup.entity()));
+	if(mod.has_component<doir::name>(lookup.entity())) {
+		auto out = std::string(mod.get_component<doir::name>(lookup.entity()));
+		if(debug) out += "[" + std::to_string(lookup.entity()) + "]";
+		return out;
+	}
 
 	if(mod.has_component<doir::function_inputs>(lookup.entity()) || mod.has_component<doir::lookup::function_inputs>(lookup.entity())) {
 		auto inputs = mod.has_component<doir::function_inputs>(lookup.entity())
@@ -31,8 +36,11 @@ std::string print_lookup_name(const doir::module& mod, doir::lookup::lookup look
 		for(size_t i = 0; i < inputs.size(); ++i)
 			out << (i > 0 ? "," : "") << "%" << i << ":" << print_lookup_name(mod, inputs[i], debug);
 		out << ")";
+
 		if(return_type)
 			out << "->" << print_lookup_name(mod, *return_type, debug);
+		if(debug)
+			out << "[" << lookup.entity() << "]";
 		return out.str();
 	}
 
@@ -44,7 +52,7 @@ std::tuple<std::string, std::string, std::optional<diagnose::source_location::de
 	std::string ident;
 	if(mod.has_component<doir::name>(root)) {
 		ident = std::string(mod.get_component<doir::name>(root));
-		if(debug) ident += "(" + std::to_string(root) + ")";
+		if(debug) ident += "[" + std::to_string(root) + "]";
 	} else ident = "%" + std::to_string(root);
 
 	std::string type = "<error>";
@@ -140,16 +148,8 @@ std::ostream& print_type_of(std::ostream& out, const doir::module& mod, ecrs::en
 		else if(mod.has_component<doir::lookup::function_return_type>(ft))
 			return_type = mod.get_component<doir::lookup::function_return_type>(ft);
 
-		std::vector<ecrs::entity_t> parameters; parameters.reserve(inputs.size());
 		if(mod.has_component<doir::block>(root)) {
-		auto& block = mod.get_component<doir::block>(root);
-			for(size_t i = 0; i < inputs.size(); ++i)
-				for(auto e: block.related)
-					if(mod.has_component<doir::function_parameter>(e))
-						if(auto& p = mod.get_component<doir::function_parameter>(e); p.index == i) {
-							parameters.push_back(e);
-							break;
-						}
+			auto parameters = inputs.associated_parameters(mod, mod.get_component<doir::block>(root));
 
 			out << "(";
 			for(size_t i = 0; i < parameters.size(); ++i)
@@ -158,6 +158,9 @@ std::ostream& print_type_of(std::ostream& out, const doir::module& mod, ecrs::en
 
 			if(return_type)
 				out << (pretty ? " -> " : "->") << print_lookup_name(mod, *return_type, debug);
+			if(debug)
+				out << "[" << ft << "]";
+
 			out << (pretty ? " = " : "=");
 			print_block(out, mod, mod.get_component<doir::block>(root), pretty, debug, true, indent);
 		} else { // Valueless function
@@ -168,6 +171,8 @@ std::ostream& print_type_of(std::ostream& out, const doir::module& mod, ecrs::en
 
 			if(return_type)
 				out << (pretty ? " -> " : "->") << print_lookup_name(mod, *return_type, debug);
+			if(debug)
+				out << "[" << ft << "]";
 		}
 
 	} else if(mod.has_component<doir::block>(root)) {
@@ -193,6 +198,17 @@ std::ostream& print_impl(std::ostream& out, const doir::module& mod, ecrs::entit
 		auto [ident, type, location, Export] = get_common_assignment_elements(mod, root, debug);
 		out << indent_string << Export << ident << (pretty ? ": " : ":") << type << (pretty ? " = " : "=");
 		print_block(out, mod, mod.get_component<doir::block>(root), pretty, debug, false, indent);
+
+	} else if(mod.has_component<doir::alias>(root) || mod.has_component<doir::lookup::alias>(root)) {
+		auto [ident, type, location, Export] = get_common_assignment_elements(mod, root, debug);
+		auto alias = mod.has_component<doir::alias>(root)
+			? doir::lookup::alias(mod.get_component<doir::alias>(root).related[0], mod.get_component<doir::alias>(root).file)
+			: mod.get_component<doir::lookup::alias>(root);
+
+		out << indent_string << Export << ident << (pretty ? ": " : ":") << type << (pretty ? " = " : "=")
+			<< print_lookup_name(mod, alias, debug);
+		if(debug && alias.file)
+			out << "[" << *alias.file << "]";
 
 	} else out << "<error>";
 	return out;
