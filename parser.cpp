@@ -149,9 +149,12 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, do
 				e = blocks.back().push_number(ident, std::any_cast<doir::lookup::type_of>(type).name(), std::get<long double>(*value));
 			else invalid_function_type_error();
 		} else if(std::holds_alternative<interned_string>(*value)) {
-			if(type.type() == typeid(doir::lookup::type_of))
-				e = blocks.back().push_string(ident, std::any_cast<doir::lookup::type_of>(type).name(), std::get<interned_string>(*value));
-			else invalid_function_type_error();
+			if(type.type() == typeid(doir::lookup::type_of)) {
+				auto name = std::any_cast<doir::lookup::type_of>(type).name();
+				if(name == alias_interned)
+					e = blocks.back().push_alias(ident, std::get<interned_string>(*value));
+				else e = blocks.back().push_string(ident, name, std::get<interned_string>(*value));
+			} else invalid_function_type_error();
 		} else if(std::holds_alternative<call_info>(*value)) {
 			auto call = std::get<call_info>(*value);
 			if(type.type() == typeid(doir::lookup::type_of))
@@ -191,7 +194,8 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, do
 			}
 
 			e = builder.block;
-			auto& src_block = blocks.back().mod->get_component<doir::block>(std::get<ecrs::entity_t>(*value));
+			auto src = std::get<ecrs::entity_t>(*value);
+			auto& src_block = blocks.back().mod->get_component<doir::block>(src);
 			auto& dst_block = blocks.back().mod->get_component<doir::block>(e);
 			dst_block.related.insert(dst_block.related.end(), src_block.related.begin(), src_block.related.end());
 		}
@@ -348,7 +352,9 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, do
 	};
 
 	parser["Identifier"] = [&](const peg::SemanticValues &vs) {
-		return interner.intern(vs.token(0));
+		auto out = interner.intern(vs.token(0));
+		verify::identifier_structure(diagnostics(), *blocks.back().mod, out);
+		return out;
 	};
 
 	parser["Constant"] = [&](const peg::SemanticValues &vs) -> assignment_value_t {

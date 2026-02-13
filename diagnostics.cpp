@@ -32,6 +32,9 @@ diagnose::diagnostic doir::generate_diagnostic(doir::diagnostic_type type, diagn
 	break; case diagnostic_type::AliasNotAllowed:
 		out.kind = diagnose::diagnostic::error;
 		out.message = "Alias not allowed";
+	break; case diagnostic_type::InvalidIdentifier:
+		out.kind = diagnose::diagnostic::error;
+		out.message = "Invalid identifier";
 
 	// Warnings
 	break; case diagnostic_type::CompilerNamespaceReserved:

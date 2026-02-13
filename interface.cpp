@@ -9,6 +9,32 @@
 
 namespace doir {
 
+	std::vector<ecrs::entity_t> function_inputs::associated_parameters(const module& mod, const doir::block& block) {
+		std::vector<ecrs::entity_t> parameters; parameters.reserve(related.size());
+		for(size_t i = 0; i < related.size(); ++i)
+			for(auto e: block.related)
+				if(mod.has_component<doir::function_parameter>(e))
+					if(auto& p = mod.get_component<doir::function_parameter>(e); p.index == i) {
+						parameters.push_back(e);
+						break;
+					}
+
+		return parameters;
+	}
+
+	std::vector<ecrs::entity_t> lookup::function_inputs::associated_parameters(const module& mod, const doir::block& block) {
+		std::vector<ecrs::entity_t> parameters; parameters.reserve(size());
+		for(size_t i = 0; i < size(); ++i)
+			for(auto e: block.related)
+				if(mod.has_component<doir::function_parameter>(e))
+					if(auto& p = mod.get_component<doir::function_parameter>(e); p.index == i) {
+						parameters.push_back(e);
+						break;
+					}
+
+		return parameters;
+	}
+
 	ecrs::entity_t make_function_type(doir::module &mod, std::span<ecrs::entity_t> argument_types, std::optional<ecrs::entity_t> return_type /*= {} */) {
 		auto out = mod.add_entity();
 		mod.add_component<type_definition>(out);
@@ -149,6 +175,17 @@ namespace doir {
 		mod->add_component<doir::type_definition>(out);
 		mod->add_component<doir::block>(out);
 		return {out, mod};
+	}
+
+	ecrs::entity_t block_builder::push_alias(interned_string name, ecrs::entity_t ref) {
+		auto out = push_common(mod, block, name);
+		mod->add_component<doir::alias>(out) = {{ref}};
+		return out;
+	}
+	ecrs::entity_t block_builder::push_alias(interned_string name, interned_string ref_lookup) {
+		auto out = push_common(mod, block, name);
+		mod->add_component<doir::lookup::alias>(out) = {ref_lookup};
+		return out;
 	}
 
 	block_builder block_builder::push_namespace(interned_string name) {

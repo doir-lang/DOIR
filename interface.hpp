@@ -1,10 +1,8 @@
 #pragma once
 
-#include "libecrs/relation.hpp"
 #include "string_helpers.hpp"
-#include <diagnose/source_location.hpp>
-#include <optional>
-#include <string_view>
+#include "libecrs/relation.hpp"
+#include <diagnose/diagnostics.hpp>
 #include <variant>
 
 namespace ecrs {
@@ -14,10 +12,18 @@ namespace ecrs {
 namespace doir {
 
 	struct module;
+	namespace verify {
+		#define DOIR_BUILTIN_NAMES {"type", "alias", "namespace"}
+
+		bool entity_exists(diagnose::manager& diagnostics, module& module, ecrs::entity_t root);
+		bool identifier_structure(diagnose::manager& diagnostics, module& module, interned_string ident, bool allow_builtins = true); // Builtins are things like type and alias
+		bool structure(diagnose::manager& diagnostics, module& module, ecrs::entity_t root, bool top_level = true);
+	}
 
 	// Tags
 	struct flags {
 		enum impl : uint8_t {
+			None = 0,
 			Export = (1 << 1),
 			Comptime = (1 << 2), // On a function implies that the function can access the emitter object
 			Constant = (1 << 3),
@@ -36,6 +42,8 @@ namespace doir {
 		inline bool tail_set() const { return flags & Tail; }
 	};
 
+	struct removed {}; // TODO: We want to get rid of this once fp hash is working better!
+
 	struct valueless {}; // Represents undefined values and external functions/aliases
 	struct Namespace {}; // On a type element indicates that the namespace should be inherited
 
@@ -43,19 +51,21 @@ namespace doir {
 
 	struct name : public interned_string {};
 
+	struct block : public ecrs::relation<> {}; // When alone (no type_of etc...) represents a quoted block
+
 	struct function_return_type : public ecrs::relation<1> {};  // Also expects function_inputs and block/valueless attached
-	struct function_inputs : public ecrs::relation<> {}; // In a call the first input is the function to call
+	struct function_inputs : public ecrs::relation<> {
+		std::vector<ecrs::entity_t> associated_parameters(const module& mod, const doir::block& block);
+	}; // In a call the first input is the function to call
 	struct function_parameter {
 		size_t index; // Increments to indicate the order of the parameters
 	};
 
-	struct block : public ecrs::relation<> {}; // When alone (no type_of etc...) represents a quoted block
-
 	struct type_definition { // Also expects block attached
-		size_t size, align;
+		size_t size, align, unique = 0;
 	};
 
-	struct alias : public ecrs::relation<1> { // Can be INVALID if a valueless is attached
+	struct alias : public ecrs::relation<1> {
 		std::optional<std::string_view> file = {}; // Aliases can reference other files
 	};
 
@@ -85,18 +95,19 @@ namespace doir {
 		};
 		struct function_return_type : public lookup {};
 		struct function_inputs : public std::vector<lookup> {
-			lookup call_function() { return this->front(); }
-			std::span<lookup> call_arguments() { return std::span<lookup>{*this}.subspan(1); }
-
 			static function_inputs to_lookup(const doir::function_inputs& inputs) {
 				function_inputs out; out.reserve(inputs.related.size());
 				for(auto& i: inputs.related)
 					out.emplace_back(i);
 				return out;
 			}
+
+			std::vector<ecrs::entity_t> associated_parameters(const module& mod, const doir::block& block);
 		};
-		struct block : public std::vector<lookup> {};
-		struct alias : public lookup {};
+		// struct block : public std::vector<lookup> {};
+		struct alias : public lookup {
+			std::optional<std::string_view> file = {}; // Aliases can reference other files
+		};
 		struct type_of : public lookup {};
 		struct call : public lookup {};
 	}
@@ -149,6 +160,7 @@ namespace doir {
 		// "alias" spec
 		// color : alias = vec3
 		ecrs::entity_t push_alias(interned_string name, ecrs::entity_t ref);
+		ecrs::entity_t push_alias(interned_string name, interned_string ref_lookup);
 
 		// "block" spec
 		// then : block = { built block... }
