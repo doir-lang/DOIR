@@ -55,7 +55,7 @@ namespace doir {
 
 	struct function_return_type : public ecrs::relation<1> {};  // Also expects function_inputs and block/valueless attached
 	struct function_inputs : public ecrs::relation<> {
-		std::vector<ecrs::entity_t> associated_parameters(const module& mod, const doir::block& block);
+		fp::raii::dynarray<ecrs::entity_t> associated_parameters(const module& mod, const doir::block& block);
 	}; // In a call the first input is the function to call
 	struct function_parameter {
 		size_t index; // Increments to indicate the order of the parameters
@@ -66,7 +66,7 @@ namespace doir {
 	};
 
 	struct alias : public ecrs::relation<1> {
-		std::optional<std::string_view> file = {}; // Aliases can reference other files
+		std::optional<fp::string::view> file = {}; // Aliases can reference other files
 	};
 
 	struct type_of : public ecrs::relation<1> {}; // Expects a number, string, valueless, or block attached
@@ -94,7 +94,7 @@ namespace doir {
 			const interned_string& name() const { return std::get<interned_string>(*this); }
 		};
 		struct function_return_type : public lookup {};
-		struct function_inputs : public std::vector<lookup> {
+		struct function_inputs : public fp::raii::dynarray<lookup> {
 			static function_inputs to_lookup(const doir::function_inputs& inputs) {
 				function_inputs out; out.reserve(inputs.related.size());
 				for(auto& i: inputs.related)
@@ -102,19 +102,19 @@ namespace doir {
 				return out;
 			}
 
-			std::vector<ecrs::entity_t> associated_parameters(const module& mod, const doir::block& block);
+			fp::raii::dynarray<ecrs::entity_t> associated_parameters(const module& mod, const doir::block& block);
 		};
-		// struct block : public std::vector<lookup> {};
+		// struct block : public fp::raii::dynarray<lookup> {};
 		struct alias : public lookup {
-			std::optional<std::string_view> file = {}; // Aliases can reference other files
+			std::optional<fp::string::view> file = {}; // Aliases can reference other files
 		};
 		struct type_of : public lookup {};
 		struct call : public lookup {};
 	}
 
 	// (inputs...) -> return_type
-	ecrs::entity_t make_function_type(doir::module &mod, std::span<ecrs::entity_t> argument_types, std::optional<ecrs::entity_t> return_type = {});
-	ecrs::entity_t make_function_type(doir::module &mod, std::span<lookup::lookup> argument_types, std::optional<lookup::lookup> return_type = {});
+	ecrs::entity_t make_function_type(doir::module &mod, fp::view<ecrs::entity_t> argument_types, std::optional<ecrs::entity_t> return_type = {});
+	ecrs::entity_t make_function_type(doir::module &mod, fp::view<lookup::lookup> argument_types, std::optional<lookup::lookup> return_type = {});
 
 	struct function_builder;
 
@@ -136,12 +136,12 @@ namespace doir {
 		ecrs::entity_t push_valueless(interned_string name, ecrs::entity_t type);
 		ecrs::entity_t push_valueless(interned_string name, interned_string type_lookup);
 		// %4 : i32 = add(%0, %2)
-		ecrs::entity_t push_call(interned_string name, ecrs::entity_t type, ecrs::entity_t function, std::span<ecrs::entity_t> arguments);
-		ecrs::entity_t push_call(interned_string name, interned_string type_lookup, ecrs::entity_t function, std::span<ecrs::entity_t> arguments);
-		ecrs::entity_t push_call(interned_string name, ecrs::entity_t type, interned_string function_lookup, std::span<lookup::lookup> arguments);
-		ecrs::entity_t push_call(interned_string name, interned_string type_lookup, interned_string function_lookup, std::span<lookup::lookup> arguments);
-		ecrs::entity_t push_call(interned_string name, ecrs::entity_t type, ecrs::entity_t function, std::span<lookup::lookup> arguments);
-		ecrs::entity_t push_call(interned_string name, interned_string type_lookup, ecrs::entity_t function, std::span<lookup::lookup> arguments);
+		ecrs::entity_t push_call(interned_string name, ecrs::entity_t type, ecrs::entity_t function, fp::view<ecrs::entity_t> arguments);
+		ecrs::entity_t push_call(interned_string name, interned_string type_lookup, ecrs::entity_t function, fp::view<ecrs::entity_t> arguments);
+		ecrs::entity_t push_call(interned_string name, ecrs::entity_t type, interned_string function_lookup, fp::view<lookup::lookup> arguments);
+		ecrs::entity_t push_call(interned_string name, interned_string type_lookup, interned_string function_lookup, fp::view<lookup::lookup> arguments);
+		ecrs::entity_t push_call(interned_string name, ecrs::entity_t type, ecrs::entity_t function, fp::view<lookup::lookup> arguments);
+		ecrs::entity_t push_call(interned_string name, interned_string type_lookup, ecrs::entity_t function, fp::view<lookup::lookup> arguments);
 
 		// %5 : i32 = { built block... }
 		block_builder push_subblock(interned_string name, ecrs::entity_t type);

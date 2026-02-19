@@ -1,5 +1,6 @@
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
+#define FP_OSTREAM_SUPPORT
 
 #include "diagnostics.hpp"
 #include "diagnose/diagnostics.hpp"
@@ -9,8 +10,8 @@ diagnose::manager& doir::diagnostics() {
 	return diagnostics;
 }
 
-diagnose::diagnostic doir::generate_diagnostic(doir::diagnostic_type type, diagnose::source_location::detailed location, std::string_view source, std::string_view path) {
-	diagnostics().register_source(path, source);
+diagnose::diagnostic doir::generate_diagnostic(doir::diagnostic_type type, diagnose::source_location::detailed location, fp::string::view source, fp::string::view path) {
+	diagnostics().register_source(path.to_std(), source.to_std());
 
 	diagnose::diagnostic out;
 	out.code = (size_t)type;

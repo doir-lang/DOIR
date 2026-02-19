@@ -1,7 +1,6 @@
-#include "diagnostics.hpp"
-#include <string>
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
+#define FP_OSTREAM_SUPPORT
 
 #include "module.hpp"
 #include "print.hpp"
@@ -11,13 +10,13 @@
 
 std::ostream& print_impl(std::ostream& out, const doir::module& mod, ecrs::entity_t root, bool pretty, bool debug, size_t indent = 0);
 
-std::string print_lookup_name(const doir::module& mod, doir::lookup::lookup lookup, bool debug) {
+fp::raii::string print_lookup_name(const doir::module& mod, doir::lookup::lookup lookup, bool debug) {
 	if(!lookup.resolved())
-		return debug ? "lookup(" + std::string(lookup.name()) + ")" : std::string(lookup.name());
+		return debug ? "lookup("_fpv + lookup.name().make_dynamic().auto_free() + ")"_fpv : lookup.name().make_dynamic();
 
 	if(mod.has_component<doir::name>(lookup.entity())) {
-		auto out = std::string(mod.get_component<doir::name>(lookup.entity()));
-		if(debug) out += "[" + std::to_string(lookup.entity()) + "]";
+		auto out = mod.get_component<doir::name>(lookup.entity()).make_dynamic().auto_free();
+		if(debug) out += ("[" + fp::raii::string::format("{}", lookup.entity()) + "]").full_view();
 		return out;
 	}
 
@@ -41,21 +40,21 @@ std::string print_lookup_name(const doir::module& mod, doir::lookup::lookup look
 			out << "->" << print_lookup_name(mod, *return_type, debug);
 		if(debug)
 			out << "[" << lookup.entity() << "]";
-		return out.str();
+		return fp::string::view(std::string_view{out.str()}).make_dynamic().auto_free();
 	}
 
-	return "%" + std::to_string(lookup.entity());
+	return "%" + fp::raii::string::format("{}", lookup.entity());
 }
 
 
-std::tuple<std::string, std::string, std::optional<diagnose::source_location::detailed>, std::string> get_common_assignment_elements(const doir::module& mod, ecrs::entity_t root, bool debug) {
-	std::string ident;
+std::tuple<fp::raii::string, fp::raii::string, std::optional<diagnose::source_location::detailed>, fp::raii::string> get_common_assignment_elements(const doir::module& mod, ecrs::entity_t root, bool debug) {
+	fp::raii::string ident;
 	if(mod.has_component<doir::name>(root)) {
-		ident = std::string(mod.get_component<doir::name>(root));
-		if(debug) ident += "[" + std::to_string(root) + "]";
-	} else ident = "%" + std::to_string(root);
+		ident = mod.get_component<doir::name>(root).make_dynamic();
+		if(debug) ident += ("[" + fp::raii::string::format("{}", root) + "]").full_view();
+	} else ident = "%" + fp::raii::string::format("{}", root);
 
-	std::string type = "<error>";
+	fp::raii::string type = "<error>";
 	if(mod.has_component<doir::type_of>(root))
 		type = print_lookup_name(mod, mod.get_component<doir::type_of>(root).related[0], debug);
 	else if(mod.has_component<doir::lookup::type_of>(root))
@@ -69,9 +68,9 @@ std::tuple<std::string, std::string, std::optional<diagnose::source_location::de
 	if(mod.has_component<diagnose::source_location::detailed>(root))
 		location = mod.get_component<diagnose::source_location::detailed>(root);
 	else if(mod.has_component<diagnose::source_location>(root))
-		location = mod.get_component<diagnose::source_location>(root).to_detailed(mod.source);
+		location = mod.get_component<diagnose::source_location>(root).to_detailed(mod.source.to_std());
 
-	std::string Export = "";
+	fp::raii::string Export = "";
 	if(mod.has_component<doir::flags>(root))
 		Export = mod.get_component<doir::flags>(root).export_set() ? "export " : "";
 
@@ -87,12 +86,12 @@ std::ostream& print_block(std::ostream& out, const doir::module& mod, const doir
 		if(pretty) out << std::endl;
 		else out << ";";
 	}
-	out << (pretty ? std::string(indent, '\t') : "") << "}";
+	out << (pretty ? "\t"_fpr.replicate(indent).auto_free() : ""_fpr) << "}";
 	return out;
 }
 
 std::ostream& print_type_of(std::ostream& out, const doir::module& mod, ecrs::entity_t root, bool pretty, bool debug, size_t indent) {
-	auto indent_string = pretty ? std::string(indent, '\t') : "";
+	auto indent_string = pretty ? "\t"_fpr.replicate(indent).auto_free() : ""_fpr;
 	if(mod.has_component<doir::valueless>(root)) {
 		auto [ident, type, location, Export] = get_common_assignment_elements(mod, root, debug);
 		out << indent_string << Export << ident << (pretty ? ": " : ":") << type;
@@ -118,7 +117,7 @@ std::ostream& print_type_of(std::ostream& out, const doir::module& mod, ecrs::en
 		auto inputs = mod.has_component<doir::function_inputs>(root)
 			? doir::lookup::function_inputs::to_lookup(mod.get_component<doir::function_inputs>(root))
 			: mod.get_component<doir::lookup::function_inputs>(root);
-		std::string flags = "";
+		fp::raii::string flags = "";
 		if(mod.has_component<doir::flags>(root)) {
 			auto f = mod.get_component<doir::flags>(root);
 			if(f.inline_set()) flags += "inline ";
@@ -185,7 +184,7 @@ std::ostream& print_type_of(std::ostream& out, const doir::module& mod, ecrs::en
 }
 
 std::ostream& print_impl(std::ostream& out, const doir::module& mod, ecrs::entity_t root, bool pretty, bool debug, size_t indent /*= 0*/) {
-	auto indent_string = pretty ? std::string(indent, '\t') : "";
+	auto indent_string = pretty ? "\t"_fpr.replicate(indent).auto_free() : ""_fpr;
 
 	if(mod.has_component<doir::type_of>(root) || mod.has_component<doir::lookup::type_of>(root))
 		print_type_of(out, mod, root, pretty, debug, indent);

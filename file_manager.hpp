@@ -1,8 +1,11 @@
+#define FP_OSTREAM_SUPPORT
 
 #include <cstddef>
 #include <filesystem>
 #include <unordered_map>
 #include <span>
+
+#include <fp/hash.hpp>
 
 #include "mio.hpp"
 
@@ -21,12 +24,12 @@ namespace doir {
 			return mapped_files[path] = path.string();
 		}
 
-		std::span<std::byte> get_file_bytes(std::filesystem::path path) {
+		fp::view<std::byte> get_file_bytes(std::filesystem::path path) {
 			auto& mio = load_file(path);
 			return {(std::byte*)mio.data(), mio.size()};
 		}
 
-		std::string_view get_file_string(std::filesystem::path path) {
+		fp::string::view get_file_string(std::filesystem::path path) {
 			auto& mio = load_file(path);
 			return {mio.data(), mio.size()};
 		}

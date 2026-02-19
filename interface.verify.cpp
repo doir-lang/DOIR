@@ -1,10 +1,6 @@
-#include "fp/pointer.hpp"
-#include <optional>
-#include <stdexcept>
-#include <string_view>
-#include <unordered_set>
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
+#define FP_OSTREAM_SUPPORT
 
 #include "interface.hpp"
 #include "module.hpp"
@@ -15,15 +11,15 @@
 
 namespace doir::verify {
 
-	diagnose::source_location get_location(module& mod, std::string_view s) {
+	diagnose::source_location get_location(module& mod, fp::string::view s) {
 		size_t start;
 		if(contains(mod.source, s))
 			start = mod.source.data() - s.data();
 		else start = mod.source.find(s);
 
-		if(start == std::string_view::npos)
-			return {mod.working_file.value_or("<unknown>"), 0, 0};
-		return {mod.working_file.value_or("<unknown>"), start, start + s.length()};
+		if(start == fp::not_found)
+			return {mod.working_file.value_or("<unknown>"_fpv).to_std(), 0, 0};
+		return {mod.working_file.value_or("<unknown>"_fpv).to_std(), start, start + s.length()};
 	}
 
 	bool entity_exists(diagnose::manager &diagnostics, module &mod, ecrs::entity_t root) {
@@ -39,18 +35,17 @@ namespace doir::verify {
 	}
 
 	bool identifier_structure(diagnose::manager &diagnostics, module &mod, interned_string ident, bool allow_builtins /*= true*/) {
-		using namespace std::string_literals;
-		std::string invalid_message = "";
+		fp::raii::string invalid_message = "";
 		size_t invalid_offset;
 
 		if(ident[0] == '%') {
 			if(ident.size() == 1) {
-				invalid_message = "A "s + doir::ansi::info + "%" + diagnose::ansi::reset + " in an identifier must by followed by a number";
+				invalid_message = "A "_fpr + doir::ansi::info + "%" + diagnose::ansi::reset + " in an identifier must by followed by a number";
 				invalid_offset = 0;
 			}
 			for(size_t i = 1; i < ident.size(); ++i)
 				if(!std::isdigit(ident[i])) {
-					invalid_message = "Only numbers can follow a "s + doir::ansi::info + "%" + diagnose::ansi::reset;
+					invalid_message = "Only numbers can follow a "_fpr + doir::ansi::info + "%"_fpv + diagnose::ansi::reset;
 					invalid_offset = i;
 					break;
 				}
@@ -58,8 +53,8 @@ namespace doir::verify {
 
 		if(!allow_builtins) {
 			std::unordered_set<std::string_view> builtins = DOIR_BUILTIN_NAMES;
-			if(builtins.contains(ident)) {
-				invalid_message = "Reserved identifier "s + doir::ansi::type + std::string(ident) + diagnose::ansi::reset + " not allowed here";
+			if(builtins.contains(ident.to_std())) {
+				invalid_message = "Reserved identifier "_fpr + doir::ansi::type + ident + diagnose::ansi::reset + " not allowed here";
 				invalid_offset = 0;
 			}
 		}
@@ -68,7 +63,7 @@ namespace doir::verify {
 			auto& diag = diagnostics.push(generate_diagnostic(diagnostic_type::InvalidIdentifier, get_location(mod, ident), mod.source, *mod.working_file));
 			diag.push_annotation({
 				.position = {diag.location.start.line, diag.location.start.column + invalid_offset},
-				.message = invalid_message,
+				.message = std::string(invalid_message.full_view().to_std()),
 				.color = doir::ansi::info,
 			});
 			return false;

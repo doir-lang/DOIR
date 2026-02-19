@@ -1,5 +1,6 @@
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
+#define FP_OSTREAM_SUPPORT
 
 #include "module.hpp"
 #include "diagnostics.hpp"
@@ -27,7 +28,7 @@ struct call_info {
 
 using assignment_value_t = std::variant<long double, doir::interned_string, call_info, ecrs::entity_t>;
 
-peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, doir::string_interner& interner, bool guarantee_source_location /*= false */) {
+peg::parser doir::initialize_parser(fp::raii::dynarray<doir::block_builder>& blocks, doir::string_interner& interner, bool guarantee_source_location /*= false */) {
 	auto grammar =
 #include "grammar.peg"
 	;
@@ -37,13 +38,13 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, do
 		auto& mod = *blocks.back().mod;
 		auto working_file = mod.working_file.value();
 		// auto working_file = "../grammar.peg"; mod.source = doir::file_manager::singleton().get_file_string(working_file);
-		diagnostics().register_source(working_file, mod.source);
+		diagnostics().register_source(working_file.to_std(), mod.source.to_std());
 
 		auto message_segments = diagnose::split(msg, ',');
 		diagnose::diagnostic diagnostic;
 		diagnostic.kind = diagnose::diagnostic::error;
 		diagnostic.message = std::string(message_segments[1].substr(1));
-		diagnostic.location = {.file = working_file, .start = {line, col}, .end = {line, col + 1}};
+		diagnostic.location = {.file = working_file.to_std(), .start = {line, col}, .end = {line, col + 1}};
 
 		if(message_segments.size() == 3) {
 			diagnose::diagnostic::annotation annotation;
@@ -63,14 +64,14 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, do
 			doir::lookup::lookup type;
 			std::optional<assignment_value_t> value = {};
 		};
-		std::vector<parameter> inputs;
+		fp::raii::dynarray<parameter> inputs;
 		std::optional<doir::lookup::lookup> return_type = {};
 
 		ecrs::entity_t make_function_type(doir::module& mod){
-			std::vector<doir::lookup::lookup> inputs; inputs.reserve(this->inputs.size());
+			fp::raii::dynarray<doir::lookup::lookup> inputs; inputs.reserve(this->inputs.size());
 			for(auto& i: this->inputs)
 				inputs.push_back(i.type);
-			return doir::make_function_type(mod, inputs, return_type);
+			return doir::make_function_type(mod, inputs.full_view(), return_type);
 		}
 
 		function_builder push_function(doir::block_builder& builder, interned_string name) {
@@ -158,8 +159,8 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, do
 		} else if(std::holds_alternative<call_info>(*value)) {
 			auto call = std::get<call_info>(*value);
 			if(type.type() == typeid(doir::lookup::type_of))
-				e = blocks.back().push_call(ident, std::any_cast<doir::lookup::type_of>(type).name(), call.function, call.inputs);
-			else e = blocks.back().push_call(ident, std::any_cast<function_type_t>(type).make_function_type(mod), call.function, call.inputs);
+				e = blocks.back().push_call(ident, std::any_cast<doir::lookup::type_of>(type).name(), call.function, call.inputs.full_view());
+			else e = blocks.back().push_call(ident, std::any_cast<function_type_t>(type).make_function_type(mod), call.function, call.inputs.full_view());
 
 			if(call.Inline || call.flatten || call.tail) {
 				auto f = (doir::flags::Inline * call.Inline) | (doir::flags::Flatten * call.flatten) | (doir::flags::Tail * call.tail);
@@ -324,7 +325,7 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, do
 		}
 
 		if(out.start.column == 0 && out.end.column == 1 && out.start.line != 0) try {
-			std::vector<std::string_view> lines = diagnose::split(doir::file_manager::singleton().get_file_string(out.file), '\n');
+			fp::raii::dynarray<fp::string::view> lines = doir::file_manager::singleton().get_file_string(out.file).split("\n");
 
 			out.start.column = 1;
 			out.end.column = lines[out.start.line - 1].size() + 1;

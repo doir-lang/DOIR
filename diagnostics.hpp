@@ -1,6 +1,8 @@
 #pragma once
+#define FP_OSTREAM_SUPPORT
 
 #include <diagnose/diagnostics.hpp>
+#include <fp/string.hpp>
 
 namespace doir {
 	diagnose::manager& diagnostics();
@@ -26,15 +28,15 @@ namespace doir {
 		CompilerNamespaceReserved,
 	};
 
-	diagnose::diagnostic generate_diagnostic(diagnostic_type type, diagnose::source_location::detailed location, std::string_view source, std::string_view path);
-	inline diagnose::diagnostic generate_diagnostic(diagnostic_type type, diagnose::source_location location, std::string_view source, std::string_view path) {
-		return generate_diagnostic(type, location.to_detailed(source), source, path);
+	diagnose::diagnostic generate_diagnostic(diagnostic_type type, diagnose::source_location::detailed location, fp::string::view source, fp::string::view path);
+	inline diagnose::diagnostic generate_diagnostic(diagnostic_type type, diagnose::source_location location, fp::string::view source, fp::string::view path) {
+		return generate_diagnostic(type, location.to_detailed(source.to_std()), source, path);
 	}
 
-	inline diagnose::diagnostic& push_diagnostic(diagnostic_type type, diagnose::source_location::detailed location, std::string_view source, std::string_view path) {
+	inline diagnose::diagnostic& push_diagnostic(diagnostic_type type, diagnose::source_location::detailed location, fp::string::view source, fp::string::view path) {
 		return diagnostics().push(generate_diagnostic(type, location, source, path));
 	}
-	inline diagnose::diagnostic& push_diagnostic(diagnostic_type type, diagnose::source_location location, std::string_view source, std::string_view path){
+	inline diagnose::diagnostic& push_diagnostic(diagnostic_type type, diagnose::source_location location, fp::string::view source, fp::string::view path){
 		return diagnostics().push(generate_diagnostic(type, location, source, path));
 	}
 

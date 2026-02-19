@@ -1,5 +1,7 @@
+#include "fp/dynarray.hpp"
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
+#define FP_OSTREAM_SUPPORT
 
 #include "interface.hpp"
 #include "module.hpp"
@@ -9,8 +11,8 @@
 
 namespace doir {
 
-	std::vector<ecrs::entity_t> function_inputs::associated_parameters(const module& mod, const doir::block& block) {
-		std::vector<ecrs::entity_t> parameters; parameters.reserve(related.size());
+	fp::raii::dynarray<ecrs::entity_t> function_inputs::associated_parameters(const module& mod, const doir::block& block) {
+		fp::raii::dynarray<ecrs::entity_t> parameters; parameters.reserve(related.size());
 		for(size_t i = 0; i < related.size(); ++i)
 			for(auto e: block.related)
 				if(mod.has_component<doir::function_parameter>(e))
@@ -22,8 +24,8 @@ namespace doir {
 		return parameters;
 	}
 
-	std::vector<ecrs::entity_t> lookup::function_inputs::associated_parameters(const module& mod, const doir::block& block) {
-		std::vector<ecrs::entity_t> parameters; parameters.reserve(size());
+	fp::raii::dynarray<ecrs::entity_t> lookup::function_inputs::associated_parameters(const module& mod, const doir::block& block) {
+		fp::raii::dynarray<ecrs::entity_t> parameters; parameters.reserve(size());
 		for(size_t i = 0; i < size(); ++i)
 			for(auto e: block.related)
 				if(mod.has_component<doir::function_parameter>(e))
@@ -35,17 +37,17 @@ namespace doir {
 		return parameters;
 	}
 
-	ecrs::entity_t make_function_type(doir::module &mod, std::span<ecrs::entity_t> argument_types, std::optional<ecrs::entity_t> return_type /*= {} */) {
+	ecrs::entity_t make_function_type(doir::module &mod, fp::view<ecrs::entity_t> argument_types, std::optional<ecrs::entity_t> return_type /*= {} */) {
 		auto out = mod.add_entity();
 		mod.add_component<type_definition>(out);
 		mod.add_component<function_inputs>(out).related = {argument_types.begin(), argument_types.end()};
 		if(return_type) mod.add_component<function_return_type>(out).related = {*return_type};
 		return out;
 	}
-	ecrs::entity_t make_function_type(doir::module &mod, std::span<lookup::lookup> argument_types, std::optional<lookup::lookup> return_type /*= {} */) {
+	ecrs::entity_t make_function_type(doir::module &mod, fp::view<lookup::lookup> argument_types, std::optional<lookup::lookup> return_type /*= {} */) {
 		auto out = mod.add_entity();
 		mod.add_component<type_definition>(out);
-		mod.add_component<lookup::function_inputs>(out) = {{argument_types.begin(), argument_types.end()}};
+		mod.add_component<lookup::function_inputs>(out) = {fp::raii::dynarray<lookup::lookup>(argument_types.make_dynamic())};
 		if(return_type) mod.add_component<lookup::function_return_type>(out) = {*return_type};
 		return out;
 	}
@@ -60,7 +62,7 @@ namespace doir {
 
 	ecrs::entity_t push_common(doir::module *mod, ecrs::entity_t block, interned_string name) {
 		auto out = mod->add_entity();
-		if(std::string_view{name} != "_")
+		if(fp::string::view{name} != "_")
 			mod->add_component<doir::name>(out) = {name};
 		return mod->get_component<doir::block>(block).related.emplace_back(out);
 	}
@@ -108,34 +110,33 @@ namespace doir {
 						CALL_TYPE, FUNCTION_VALUE, ARGUMENTS)\
 		auto out = push_common(mod, block, name);\
 		mod->add_component<TYPE_OF_TYPE>(out) = {{type}};\
-		(VECTOR_TYPE &)mod->add_component<COMPONENT_TYPE>(out) = {\
-			ARGUMENTS.begin(), ARGUMENTS.end()\
-		};\
+		(VECTOR_TYPE &)mod->add_component<COMPONENT_TYPE>(out)\
+			= VECTOR_TYPE(ARGUMENTS.make_dynamic());\
 		mod->add_component<CALL_TYPE>(out) = {{FUNCTION_VALUE}};\
 		return out;
 
-	ecrs::entity_t block_builder::push_call(interned_string name, ecrs::entity_t type, ecrs::entity_t function, std::span<ecrs::entity_t> arguments){
-		PUSH_CALL_BODY(doir::type_of, doir::function_inputs, std::vector<ecrs::entity_t>, doir::call, function, arguments);
+	ecrs::entity_t block_builder::push_call(interned_string name, ecrs::entity_t type, ecrs::entity_t function, fp::view<ecrs::entity_t> arguments){
+		PUSH_CALL_BODY(doir::type_of, doir::function_inputs, fp::raii::dynarray<ecrs::entity_t>, doir::call, function, arguments);
 	}
 
-	ecrs::entity_t block_builder::push_call(interned_string name, interned_string type, ecrs::entity_t function, std::span<ecrs::entity_t> arguments){
-		PUSH_CALL_BODY(doir::lookup::type_of, doir::function_inputs, std::vector<ecrs::entity_t>, doir::call, function, arguments);
+	ecrs::entity_t block_builder::push_call(interned_string name, interned_string type, ecrs::entity_t function, fp::view<ecrs::entity_t> arguments){
+		PUSH_CALL_BODY(doir::lookup::type_of, doir::function_inputs, fp::raii::dynarray<ecrs::entity_t>, doir::call, function, arguments);
 	}
 
-	ecrs::entity_t block_builder::push_call(interned_string name, ecrs::entity_t type, interned_string function_lookup, std::span<lookup::lookup> arguments){
-		PUSH_CALL_BODY(doir::type_of, doir::lookup::function_inputs, std::vector<lookup::lookup>, doir::lookup::call, function_lookup, arguments);
+	ecrs::entity_t block_builder::push_call(interned_string name, ecrs::entity_t type, interned_string function_lookup, fp::view<lookup::lookup> arguments){
+		PUSH_CALL_BODY(doir::type_of, doir::lookup::function_inputs, fp::raii::dynarray<lookup::lookup>, doir::lookup::call, function_lookup, arguments);
 	}
 
-	ecrs::entity_t block_builder::push_call(interned_string name, interned_string type, interned_string function_lookup, std::span<lookup::lookup> arguments){
-		PUSH_CALL_BODY(doir::lookup::type_of, doir::lookup::function_inputs, std::vector<lookup::lookup>, doir::lookup::call, function_lookup, arguments);
+	ecrs::entity_t block_builder::push_call(interned_string name, interned_string type, interned_string function_lookup, fp::view<lookup::lookup> arguments){
+		PUSH_CALL_BODY(doir::lookup::type_of, doir::lookup::function_inputs, fp::raii::dynarray<lookup::lookup>, doir::lookup::call, function_lookup, arguments);
 	}
 
-	ecrs::entity_t block_builder::push_call(interned_string name, ecrs::entity_t type, ecrs::entity_t function, std::span<lookup::lookup> arguments){
-		PUSH_CALL_BODY(doir::type_of, doir::lookup::function_inputs, std::vector<lookup::lookup>, doir::call, function, arguments);
+	ecrs::entity_t block_builder::push_call(interned_string name, ecrs::entity_t type, ecrs::entity_t function, fp::view<lookup::lookup> arguments){
+		PUSH_CALL_BODY(doir::type_of, doir::lookup::function_inputs, fp::raii::dynarray<lookup::lookup>, doir::call, function, arguments);
 	}
 
-	ecrs::entity_t block_builder::push_call(interned_string name, interned_string type, ecrs::entity_t function, std::span<lookup::lookup> arguments) {
-		PUSH_CALL_BODY(doir::lookup::type_of, doir::lookup::function_inputs, std::vector<lookup::lookup>, doir::call, function, arguments);
+	ecrs::entity_t block_builder::push_call(interned_string name, interned_string type, ecrs::entity_t function, fp::view<lookup::lookup> arguments) {
+		PUSH_CALL_BODY(doir::lookup::type_of, doir::lookup::function_inputs, fp::raii::dynarray<lookup::lookup>, doir::call, function, arguments);
 	}
 
 	block_builder block_builder::push_subblock(interned_string name, ecrs::entity_t type) {

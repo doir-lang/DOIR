@@ -1,6 +1,6 @@
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
-#define FP_DEFAULT_HASH_TABLE_BASE_SIZE 16
+#define FP_OSTREAM_SUPPORT
 
 #define FP_IMPLEMENTATION
 #define ECRS_IMPLEMENTATION
@@ -24,7 +24,7 @@ int main(int argc, char** argv) {
 	}
 
 	doir::module mod;
-	std::vector<doir::block_builder> builders;
+	fp::raii::dynarray<doir::block_builder> builders;
 	builders.push_back(doir::block_builder::create(mod));
 
 	doir::string_interner interner;

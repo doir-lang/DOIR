@@ -8,11 +8,11 @@
 namespace doir {
 	struct byte_dumper {
 		const interned_string compiler_emit;
-		std::unordered_map<interned_string, std::byte> lookup;
+		fp::hash_map<interned_string, std::byte> lookup;
 
 		byte_dumper(string_interner& interner) : compiler_emit(interner.intern("compiler.emit")) {}
 
-		std::vector<std::byte>& interpret_number_assign(std::vector<std::byte>& out, const doir::module& mod, ecrs::entity_t root) {
+		fp::raii::dynarray<std::byte>& interpret_number_assign(fp::raii::dynarray<std::byte>& out, const doir::module& mod, ecrs::entity_t root) {
 			if(!mod.has_component<doir::name>(root)) return out;
 			if(!mod.has_component<doir::number>(root)) return out;
 
@@ -23,7 +23,7 @@ namespace doir {
 			return out;
 		}
 
-		std::vector<std::byte>& interpret_call(std::vector<std::byte>& out, const doir::module& mod, ecrs::entity_t root) {
+		fp::raii::dynarray<std::byte>& interpret_call(fp::raii::dynarray<std::byte>& out, const doir::module& mod, ecrs::entity_t root) {
 			if(!mod.has_component<doir::lookup::call>(root)) return out;
 
 			auto& call = mod.get_component<doir::lookup::call>(root);
@@ -38,11 +38,11 @@ namespace doir {
 			return out;
 		}
 
-		std::vector<std::byte> interpret(const doir::module& mod, ecrs::entity_t root) {
+		fp::raii::dynarray<std::byte> interpret(const doir::module& mod, ecrs::entity_t root) {
 			assert(mod.has_component<doir::block>(root));
 			auto& block = mod.get_component<doir::block>(root);
 
-			std::vector<std::byte> out;
+			fp::raii::dynarray<std::byte> out;
 			for(auto e: block.related)
 				interpret_call(interpret_number_assign(out, mod, e), mod, e);
 			return out;

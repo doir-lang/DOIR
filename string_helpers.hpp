@@ -11,25 +11,28 @@
 #include <cstdint>
 #include <algorithm>
 
+#include <fp/string.hpp>
+#include <fp/hash.hpp>
+
 namespace doir {
-	inline static bool contains(std::string_view big, std::string_view small) {
+	inline static bool contains(fp::string::view big, fp::string::view small) {
 		return small.data() < big.data() + big.size() && small.data() + small.size() <= big.data() + big.size();
 	}
 
-	struct interned_string: public std::string_view {
-		using std::string_view::string_view;
-		using std::string_view::operator=;
+	struct interned_string: public fp::string::view {
+		using fp::string::view::string_view;
+		using fp::string::view::operator=;
 		interned_string() = default;
-		explicit interned_string(std::string_view sv) : std::string_view(sv) {}
+		explicit interned_string(fp::string::view sv) : fp::string::view(sv) {}
 		interned_string(const interned_string&) = default;
 		interned_string(interned_string&&) = default;
 		interned_string& operator=(const interned_string&) = default;
 		interned_string& operator=(interned_string&&) = default;
 
-		bool operator==(const interned_string& o) {
+		bool operator==(const interned_string& o) const {
 			return data() == o.data();
 		}
-		bool operator!=(const interned_string& o) {
+		bool operator!=(const interned_string& o) const {
 			return data() != o.data();
 		}
 	};
@@ -47,14 +50,16 @@ namespace doir {
 		string_interner(string_interner&&) noexcept = default;
 		string_interner& operator=(string_interner&&) noexcept = default;
 
-		interned_string intern(std::string_view s) {
+		interned_string intern(fp::string::view s) {
+			if(!table)
+				table = fp::hash_table<fp::string::view>::create();
 			auto it = table.find(s);
-			if (it != table.end())
+			if (it)
 				return interned_string{*it};
 
 			const char* p = allocate(s);
 			interned_string interned{p, s.size()};
-			table.emplace(interned);
+			table.insert(interned);
 			return interned;
 		}
 
@@ -70,7 +75,7 @@ namespace doir {
 		}
 
 	protected:
-		const char* allocate(std::string_view s) {
+		const char* allocate(fp::string::view s) {
 			size_t n = s.size() + 1; // +1 for null terminator
 
 			if (offset + n > block_size) {
@@ -92,25 +97,25 @@ namespace doir {
 
 		size_t block_size;
 		size_t offset;
-		std::vector<std::unique_ptr<char[]>> blocks;
-		std::unordered_set<std::string_view> table;
+		fp::raii::dynarray<std::unique_ptr<char[]>> blocks;
+		fp::raii::hash_table<fp::string::view> table = nullptr;
 	};
 
-	inline std::string& replace_all(std::string& haystack, std::string_view needle, std::string_view replacement) {
-		if (needle.empty())
-			return haystack; // avoid infinite loop
+	// inline fp::raii::string& replace_all(fp::raii::string& haystack, fp::string::view needle, fp::string::view replacement) {
+	// 	if (needle.empty())
+	// 		return haystack; // avoid infinite loop
 
-		std::size_t pos = 0;
-		while ((pos = haystack.find(needle, pos)) != std::string::npos) {
-			haystack.replace(pos, needle.length(), replacement);
-			pos += replacement.length(); // move past the replacement
-		}
+	// 	size_t pos = 0;
+	// 	while ((pos = (std::find(haystack.begin() + pos, haystack.end()) - haystack.begin())) != fp::raii::string::npos) {
+	// 		haystack.replace(pos, needle.length(), replacement);
+	// 		pos += replacement.length(); // move past the replacement
+	// 	}
 
-		return haystack;
-	}
+	// 	return haystack;
+	// }
 
 	namespace detail {
-		inline void append_utf8(std::string& out, uint32_t cp) {
+		inline void append_utf8(fp::raii::string& out, uint32_t cp) {
 			// Check for invalid code points
 			if (cp > 0x10FFFF)
 				throw std::runtime_error("Unicode code point out of range");
@@ -148,8 +153,8 @@ namespace doir {
 		}
 	}
 
-	inline std::string unescape_python_string(std::string_view literal) {
-		std::string out;
+	inline fp::raii::string unescape_python_string(fp::string::view literal) {
+		fp::raii::string out;
 		out.reserve(literal.size()); // Pre-allocate to reduce reallocations
 
 		for (size_t i = 0; i < literal.size(); ++i) {
@@ -234,5 +239,5 @@ namespace doir {
 
 namespace std {
 	template<>
-	struct hash<doir::interned_string> : public hash<string_view> {};
+	struct hash<doir::interned_string> : public hash<fp::string_view> {};
 }
