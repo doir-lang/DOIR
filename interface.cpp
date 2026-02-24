@@ -62,6 +62,7 @@ namespace doir {
 		auto out = mod->add_entity();
 		if(std::string_view{name} != "_")
 			mod->add_component<doir::name>(out) = {name};
+		mod->add_component<doir::parent>(out).related = {block};
 		return mod->get_component<doir::block>(block).related.emplace_back(out);
 	}
 
@@ -94,13 +95,13 @@ namespace doir {
 	ecrs::entity_t block_builder::push_valueless(interned_string name, ecrs::entity_t type) {
 		auto out = push_common(mod, block, name);
 		mod->add_component<doir::type_of>(out) = {{type}};
-		mod->add_component<valueless>(out);
+		mod->add_component<doir::flags>(out).flags = doir::flags::Valueless;
 		return out;
 	}
 	ecrs::entity_t block_builder::push_valueless(interned_string name, interned_string type_lookup) {
 		auto out = push_common(mod, block, name);
 		mod->add_component<doir::lookup::type_of>(out) = {{type_lookup}};
-		mod->add_component<valueless>(out);
+		mod->add_component<doir::flags>(out).flags = doir::flags::Valueless;
 		return out;
 	}
 
@@ -190,7 +191,7 @@ namespace doir {
 
 	block_builder block_builder::push_namespace(interned_string name) {
 		auto out = push_common(mod, block, name);
-		mod->add_component<doir::Namespace>(out);
+		mod->add_component<doir::flags>(out).flags = doir::flags::Namespace;
 		mod->add_component<doir::block>(out);
 		return {out, mod};
 	}

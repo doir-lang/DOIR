@@ -22,16 +22,23 @@ namespace doir {
 
 	// Tags
 	struct flags {
-		enum impl : uint8_t {
+		enum impl : uint16_t {
 			None = 0,
-			Export = (1 << 1),
-			Comptime = (1 << 2), // On a function implies that the function can access the emitter object
-			Constant = (1 << 3),
-			Pure = (1 << 4),
-			Inline = (1 << 5),
-			Flatten = (1 << 6),
-			Tail = (1 << 7),
+			Valueless = (1 << 1),
+			Namespace = (1 << 2),
+
+			Export = (1 << 3),
+			Comptime = (1 << 4), // On a function implies that the function can access the emitter object
+			Constant = (1 << 5),
+			Pure = (1 << 6),
+			Inline = (1 << 7),
+			Flatten = (1 << 8),
+			Tail = (1 << 9),
 		} flags;
+
+		inline uint16_t& as_underlying() { return (uint16_t&)flags; }
+		inline bool valueless_set() const { return flags & Valueless; }
+		inline bool namespace_set() const { return flags & Namespace; }
 
 		inline bool export_set() const { return flags & Export; }
 		inline bool comptime_set() const { return flags & Comptime; }
@@ -42,16 +49,12 @@ namespace doir {
 		inline bool tail_set() const { return flags & Tail; }
 	};
 
-	struct removed {}; // TODO: We want to get rid of this once fp hash is working better!
-
-	struct valueless {}; // Represents undefined values and external functions/aliases
-	struct Namespace {}; // On a type element indicates that the namespace should be inherited
-
 	struct pointer { size_t size = 0; }; // Size == 0 implies no bounds information
 
 	struct name : public interned_string {};
 
 	struct block : public ecrs::relation<> {}; // When alone (no type_of etc...) represents a quoted block
+	struct parent : public ecrs::relation<1> {};
 
 	struct function_return_type : public ecrs::relation<1> {};  // Also expects function_inputs and block/valueless attached
 	struct function_inputs : public ecrs::relation<> {
