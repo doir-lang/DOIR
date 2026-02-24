@@ -95,6 +95,12 @@ namespace doir {
 			const ecrs::entity_t& entity() const { return std::get<ecrs::entity_t>(*this); }
 			interned_string& name() { return std::get<interned_string>(*this); }
 			const interned_string& name() const { return std::get<interned_string>(*this); }
+
+			static void swap_entities(lookup& self, const ecrs::context&, ecrs::entity_t a, ecrs::entity_t b) {
+				if(!self.resolved()) return;
+				if(self.entity() == a) self.entity() = b;
+				else if(self.entity() == b) self.entity() = a;
+			}
 		};
 		struct function_return_type : public lookup {};
 		struct function_inputs : public std::vector<lookup> {
@@ -106,6 +112,9 @@ namespace doir {
 			}
 
 			std::vector<ecrs::entity_t> associated_parameters(const module& mod, const doir::block& block);
+			static void swap_entities(function_inputs& self, const ecrs::context& ctx, ecrs::entity_t a, ecrs::entity_t b) {
+				for(auto& l: self) lookup::swap_entities(l, ctx, a, b);
+			}
 		};
 		// struct block : public std::vector<lookup> {};
 		struct alias : public lookup {
