@@ -26,12 +26,12 @@ namespace doir::verify {
 		return {mod.working_file.value_or("<unknown>"), start, start + s.length()};
 	}
 
-	bool entity_exists(diagnose::manager &diagnostics, module &mod, ecrs::entity_t root) {
-		if( !(root <= mod.entity_count()) ) {
+	bool entity_exists(diagnose::manager &diagnostics, module &mod, ecrs::entity_t subtree) {
+		if( !(subtree <= mod.entity_count()) ) {
 			throw std::runtime_error("TODO: invalid entity error");
 			return false;
 		}
-		if(mod.freelist && fp::contains(mod.freelist.begin(), mod.freelist.end(), root)) {
+		if(mod.freelist && fp::contains(mod.freelist.begin(), mod.freelist.end(), subtree)) {
 			throw std::runtime_error("TODO: entity removed error");
 			return false;
 		}
@@ -84,38 +84,38 @@ namespace doir::verify {
 		return true;
 	}
 
-	bool structure(diagnose::manager& diagnostics, module& mod, ecrs::entity_t root, bool top_level /* = true */) {
+	bool structure(diagnose::manager& diagnostics, module& mod, ecrs::entity_t subtree, bool top_level /* = true */) {
 		bool valid = false;
 
-		if(mod.has_component<type_of>(root) || mod.has_component<lookup::type_of>(root)) {
+		if(mod.has_component<type_of>(subtree) || mod.has_component<lookup::type_of>(subtree)) {
 			valid = true;
 
-			lookup::type_of t = mod.has_component<type_of>(root)
-				? lookup::type_of(mod.get_component<type_of>(root).related[0])
-				: mod.get_component<lookup::type_of>(root);
+			lookup::type_of t = mod.has_component<type_of>(subtree)
+				? lookup::type_of(mod.get_component<type_of>(subtree).related[0])
+				: mod.get_component<lookup::type_of>(subtree);
 
 			if(!verify_lookup_structure(diagnostics, mod, t)) valid = false;
 
-			if(mod.has_component<doir::pointer>(root)
-				|| mod.has_component<doir::type_definition>(root)
-				|| mod.has_component<doir::alias>(root)
-				|| mod.has_component<doir::lookup::lookup>(root)
-				|| mod.has_component<doir::lookup::alias>(root)
+			if(mod.has_component<doir::pointer>(subtree)
+				|| mod.has_component<doir::type_definition>(subtree)
+				|| mod.has_component<doir::alias>(subtree)
+				|| mod.has_component<doir::lookup::lookup>(subtree)
+				|| mod.has_component<doir::lookup::alias>(subtree)
 			){
 				throw std::runtime_error("TODO: Invalid component");
 				valid = false;
 			}
 
-			bool valueless = mod.has_component<doir::valueless>(root);
-			bool number = mod.has_component<doir::number>(root);
-			bool string = mod.has_component<doir::string>(root);
-			bool call = mod.has_component<doir::call>(root);
-			bool call_lookup = mod.has_component<doir::lookup::call>(root);
-			bool function_def = mod.has_component<doir::function_return_type>(root);
-			bool function_def_lookup = mod.has_component<doir::lookup::function_return_type>(root);
-			bool block = mod.has_component<doir::block>(root);
+			bool valueless = mod.has_component<doir::flags>(subtree) && mod.get_component<doir::flags>(subtree).valueless_set();
+			bool number = mod.has_component<doir::number>(subtree);
+			bool string = mod.has_component<doir::string>(subtree);
+			bool call = mod.has_component<doir::call>(subtree);
+			bool call_lookup = mod.has_component<doir::lookup::call>(subtree);
+			bool function_def = mod.has_component<doir::function_return_type>(subtree);
+			bool function_def_lookup = mod.has_component<doir::lookup::function_return_type>(subtree);
+			bool block = mod.has_component<doir::block>(subtree);
 
-			if( (call || call_lookup || function_def || function_def_lookup || block) && mod.has_component<doir::function_parameter>(root)) {
+			if( (call || call_lookup || function_def || function_def_lookup || block) && mod.has_component<doir::function_parameter>(subtree)) {
 				// TODO: Should we maintain this rule?
 				throw std::runtime_error("TODO: Parameters can only have a string, a number, or nothing as a default value");
 				valid = false;
@@ -138,8 +138,8 @@ namespace doir::verify {
 				valid = false;
 			}
 
-			auto flags = mod.has_component<doir::flags>(root)
-				? std::optional<doir::flags>(mod.get_component<doir::flags>(root))
+			auto flags = mod.has_component<doir::flags>(subtree)
+				? std::optional<doir::flags>(mod.get_component<doir::flags>(subtree))
 				: std::optional<doir::flags>{};
 			if( !(call || call_lookup || function_def || function_def_lookup) && flags) {
 				if(flags->flatten_set() || flags->inline_set() || flags->pure_set() || flags->tail_set()) {
@@ -153,13 +153,13 @@ namespace doir::verify {
 			}
 
 			if(call || call_lookup) {
-				doir::lookup::lookup call = mod.has_component<doir::call>(root)
-					? doir::lookup::lookup(mod.get_component<doir::call>(root).related[0])
-					: doir::lookup::lookup(mod.get_component<doir::lookup::call>(root));
+				doir::lookup::lookup call = mod.has_component<doir::call>(subtree)
+					? doir::lookup::lookup(mod.get_component<doir::call>(subtree).related[0])
+					: doir::lookup::lookup(mod.get_component<doir::lookup::call>(subtree));
 				if(call.resolved() && !verify::structure(diagnostics, mod, call.entity(), false)) valid = false;
-				auto inputs = mod.has_component<doir::function_inputs>(root)
-					? doir::lookup::function_inputs::to_lookup(mod.get_component<doir::function_inputs>(root))
-					: mod.get_component<doir::lookup::function_inputs>(root);
+				auto inputs = mod.has_component<doir::function_inputs>(subtree)
+					? doir::lookup::function_inputs::to_lookup(mod.get_component<doir::function_inputs>(subtree))
+					: mod.get_component<doir::lookup::function_inputs>(subtree);
 				for(auto& i: inputs)
 					if(i.resolved() && !verify::structure(diagnostics, mod, i.entity(), false)) valid = false;
 
@@ -174,56 +174,55 @@ namespace doir::verify {
 					? doir::lookup::function_inputs::to_lookup(mod.get_component<doir::function_inputs>(t.entity()))
 					: mod.get_component<doir::lookup::function_inputs>(t.entity());
 
-				if(mod.has_component<doir::block>(root)
-					&& inputs.associated_parameters(mod, mod.get_component<doir::block>(root)).size() != inputs.size()
+				if(mod.has_component<doir::block>(subtree)
+					&& inputs.associated_parameters(mod, mod.get_component<doir::block>(subtree)).size() != inputs.size()
 				) {
 					throw std::runtime_error("TODO: A different number of parameters are defined than declared.");
 					valid = false;
 				}
 			}
 
-		} else if(mod.has_component<type_definition>(root)) {
+		} else if(mod.has_component<type_definition>(subtree)) {
 			valid = true;
 
-			if( !(mod.has_component<doir::block>(root)
-				|| mod.has_component<doir::function_return_type>(root)
-				|| mod.has_component<doir::lookup::function_return_type>(root) // TODO: Valid?
+			if( !(mod.has_component<doir::block>(subtree)
+				|| mod.has_component<doir::function_return_type>(subtree)
+				|| mod.has_component<doir::lookup::function_return_type>(subtree) // TODO: Valid?
 				// || mod.has_component<doir::call>(root)
 				// || mod.has_component<doir::lookup::call>(root)
 			) ) {
-				std::cout << root << std::endl;
+				std::cout << subtree << std::endl;
 				throw std::runtime_error("Types are required to have a `block` while function types are required to have a `function_inputs`");
 				valid = false;
 			}
 
-			if(mod.has_component<doir::valueless>(root)
-				|| mod.has_component<doir::pointer>(root)
-				|| mod.has_component<doir::function_parameter>(root)
-				|| mod.has_component<doir::block>(root)
-				|| mod.has_component<doir::alias>(root)
-				|| mod.has_component<doir::type_of>(root)
-				|| mod.has_component<doir::number>(root)
-				|| mod.has_component<doir::string>(root)
-				|| mod.has_component<doir::call>(root)
-				|| mod.has_component<doir::lookup::lookup>(root)
+			if(mod.has_component<doir::pointer>(subtree)
+				|| mod.has_component<doir::function_parameter>(subtree)
+				|| mod.has_component<doir::block>(subtree)
+				|| mod.has_component<doir::alias>(subtree)
+				|| mod.has_component<doir::type_of>(subtree)
+				|| mod.has_component<doir::number>(subtree)
+				|| mod.has_component<doir::string>(subtree)
+				|| mod.has_component<doir::call>(subtree)
+				|| mod.has_component<doir::lookup::lookup>(subtree)
 				// || mod.has_component<doir::lookup::block>(root)
-				|| mod.has_component<doir::lookup::alias>(root)
-				|| mod.has_component<doir::lookup::type_of>(root)
-				|| mod.has_component<doir::lookup::call>(root)
+				|| mod.has_component<doir::lookup::alias>(subtree)
+				|| mod.has_component<doir::lookup::type_of>(subtree)
+				|| mod.has_component<doir::lookup::call>(subtree)
 			){
 				throw std::runtime_error("TODO: Invalid component attached");
 				valid = false;
 			}
 
-			if(mod.has_component<doir::function_inputs>(root)) {
-				auto inputs = mod.has_component<doir::function_inputs>(root)
-					? doir::lookup::function_inputs::to_lookup(mod.get_component<doir::function_inputs>(root))
-					: mod.get_component<doir::lookup::function_inputs>(root);
+			if(mod.has_component<doir::function_inputs>(subtree)) {
+				auto inputs = mod.has_component<doir::function_inputs>(subtree)
+					? doir::lookup::function_inputs::to_lookup(mod.get_component<doir::function_inputs>(subtree))
+					: mod.get_component<doir::lookup::function_inputs>(subtree);
 				std::optional<doir::lookup::function_return_type> return_type = {};
-				if(mod.has_component<doir::function_return_type>(root))
-					return_type = {mod.get_component<doir::function_return_type>(root).related[0]};
-				else if(mod.has_component<doir::lookup::function_return_type>(root))
-					return_type = mod.get_component<doir::lookup::function_return_type>(root);
+				if(mod.has_component<doir::function_return_type>(subtree))
+					return_type = {mod.get_component<doir::function_return_type>(subtree).related[0]};
+				else if(mod.has_component<doir::lookup::function_return_type>(subtree))
+					return_type = mod.get_component<doir::lookup::function_return_type>(subtree);
 
 				if(return_type && return_type->resolved() && !verify::structure(diagnostics, mod, return_type->entity(), false))
 					valid = false;
@@ -231,87 +230,109 @@ namespace doir::verify {
 					if(i.resolved() && !verify::structure(diagnostics, mod, i.entity(), false)) valid = false;
 			}
 
-			// TODO: What flags are valid?
+			if(mod.has_component<doir::flags>(subtree)) {
+				auto flags = mod.get_component<doir::flags>(subtree);
+				if(flags.valueless_set() || flags.namespace_set()) {
+					throw std::runtime_error("TODO: Invalid flags");
+					valid = false;
+				}
+				// TODO: What flags are valid?
+			}
 
-		} else if(mod.has_component<Namespace>(root)) {
+		} else if(mod.has_component<doir::flags>(subtree) && mod.get_component<doir::flags>(subtree).namespace_set()) {
 			valid = true;
 
-			if(!mod.has_component<doir::block>(root)) {
+			if(!mod.has_component<doir::block>(subtree)) {
 				throw std::runtime_error("Namespaces are required to have a block");
 				valid = false;
 			}
 
-			if(mod.has_component<doir::flags>(root)) {
-				auto flags = mod.get_component<doir::flags>(root).flags;
+			if(mod.has_component<doir::flags>(subtree)) {
+				auto flags = mod.get_component<doir::flags>(subtree);
+				flags.as_underlying() &= ~doir::flags::Namespace;
+				if( !(flags.flags == doir::flags::None || flags.flags == doir::flags::Export) ) {
+					throw std::runtime_error("Invalid flags");
+					valid = false;
+				}
+			}
+
+			if(mod.has_component<doir::pointer>(subtree)
+				|| mod.has_component<doir::function_return_type>(subtree)
+				|| mod.has_component<doir::function_inputs>(subtree)
+				|| mod.has_component<doir::function_parameter>(subtree)
+				|| mod.has_component<doir::type_definition>(subtree)
+				|| mod.has_component<doir::alias>(subtree)
+				|| mod.has_component<doir::type_of>(subtree)
+				|| mod.has_component<doir::number>(subtree)
+				|| mod.has_component<doir::string>(subtree)
+				|| mod.has_component<doir::call>(subtree)
+				|| mod.has_component<doir::lookup::lookup>(subtree)
+				|| mod.has_component<doir::lookup::function_return_type>(subtree)
+				|| mod.has_component<doir::lookup::function_inputs>(subtree)
+				// || mod.has_component<doir::lookup::block>(root)
+				|| mod.has_component<doir::lookup::alias>(subtree)
+				|| mod.has_component<doir::lookup::type_of>(subtree)
+				|| mod.has_component<doir::lookup::call>(subtree)
+			){
+				throw std::runtime_error("TODO: Invalid component attached");
+				valid = false;
+			}
+
+			if(mod.has_component<doir::flags>(subtree)) {
+				auto flags = mod.get_component<doir::flags>(subtree);
+				if(flags.valueless_set()) {
+					throw std::runtime_error("TODO: Invalid flags");
+					valid = false;
+				}
+				// TODO: What flags are valid?
+			}
+
+		} else if(mod.has_component<alias>(subtree) || mod.has_component<doir::lookup::alias>(subtree)) {
+			if(mod.has_component<doir::pointer>(subtree)
+				|| mod.has_component<doir::function_return_type>(subtree)
+				|| mod.has_component<doir::function_inputs>(subtree)
+				|| mod.has_component<doir::function_parameter>(subtree)
+				|| mod.has_component<doir::block>(subtree)
+				|| mod.has_component<doir::type_definition>(subtree)
+				|| mod.has_component<doir::type_of>(subtree)
+				|| mod.has_component<doir::number>(subtree)
+				|| mod.has_component<doir::string>(subtree)
+				|| mod.has_component<doir::call>(subtree)
+				|| mod.has_component<doir::lookup::lookup>(subtree)
+				|| mod.has_component<doir::lookup::function_return_type>(subtree)
+				|| mod.has_component<doir::lookup::function_inputs>(subtree)
+				// || mod.has_component<doir::lookup::block>(root)
+				|| mod.has_component<doir::lookup::type_of>(subtree)
+				|| mod.has_component<doir::lookup::call>(subtree)
+			){
+				throw std::runtime_error("TODO: Invalid component attached");
+				valid = false;
+			}
+
+			if(mod.has_component<doir::flags>(subtree)) {
+				auto flags = mod.get_component<doir::flags>(subtree).flags;
 				if( !(flags == doir::flags::None || flags == doir::flags::Export) ) {
 					throw std::runtime_error("Invalid flags");
 					valid = false;
 				}
 			}
 
-			if(mod.has_component<doir::valueless>(root)
-				|| mod.has_component<doir::pointer>(root)
-				|| mod.has_component<doir::function_return_type>(root)
-				|| mod.has_component<doir::function_inputs>(root)
-				|| mod.has_component<doir::function_parameter>(root)
-				|| mod.has_component<doir::type_definition>(root)
-				|| mod.has_component<doir::alias>(root)
-				|| mod.has_component<doir::type_of>(root)
-				|| mod.has_component<doir::number>(root)
-				|| mod.has_component<doir::string>(root)
-				|| mod.has_component<doir::call>(root)
-				|| mod.has_component<doir::lookup::lookup>(root)
-				|| mod.has_component<doir::lookup::function_return_type>(root)
-				|| mod.has_component<doir::lookup::function_inputs>(root)
-				// || mod.has_component<doir::lookup::block>(root)
-				|| mod.has_component<doir::lookup::alias>(root)
-				|| mod.has_component<doir::lookup::type_of>(root)
-				|| mod.has_component<doir::lookup::call>(root)
-			){
-				throw std::runtime_error("TODO: Invalid component attached");
-				valid = false;
-			}
-
-		} else if(mod.has_component<alias>(root) || mod.has_component<doir::lookup::alias>(root)) {
-			if(mod.has_component<doir::valueless>(root)
-				|| mod.has_component<doir::pointer>(root)
-				|| mod.has_component<doir::function_return_type>(root)
-				|| mod.has_component<doir::function_inputs>(root)
-				|| mod.has_component<doir::function_parameter>(root)
-				|| mod.has_component<doir::block>(root)
-				|| mod.has_component<doir::type_definition>(root)
-				|| mod.has_component<doir::Namespace>(root)
-				|| mod.has_component<doir::type_of>(root)
-				|| mod.has_component<doir::number>(root)
-				|| mod.has_component<doir::string>(root)
-				|| mod.has_component<doir::call>(root)
-				|| mod.has_component<doir::lookup::lookup>(root)
-				|| mod.has_component<doir::lookup::function_return_type>(root)
-				|| mod.has_component<doir::lookup::function_inputs>(root)
-				// || mod.has_component<doir::lookup::block>(root)
-				|| mod.has_component<doir::lookup::type_of>(root)
-				|| mod.has_component<doir::lookup::call>(root)
-			){
-				throw std::runtime_error("TODO: Invalid component attached");
-				valid = false;
-			}
-
-			if(mod.has_component<doir::flags>(root)) {
-				auto flags = mod.get_component<doir::flags>(root).flags;
-				if( !(flags == doir::flags::None || flags == doir::flags::Export) ) {
-					throw std::runtime_error("Invalid flags");
-					valid = false;
-				}
-			}
-
-			auto alias = mod.has_component<doir::alias>(root)
-				? lookup::alias(mod.get_component<doir::alias>(root).related[0])
-				: mod.get_component<lookup::alias>(root);
+			auto alias = mod.has_component<doir::alias>(subtree)
+				? lookup::alias(mod.get_component<doir::alias>(subtree).related[0])
+				: mod.get_component<lookup::alias>(subtree);
 
 			if(alias.resolved())
 				return verify::structure(diagnostics, mod, alias.entity(), false);
 
-		} else if(mod.has_component<block>(root)) {
+		} else if(mod.has_component<block>(subtree)) {
+			if(mod.has_component<doir::flags>(subtree)) {
+				auto flags = mod.get_component<doir::flags>(subtree).flags;
+				if( flags != doir::flags::None ) {
+					throw std::runtime_error("Invalid flags");
+					valid = false;
+				}
+			}
+
 			if(top_level)
 				valid = true;
 			else {
@@ -320,15 +341,15 @@ namespace doir::verify {
 			}
 		}
 
-		if(fp::contains(mod.freelist.begin(), mod.freelist.end(), root)) {
+		if(fp::contains(mod.freelist.begin(), mod.freelist.end(), subtree)) {
 			throw std::runtime_error("TODO: Referenced deleted entity");
 			valid = false;
 		}
 
-		if(mod.has_component<name>(root))
-			if(!verify::identifier_structure(diagnostics, mod, mod.get_component<name>(root), false)) valid = false;
+		if(mod.has_component<name>(subtree))
+			if(!verify::identifier_structure(diagnostics, mod, mod.get_component<name>(subtree), false)) valid = false;
 
-		if(mod.has_component<doir::block>(root)) for(auto e: mod.get_component<doir::block>(root).related)
+		if(mod.has_component<doir::block>(subtree)) for(auto e: mod.get_component<doir::block>(subtree).related)
 			if(!verify::structure(diagnostics, mod, e))
 				valid = false;
 
