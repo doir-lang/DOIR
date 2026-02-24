@@ -11,6 +11,8 @@
 #include "parser.hpp"
 #include "print.hpp"
 
+#include "sema/canonicalize/sort.hpp"
+
 #include "temp_byte_dumper.hpp"
 
 #include <filesystem>
@@ -38,11 +40,12 @@ int main(int argc, char** argv) {
 
 	auto root = builders.front().block;
 	doir::verify::structure(doir::diagnostics(), mod, root);
+	root = doir::canonicalize::sort(mod, root);
 	doir::print(std::cout, mod, root, true, true);
 
-	{
-		auto bytes = doir::byte_dumper(interner).interpret(mod, root);
-		std::ofstream fout("res.bin", std::ios::binary);
-		fout.write((char*)bytes.data(), bytes.size());
-	}
+	// {
+	// 	auto bytes = doir::byte_dumper(interner).interpret(mod, root);
+	// 	std::ofstream fout("res.bin", std::ios::binary);
+	// 	fout.write((char*)bytes.data(), bytes.size());
+	// }
 }
