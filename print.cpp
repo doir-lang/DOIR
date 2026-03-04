@@ -10,6 +10,30 @@
 #include <sstream>
 
 std::ostream& print_impl(std::ostream& out, const doir::module& mod, ecrs::entity_t subtree, bool pretty, bool debug, size_t indent = 0);
+std::string print_lookup_name(const doir::module& mod, doir::lookup::lookup lookup, bool debug);
+
+std::string print_function_type(const doir::module& mod, ecrs::entity_t type, bool debug) {
+	auto inputs = mod.has_component<doir::function_inputs>(type)
+		? doir::lookup::function_inputs::to_lookup(mod.get_component<doir::function_inputs>(type))
+		: mod.get_component<doir::lookup::function_inputs>(type);
+	std::optional<doir::lookup::function_return_type> return_type = {};
+	if(mod.has_component<doir::function_return_type>(type))
+		return_type = {mod.get_component<doir::function_return_type>(type).related[0]};
+	else if(mod.has_component<doir::lookup::function_return_type>(type))
+		return_type = mod.get_component<doir::lookup::function_return_type>(type);
+
+	std::ostringstream out;
+	out << "(";
+	for(size_t i = 0; i < inputs.size(); ++i)
+		out << (i > 0 ? "," : "") << "%" << i << ":" << print_lookup_name(mod, inputs[i], debug);
+	out << ")";
+
+	if(return_type)
+		out << "->" << print_lookup_name(mod, *return_type, debug);
+	if(debug)
+		out << "[" << type << "]";
+	return out.str();
+}
 
 std::string print_lookup_name(const doir::module& mod, doir::lookup::lookup lookup, bool debug) {
 	if(!lookup.resolved())
@@ -21,28 +45,8 @@ std::string print_lookup_name(const doir::module& mod, doir::lookup::lookup look
 		return out;
 	}
 
-	if(mod.has_component<doir::function_inputs>(lookup.entity()) || mod.has_component<doir::lookup::function_inputs>(lookup.entity())) {
-		auto inputs = mod.has_component<doir::function_inputs>(lookup.entity())
-			? doir::lookup::function_inputs::to_lookup(mod.get_component<doir::function_inputs>(lookup.entity()))
-			: mod.get_component<doir::lookup::function_inputs>(lookup.entity());
-		std::optional<doir::lookup::function_return_type> return_type = {};
-		if(mod.has_component<doir::function_return_type>(lookup.entity()))
-			return_type = {mod.get_component<doir::function_return_type>(lookup.entity()).related[0]};
-		else if(mod.has_component<doir::function_return_type>(lookup.entity()))
-			return_type = mod.get_component<doir::lookup::function_return_type>(lookup.entity());
-
-		std::ostringstream out;
-		out << "(";
-		for(size_t i = 0; i < inputs.size(); ++i)
-			out << (i > 0 ? "," : "") << "%" << i << ":" << print_lookup_name(mod, inputs[i], debug);
-		out << ")";
-
-		if(return_type)
-			out << "->" << print_lookup_name(mod, *return_type, debug);
-		if(debug)
-			out << "[" << lookup.entity() << "]";
-		return out.str();
-	}
+	if(mod.has_component<doir::function_inputs>(lookup.entity()) || mod.has_component<doir::lookup::function_inputs>(lookup.entity()))
+		return print_function_type(mod, lookup.entity(), debug);
 
 	return "%" + std::to_string(lookup.entity());
 }
@@ -192,7 +196,9 @@ std::ostream& print_impl(std::ostream& out, const doir::module& mod, ecrs::entit
 	else if(mod.has_component<doir::type_definition>(subtree)) {
 		auto [ident, type, location, Export] = get_common_assignment_elements(mod, subtree, debug);
 		out << indent_string << Export << ident << (pretty ? ": " : ":") << type << (pretty ? " = " : "=");
-		print_block(out, mod, mod.get_component<doir::block>(subtree), pretty, debug, false, indent);
+		if(mod.has_component<doir::block>(subtree))
+			print_block(out, mod, mod.get_component<doir::block>(subtree), pretty, debug, false, indent);
+		else out << print_function_type(mod, subtree, debug);
 
 	} else if(mod.has_component<doir::flags>(subtree) && mod.get_component<doir::flags>(subtree).namespace_set()) {
 		auto [ident, type, location, Export] = get_common_assignment_elements(mod, subtree, debug);

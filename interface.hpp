@@ -124,10 +124,6 @@ namespace doir {
 		struct call : public lookup {};
 	}
 
-	// (inputs...) -> return_type
-	ecrs::entity_t make_function_type(doir::module &mod, std::span<ecrs::entity_t> argument_types, std::optional<ecrs::entity_t> return_type = {});
-	ecrs::entity_t make_function_type(doir::module &mod, std::span<lookup::lookup> argument_types, std::optional<lookup::lookup> return_type = {});
-
 	struct function_builder;
 
 	struct block_builder {
@@ -135,7 +131,13 @@ namespace doir {
 		doir::module* mod = nullptr;
 		static block_builder create(doir::module& mod);
 
-		ecrs::entity_t end(std::optional<diagnose::source_location> location = {});
+		// ecrs::entity_t end(std::optional<diagnose::source_location> location = {});
+
+		block_builder& clear();
+		// Both of these functions append to the existing block content...
+		//	Thus it may need to be cleared first
+		block_builder& move_exisiting(block_builder& source);
+		block_builder& copy_existing(const block_builder& source);
 
 		// "type_of" spec
 		// %0 : i32 = 5
@@ -168,6 +170,9 @@ namespace doir {
 		// "type" spec
 		// vec3 : type = { x : f32; y : f32; z : f32; }
 		block_builder push_type(interned_string name);
+		// func_t : type = (a: i32) -> f32
+		ecrs::entity_t push_function_type(interned_string name, std::span<ecrs::entity_t> argument_types, std::optional<ecrs::entity_t> return_type = {});
+		ecrs::entity_t push_function_type(interned_string name, std::span<lookup::lookup> argument_types, std::optional<lookup::lookup> return_type = {});
 
 		// "alias" spec
 		// color : alias = vec3

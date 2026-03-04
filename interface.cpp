@@ -35,21 +35,6 @@ namespace doir {
 		return parameters;
 	}
 
-	ecrs::entity_t make_function_type(doir::module &mod, std::span<ecrs::entity_t> argument_types, std::optional<ecrs::entity_t> return_type /*= {} */) {
-		auto out = mod.add_entity();
-		mod.add_component<type_definition>(out);
-		mod.add_component<function_inputs>(out).related = {argument_types.begin(), argument_types.end()};
-		if(return_type) mod.add_component<function_return_type>(out).related = {*return_type};
-		return out;
-	}
-	ecrs::entity_t make_function_type(doir::module &mod, std::span<lookup::lookup> argument_types, std::optional<lookup::lookup> return_type /*= {} */) {
-		auto out = mod.add_entity();
-		mod.add_component<type_definition>(out);
-		mod.add_component<lookup::function_inputs>(out) = {{argument_types.begin(), argument_types.end()}};
-		if(return_type) mod.add_component<lookup::function_return_type>(out) = {*return_type};
-		return out;
-	}
-
 	block_builder block_builder::create(doir::module &mod) {
 		block_builder out;
 		out.mod = &mod;
@@ -58,7 +43,32 @@ namespace doir {
 		return out;
 	}
 
+	block_builder& block_builder::clear() {
+		mod->get_component<doir::block>(block).related.clear();
+		return *this;
+	}
+
+	block_builder& block_builder::move_exisiting(block_builder& source) {
+		assert(mod->has_component<doir::block>(block));
+		assert(mod->has_component<doir::block>(source.block));
+		auto& dest = mod->get_component<doir::block>(block);
+		auto& src = mod->get_component<doir::block>(source.block);
+		if(dest.related.empty())
+			dest.related = std::move(src.related);
+		else {
+			std::copy(src.related.begin(), src.related.end(), std::back_inserter(dest.related));
+			src.related.clear();
+		}
+		return *this;
+	}
+	block_builder& block_builder::copy_existing(const block_builder& source) {
+		assert(mod->has_component<doir::block>(block));
+		assert(mod->has_component<doir::block>(source.block));
+		throw std::runtime_error("Not implemented yet");
+	}
+
 	ecrs::entity_t push_common(doir::module *mod, ecrs::entity_t block, interned_string name) {
+		assert(mod->has_component<doir::block>(block));
 		auto out = mod->add_entity();
 		if(std::string_view{name} != "_")
 			mod->add_component<doir::name>(out) = {name};
@@ -176,6 +186,21 @@ namespace doir {
 		mod->add_component<doir::type_definition>(out);
 		mod->add_component<doir::block>(out);
 		return {out, mod};
+	}
+
+	ecrs::entity_t block_builder::push_function_type(interned_string name, std::span<ecrs::entity_t> argument_types, std::optional<ecrs::entity_t> return_type /*= {}*/) {
+		auto out = push_common(mod, block, name);
+		mod->add_component<type_definition>(out);
+		mod->add_component<function_inputs>(out).related = {argument_types.begin(), argument_types.end()};
+		if(return_type) mod->add_component<function_return_type>(out).related = {*return_type};
+		return out;
+	}
+	ecrs::entity_t block_builder::push_function_type(interned_string name, std::span<lookup::lookup> argument_types, std::optional<lookup::lookup> return_type /*= {}*/) {
+		auto out = push_common(mod, block, name);
+		mod->add_component<type_definition>(out);
+		mod->add_component<lookup::function_inputs>(out) = {{argument_types.begin(), argument_types.end()}};
+		if(return_type) mod->add_component<lookup::function_return_type>(out) = {*return_type};
+		return out;
 	}
 
 	ecrs::entity_t block_builder::push_alias(interned_string name, ecrs::entity_t ref) {

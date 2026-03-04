@@ -25,7 +25,49 @@ struct call_info {
 	doir::lookup::function_inputs inputs;
 };
 
-using assignment_value_t = std::variant<long double, doir::interned_string, call_info, ecrs::entity_t>;
+using assignment_value_t = std::variant<long double, doir::interned_string, call_info, ecrs::entity_t, std::shared_ptr<struct function_type_t>>;
+
+struct function_type_t {
+	struct parameter {
+		doir::interned_string name;
+		doir::lookup::lookup type;
+		std::optional<assignment_value_t> value = {};
+	};
+	std::vector<parameter> inputs;
+	std::optional<doir::lookup::lookup> return_type = {};
+
+	ecrs::entity_t push_function_type(doir::block_builder& builder, doir::interned_string ident = "_"){
+		std::vector<doir::lookup::lookup> inputs; inputs.reserve(this->inputs.size());
+		for(auto& i: this->inputs)
+			inputs.push_back(i.type);
+		return builder.push_function_type(ident, inputs, return_type);
+	}
+
+	doir::function_builder push_function(doir::block_builder& builder, doir::interned_string name) {
+		auto out = builder.push_function(name, push_function_type(builder));
+		for(size_t i = 0; i < inputs.size(); ++i)
+			if(inputs[i].value && std::holds_alternative<long double>(*inputs[i].value)) {
+				if(inputs[i].type.resolved())
+					out.push_number_parameter(i, inputs[i].name, inputs[i].type.entity(), std::get<long double>(*inputs[i].value));
+				else out.push_number_parameter(i, inputs[i].name, inputs[i].type.name(), std::get<long double>(*inputs[i].value));
+			} else if(inputs[i].value && std::holds_alternative<doir::interned_string>(*inputs[i].value)) {
+				if(inputs[i].type.resolved())
+					out.push_string_parameter(i, inputs[i].name, inputs[i].type.entity(), std::get<doir::interned_string>(*inputs[i].value));
+				else out.push_string_parameter(i, inputs[i].name, inputs[i].type.name(), std::get<doir::interned_string>(*inputs[i].value));
+			} else {
+				if(inputs[i].type.resolved())
+					out.push_valueless_parameter(i, inputs[i].name, inputs[i].type.entity());
+				else out.push_valueless_parameter(i, inputs[i].name, inputs[i].type.name());
+			}
+		return out;
+	}
+
+	ecrs::entity_t push_valueless_function(doir::block_builder& builder, doir::interned_string name) {
+		return builder.push_valueless_function(name, push_function_type(builder));
+	}
+};
+
+
 
 peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, doir::string_interner& interner, bool guarantee_source_location /*= false */) {
 	auto grammar =
@@ -56,46 +98,6 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, do
 
 	// auto ok = parser.load_grammar(grammar);
 	// assert(ok);
-
-	struct function_type_t {
-		struct parameter {
-			interned_string name;
-			doir::lookup::lookup type;
-			std::optional<assignment_value_t> value = {};
-		};
-		std::vector<parameter> inputs;
-		std::optional<doir::lookup::lookup> return_type = {};
-
-		ecrs::entity_t make_function_type(doir::module& mod){
-			std::vector<doir::lookup::lookup> inputs; inputs.reserve(this->inputs.size());
-			for(auto& i: this->inputs)
-				inputs.push_back(i.type);
-			return doir::make_function_type(mod, inputs, return_type);
-		}
-
-		function_builder push_function(doir::block_builder& builder, interned_string name) {
-			auto out = builder.push_function(name, make_function_type(*builder.mod));
-			for(size_t i = 0; i < inputs.size(); ++i)
-				if(inputs[i].value && std::holds_alternative<long double>(*inputs[i].value)) {
-					if(inputs[i].type.resolved())
-						out.push_number_parameter(i, inputs[i].name, inputs[i].type.entity(), std::get<long double>(*inputs[i].value));
-					else out.push_number_parameter(i, inputs[i].name, inputs[i].type.name(), std::get<long double>(*inputs[i].value));
-				} else if(inputs[i].value && std::holds_alternative<interned_string>(*inputs[i].value)) {
-					if(inputs[i].type.resolved())
-						out.push_string_parameter(i, inputs[i].name, inputs[i].type.entity(), std::get<interned_string>(*inputs[i].value));
-					else out.push_string_parameter(i, inputs[i].name, inputs[i].type.name(), std::get<interned_string>(*inputs[i].value));
-				} else {
-					if(inputs[i].type.resolved())
-						out.push_valueless_parameter(i, inputs[i].name, inputs[i].type.entity());
-					else out.push_valueless_parameter(i, inputs[i].name, inputs[i].type.name());
-				}
-			return out;
-		}
-
-		ecrs::entity_t push_valueless_function(doir::block_builder& builder, interned_string name) {
-			return builder.push_valueless_function(name, make_function_type(*builder.mod));
-		}
-	};
 
 	auto compiler_interned = interner.intern("compiler");
 	auto type_interned = interner.intern("type");
@@ -128,11 +130,13 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, do
 		break; case 12: // value and sourceinfo
 			location = std::any_cast<diagnose::source_location::detailed>(vs[8 + Export]);
 		case 10: // value
-			value = std::any_cast<assignment_value_t>(vs[7 + Export]);
+			if(vs[7 + Export].type() == typeid(function_type_t))
+				value = std::make_unique<function_type_t>(std::any_cast<function_type_t>(vs[7 + Export])); // Function type
+			else value = std::any_cast<assignment_value_t>(vs[7 + Export]);
 		}
 
 		auto invalid_function_type_error = []() {
-			// TODO: Implement
+			throw std::runtime_error("TODO: Cannot store this value in a function register");
 		};
 
 		auto& mod = *blocks.back().mod;
@@ -159,7 +163,7 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, do
 			auto call = std::get<call_info>(*value);
 			if(type.type() == typeid(doir::lookup::type_of))
 				e = blocks.back().push_call(ident, std::any_cast<doir::lookup::type_of>(type).name(), call.function, call.inputs);
-			else e = blocks.back().push_call(ident, std::any_cast<function_type_t>(type).make_function_type(mod), call.function, call.inputs);
+			else e = blocks.back().push_call(ident, std::any_cast<function_type_t>(type).push_function_type(blocks.back()), call.function, call.inputs);
 
 			if(call.Inline || call.flatten || call.tail) {
 				auto f = (doir::flags::Inline * call.Inline) | (doir::flags::Flatten * call.flatten) | (doir::flags::Tail * call.tail);
@@ -169,9 +173,9 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, do
 			block_builder builder;
 			if(type.type() == typeid(doir::lookup::type_of)) {
 				auto type_name = std::any_cast<doir::lookup::type_of>(type).name();
-				if(type_name == type_interned)
+				if(type_name == type_interned) {
 					builder = blocks.back().push_type(ident);
-				else if(type_name == namespace_interned) {
+				} else if(type_name == namespace_interned) {
 					builder = blocks.back().push_namespace(ident);
 					if(ident == compiler_interned) {
 						mod.get_component<doir::name>(builder.block) = {interner.intern("compiler_ignored")};
@@ -194,10 +198,20 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, do
 			}
 
 			e = builder.block;
-			auto src = std::get<ecrs::entity_t>(*value);
-			auto& src_block = blocks.back().mod->get_component<doir::block>(src);
-			auto& dst_block = blocks.back().mod->get_component<doir::block>(e);
-			dst_block.related.insert(dst_block.related.end(), src_block.related.begin(), src_block.related.end());
+			block_builder source = {std::get<ecrs::entity_t>(*value), builder.mod};
+			builder.move_exisiting(source);
+
+		} else if(std::holds_alternative<std::shared_ptr<struct function_type_t>>(*value)) {
+			if(type.type() != typeid(doir::lookup::type_of)) {
+				throw std::runtime_error("TODO: Function types can only be assigned to registers of type `type`");
+			}
+			auto type_name = std::any_cast<doir::lookup::type_of>(type).name();
+			if(type_name != type_interned) {
+				throw std::runtime_error("TODO: Function types can only be assigned to registers of type `type`");
+			}
+
+			auto& function = std::get<std::shared_ptr<struct function_type_t>>(*value);
+			function->push_function_type(blocks.back(), ident);
 		}
 
 		if(location) mod.add_component<diagnose::source_location::detailed>(e) = *location;
@@ -221,7 +235,7 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, do
 		auto dbg = vs.size();
 		if(vs[3].type() == typeid(doir::lookup::type_of))
 			out.type = std::any_cast<doir::lookup::type_of>(vs[3]);
-		else out.type = std::any_cast<function_type_t>(vs[3]).make_function_type(*blocks.back().mod);
+		else out.type = std::any_cast<function_type_t>(vs[3]).push_function_type(blocks.back());
 
 		if(vs.size() == 6)
 			out.value = std::any_cast<assignment_value_t>(vs[5]);
