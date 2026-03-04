@@ -28,13 +28,13 @@ namespace doir {
 			Namespace = (1 << 2),
 
 			Export = (1 << 3),
-			Comptime = (1 << 4), // On a function implies that the function can access the emitter object
+			Comptime = (1 << 4),
 			Constant = (1 << 5),
 			Pure = (1 << 6),
 			Inline = (1 << 7),
 			Flatten = (1 << 8),
 			Tail = (1 << 9),
-		} flags;
+		} flags = None;
 
 		inline uint16_t& as_underlying() { return (uint16_t&)flags; }
 		inline bool valueless_set() const { return flags & Valueless; }
@@ -60,6 +60,7 @@ namespace doir {
 	struct function_inputs : public ecrs::relation<> {
 		std::vector<ecrs::entity_t> associated_parameters(const module& mod, const doir::block& block);
 	}; // In a call the first input is the function to call
+	struct function_parameter_names : std::vector<interned_string> {};
 	struct function_parameter {
 		size_t index; // Increments to indicate the order of the parameters
 	};
@@ -133,6 +134,7 @@ namespace doir {
 
 		// ecrs::entity_t end(std::optional<diagnose::source_location> location = {});
 
+		block_builder& build_global_block();
 		block_builder& clear();
 		// Both of these functions append to the existing block content...
 		//	Thus it may need to be cleared first
@@ -171,8 +173,8 @@ namespace doir {
 		// vec3 : type = { x : f32; y : f32; z : f32; }
 		block_builder push_type(interned_string name);
 		// func_t : type = (a: i32) -> f32
-		ecrs::entity_t push_function_type(interned_string name, std::span<ecrs::entity_t> argument_types, std::optional<ecrs::entity_t> return_type = {});
-		ecrs::entity_t push_function_type(interned_string name, std::span<lookup::lookup> argument_types, std::optional<lookup::lookup> return_type = {});
+		ecrs::entity_t push_function_type(interned_string name, std::span<ecrs::entity_t> parameter_types, std::optional<ecrs::entity_t> return_type = {}, std::span<interned_string> parameter_names = {});
+		ecrs::entity_t push_function_type(interned_string name, std::span<lookup::lookup> parameter_types, std::optional<lookup::lookup> return_type = {}, std::span<interned_string> parameter_names = {});
 
 		// "alias" spec
 		// color : alias = vec3

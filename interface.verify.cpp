@@ -174,11 +174,29 @@ namespace doir::verify {
 					? doir::lookup::function_inputs::to_lookup(mod.get_component<doir::function_inputs>(t.entity()))
 					: mod.get_component<doir::lookup::function_inputs>(t.entity());
 
-				if(mod.has_component<doir::block>(subtree)
-					&& inputs.associated_parameters(mod, mod.get_component<doir::block>(subtree)).size() != inputs.size()
-				) {
-					throw std::runtime_error("TODO: A different number of parameters are defined than declared.");
-					valid = false;
+				if(mod.has_component<doir::function_parameter_names>(subtree)) {
+					auto& names = mod.get_component<doir::function_parameter_names>(subtree);
+					if(names.size() != inputs.size()) {
+						throw std::runtime_error("TODO: The number of parameter names must match the number of parameters");
+						valid = false;
+					}
+				}
+
+				if(mod.has_component<doir::block>(subtree)) {
+					auto associated_parameters = inputs.associated_parameters(mod, mod.get_component<doir::block>(subtree));
+					if(associated_parameters.size() != inputs.size()) {
+						throw std::runtime_error("TODO: A different number of parameters are defined than declared.");
+						valid = false;
+					}
+
+					if(mod.has_component<doir::function_parameter_names>(subtree)) {
+						auto& names = mod.get_component<doir::function_parameter_names>(subtree);
+						for(size_t i = 0; i < associated_parameters.size(); ++i)
+							if(mod.has_component<doir::name>(associated_parameters[i]) && names[i] != mod.get_component<doir::name>(associated_parameters[i])) {
+								throw std::runtime_error("TODO: Parameter names differ");
+								valid = false;
+							}
+					}
 				}
 			}
 
@@ -223,6 +241,13 @@ namespace doir::verify {
 					return_type = {mod.get_component<doir::function_return_type>(subtree).related[0]};
 				else if(mod.has_component<doir::lookup::function_return_type>(subtree))
 					return_type = mod.get_component<doir::lookup::function_return_type>(subtree);
+
+				if(mod.has_component<doir::function_parameter_names>(subtree)) {
+					auto& names = mod.get_component<doir::function_parameter_names>(subtree);
+					if(names.size() != inputs.size()) {
+						throw std::runtime_error("TODO: The number of parameter names must match the number of parameters");
+					}
+				}
 
 				if(return_type && return_type->resolved() && !verify::structure(diagnostics, mod, return_type->entity(), false))
 					valid = false;

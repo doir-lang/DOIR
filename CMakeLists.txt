@@ -9,7 +9,7 @@ add_subdirectory(libecrs)
 ADD_SUBDIRECTORY(libdiagnose)
 
 add_executable(doir
-	driver.cpp diagnostics.cpp interface.cpp interface.verify.cpp module.cpp print.cpp parser.cpp
+	driver.cpp diagnostics.cpp interface.cpp interface.global_block.cpp interface.verify.cpp module.cpp print.cpp parser.cpp
 	sema/canonicalize/sort.cpp
 )
 target_link_libraries(doir PUBLIC libecrs diagnose peglib)

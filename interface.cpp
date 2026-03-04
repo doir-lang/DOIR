@@ -188,18 +188,26 @@ namespace doir {
 		return {out, mod};
 	}
 
-	ecrs::entity_t block_builder::push_function_type(interned_string name, std::span<ecrs::entity_t> argument_types, std::optional<ecrs::entity_t> return_type /*= {}*/) {
+	ecrs::entity_t block_builder::push_function_type(interned_string name, std::span<ecrs::entity_t> argument_types, std::optional<ecrs::entity_t> return_type /*= {}*/, std::span<interned_string> parameter_names /*= {}*/) {
 		auto out = push_common(mod, block, name);
 		mod->add_component<type_definition>(out);
 		mod->add_component<function_inputs>(out).related = {argument_types.begin(), argument_types.end()};
 		if(return_type) mod->add_component<function_return_type>(out).related = {*return_type};
+		if(parameter_names.size()) {
+			assert(parameter_names.size() == argument_types.size());
+			mod->add_component<function_parameter_names>(out) = {{ parameter_names.begin(), parameter_names.end() }};
+		}
 		return out;
 	}
-	ecrs::entity_t block_builder::push_function_type(interned_string name, std::span<lookup::lookup> argument_types, std::optional<lookup::lookup> return_type /*= {}*/) {
+	ecrs::entity_t block_builder::push_function_type(interned_string name, std::span<lookup::lookup> argument_types, std::optional<lookup::lookup> return_type /*= {}*/, std::span<interned_string> parameter_names /*= {}*/) {
 		auto out = push_common(mod, block, name);
 		mod->add_component<type_definition>(out);
 		mod->add_component<lookup::function_inputs>(out) = {{argument_types.begin(), argument_types.end()}};
 		if(return_type) mod->add_component<lookup::function_return_type>(out) = {*return_type};
+		if(parameter_names.size()) {
+			assert(parameter_names.size() == argument_types.size());
+			mod->add_component<function_parameter_names>(out) = {{ parameter_names.begin(), parameter_names.end() }};
+		}
 		return out;
 	}
 

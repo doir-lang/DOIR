@@ -27,10 +27,9 @@ int main(int argc, char** argv) {
 
 	doir::module mod;
 	std::vector<doir::block_builder> builders;
-	builders.push_back(doir::block_builder::create(mod));
+	builders.push_back(doir::block_builder::create(mod).build_global_block());
 
-	doir::string_interner interner;
-	auto parser = initialize_parser(builders, interner);
+	auto parser = initialize_parser(builders);
 
 	mod.parse_file(parser, argv[1]);
 	if(doir::diagnostics().count() > 0) {

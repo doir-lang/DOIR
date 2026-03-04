@@ -40,7 +40,10 @@ struct function_type_t {
 		std::vector<doir::lookup::lookup> inputs; inputs.reserve(this->inputs.size());
 		for(auto& i: this->inputs)
 			inputs.push_back(i.type);
-		return builder.push_function_type(ident, inputs, return_type);
+		std::vector<doir::interned_string> names; names.reserve(this->inputs.size());
+		for(auto& i: this->inputs)
+			names.push_back(i.name);
+		return builder.push_function_type(ident, inputs, return_type, names);
 	}
 
 	doir::function_builder push_function(doir::block_builder& builder, doir::interned_string name) {
@@ -69,7 +72,7 @@ struct function_type_t {
 
 
 
-peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, doir::string_interner& interner, bool guarantee_source_location /*= false */) {
+peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, bool guarantee_source_location /*= false */) {
 	auto grammar =
 #include "grammar.peg"
 	;
@@ -99,14 +102,14 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, do
 	// auto ok = parser.load_grammar(grammar);
 	// assert(ok);
 
-	auto compiler_interned = interner.intern("compiler");
-	auto type_interned = interner.intern("type");
-	auto namespace_interned = interner.intern("namespace");
-	auto alias_interned = interner.intern("alias");
+	auto& mod = *blocks.back().mod;
+	auto compiler_interned = mod.interner.intern("compiler");
+	auto type_interned = mod.interner.intern("type");
+	auto namespace_interned = mod.interner.intern("namespace");
+	auto alias_interned = mod.interner.intern("alias");
 
 	parser["assignment"] = [&, guarantee_source_location, compiler_interned, type_interned, namespace_interned, alias_interned](const peg::SemanticValues &vs) {
 		if(vs.choice() == 0) { // Changing languages is not supported in the prototype!
-			auto& mod = *blocks.back().mod;
 			auto& diag = push_diagnostic(diagnostic_type::LanguageChangeNotSupported, get_location(mod, vs), mod.source, *mod.working_file);
 			return ecrs::invalid_entity;
 		}
@@ -178,7 +181,7 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, do
 				} else if(type_name == namespace_interned) {
 					builder = blocks.back().push_namespace(ident);
 					if(ident == compiler_interned) {
-						mod.get_component<doir::name>(builder.block) = {interner.intern("compiler_ignored")};
+						mod.get_component<doir::name>(builder.block) = {mod.interner.intern("compiler_ignored")};
 						auto& diag = push_diagnostic(diagnostic_type::CompilerNamespaceReserved, get_location(mod, vs), mod.source, *mod.working_file);
 						diag.push_annotation_at_start({
 							.message = "Use of reserved "s + doir::ansi::type + "compiler" + diagnose::ansi::reset + " namespace has been ignored",
@@ -366,7 +369,7 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, do
 	};
 
 	parser["Identifier"] = [&](const peg::SemanticValues &vs) {
-		auto out = interner.intern(vs.token(0));
+		auto out = mod.interner.intern(vs.token(0));
 		verify::identifier_structure(diagnostics(), *blocks.back().mod, out);
 		return out;
 	};
@@ -381,7 +384,7 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, do
 			}
 			break; case 2: case 3: {
 				auto unescaped = unescape_python_string(vs.token(0));
-				return interner.intern(unescaped);
+				return mod.interner.intern(unescaped);
 			}
 		}
 		throw std::runtime_error("Constant Unreachable");

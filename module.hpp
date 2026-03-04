@@ -1,6 +1,7 @@
 #pragma once
 
 #include "libecrs/context.hpp"
+#include "string_helpers.hpp"
 #include <string_view>
 
 namespace peg {
@@ -11,6 +12,7 @@ namespace doir {
 	struct module : public ecrs::context {
 		std::string_view source;
 		std::optional<std::string_view> working_file = {};
+		string_interner interner;
 
 		bool parse(peg::parser& parser, std::string_view source, std::string_view path = "generated.doir");
 		bool parse_file(peg::parser& parser, std::string_view path);

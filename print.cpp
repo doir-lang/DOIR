@@ -22,10 +22,20 @@ std::string print_function_type(const doir::module& mod, ecrs::entity_t type, bo
 	else if(mod.has_component<doir::lookup::function_return_type>(type))
 		return_type = mod.get_component<doir::lookup::function_return_type>(type);
 
+	std::vector<std::string> names;
+	if(mod.has_component<doir::function_parameter_names>(type)) {
+		auto& param_names = mod.get_component<doir::function_parameter_names>(type);
+		names = {param_names.begin(), param_names.end()};
+	} else {
+		names.resize(inputs.size());
+		for(size_t i = 0; i < names.size(); ++i)
+			names[i] = "%" + std::to_string(i);
+	}
+
 	std::ostringstream out;
 	out << "(";
 	for(size_t i = 0; i < inputs.size(); ++i)
-		out << (i > 0 ? "," : "") << "%" << i << ":" << print_lookup_name(mod, inputs[i], debug);
+		out << (i > 0 ? "," : "") << names[i] << ":" << print_lookup_name(mod, inputs[i], debug);
 	out << ")";
 
 	if(return_type)
