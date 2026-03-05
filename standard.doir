@@ -3,13 +3,18 @@
 
 type : namespace = {
 	modifier_function_nocomp : type = (in: type) -> type
-	modifier_function : type = type.comptime(type.modifier_function_nocomp) // NOTE: If lookup can be out of order then this works...
-	export comptime : type.modifier_function // Marks the provided type as being a compile time constant
+	modifier_function : type = comptime(modifier_function_nocomp) // NOTE: If lookup can be out of order then this works...
+	export comptime : modifier_function // Marks the provided type as being a compile time constant
 
-	export pointer : type.modifier_function // Adds a pointer to the given type
-	export union : type.modifier_function // Converts a C "struct" to a C "union"
-	export pack : type.modifier_function // Reorganizes the type to be as tightly packed as possible
-	export unique : type.modifier_function // Forces a type alias to be a completely unique type
+	export pointer : modifier_function // Adds a pointer to the given type
+	export union : modifier_function // Converts a C "struct" to a C "union"
+	export pack : modifier_function // Reorganizes the type to be as tightly packed as possible
+	export unique : modifier_function // Forces a type alias to be a completely unique type
+
+	size_function_nocomp : type = (in: type) -> pointer_sized
+	size_function : type = comptime(size_function_nocomp)
+	export size_bits : size_function
+	export align_bits : size_function
 
 	export self : type = byte // Stores the value of whatever type we are currently inside of
 }
