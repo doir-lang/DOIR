@@ -1,6 +1,6 @@
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
-#define FP_DEFAULT_HASH_TABLE_BASE_SIZE 16
+// #define FP_DEFAULT_HASH_TABLE_BASE_SIZE 16
 
 #define FP_IMPLEMENTATION
 #define ECRS_IMPLEMENTATION
@@ -12,6 +12,8 @@
 #include "print.hpp"
 
 #include "sema/canonicalize/sort.hpp"
+#include "sema/lookup.hpp"
+#include "sema/strip_names.hpp"
 
 #include "temp_byte_dumper.hpp"
 
@@ -40,11 +42,16 @@ int main(int argc, char** argv) {
 	auto root = builders.front().block;
 	doir::verify::structure(doir::diagnostics(), mod, root);
 	root = doir::canonicalize::sort(mod, root);
+
+	// auto e = doir::lookup::resolve(mod, mod.interner.intern("T"), 28);
+	doir::sema::resolve_lookups(mod, root);
+	// doir::sema::strip_names(mod, root);
+
 	doir::print(std::cout, mod, root, true, true);
 
-	// {
-	// 	auto bytes = doir::byte_dumper(interner).interpret(mod, root);
-	// 	std::ofstream fout("res.bin", std::ios::binary);
-	// 	fout.write((char*)bytes.data(), bytes.size());
-	// }
+	{
+		auto bytes = doir::byte_dumper().interpret(mod, root);
+		std::ofstream fout("res.bin", std::ios::binary);
+		fout.write((char*)bytes.data(), bytes.size());
+	}
 }

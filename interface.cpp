@@ -43,6 +43,11 @@ namespace doir {
 		return out;
 	}
 
+	ecrs::entity_t block_builder::end() {
+		mod = nullptr;
+		return std::exchange(block, ecrs::invalid_entity);
+	}
+
 	block_builder& block_builder::clear() {
 		mod->get_component<doir::block>(block).related.clear();
 		return *this;
@@ -59,6 +64,9 @@ namespace doir {
 			std::copy(src.related.begin(), src.related.end(), std::back_inserter(dest.related));
 			src.related.clear();
 		}
+		// Make sure they are labeled as having the new block as their parent
+		for(auto e: dest.related)
+			mod->get_or_add_component<doir::parent>(e).related = {block};
 		return *this;
 	}
 	block_builder& block_builder::copy_existing(const block_builder& source) {
@@ -163,14 +171,35 @@ namespace doir {
 		return {out, mod};
 	}
 
-	function_builder block_builder::push_function(interned_string name, ecrs::entity_t function_type) {
-		auto out = push_common(mod, block, name);
-		mod->add_component<doir::type_of>(out) = {{function_type}};
-		mod->add_component<doir::block>(out);
+	function_builder block_builder::push_function(interned_string name, ecrs::entity_t function_type, bool push_parameters /*= false*/) {
+		auto out_block = push_common(mod, block, name);
+		mod->add_component<doir::type_of>(out_block) = {{function_type}};
+		mod->add_component<doir::block>(out_block);
 		if(mod->has_component<doir::function_return_type>(function_type))
-			mod->add_component<doir::function_return_type>(out) = mod->get_component<doir::function_return_type>(function_type);
-		else mod->add_component<lookup::function_return_type>(out) = mod->get_component<lookup::function_return_type>(function_type);
-		return {out, mod};
+			mod->add_component<doir::function_return_type>(out_block) = mod->get_component<doir::function_return_type>(function_type);
+		else mod->add_component<lookup::function_return_type>(out_block) = mod->get_component<lookup::function_return_type>(function_type);
+
+		if(!push_parameters) return {out_block, mod};
+
+		auto inputs = mod->has_component<doir::function_inputs>(function_type)
+			? doir::lookup::function_inputs::to_lookup(mod->get_component<doir::function_inputs>(function_type))
+			: mod->get_component<doir::lookup::function_inputs>(function_type);
+		std::vector<std::string> names;
+		if(mod->has_component<doir::function_parameter_names>(function_type)) {
+			auto& param_names = mod->get_component<doir::function_parameter_names>(function_type);
+			names = {param_names.begin(), param_names.end()};
+		} else {
+			names.resize(inputs.size());
+			for(size_t i = 0; i < names.size(); ++i)
+				names[i] = "a" + std::to_string(i);
+		}
+
+		function_builder out = {out_block, mod};
+		for(size_t i = 0; i < inputs.size(); ++i)
+			if(inputs[i].resolved())
+				out.push_valueless_parameter(i, mod->interner.intern(names[i]), inputs[i].entity());
+			else out.push_valueless_parameter(i, mod->interner.intern(names[i]), inputs[i].name());
+		return out;
 	}
 	ecrs::entity_t block_builder::push_valueless_function(interned_string name, ecrs::entity_t function_type) {
 		auto out = push_common(mod, block, name);

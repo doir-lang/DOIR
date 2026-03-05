@@ -187,7 +187,7 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, bo
 							.message = "Use of reserved "s + doir::ansi::type + "compiler" + diagnose::ansi::reset + " namespace has been ignored",
 							.color = doir::ansi::type
 						});
-						return builder.block;
+						return builder.end();
 					}
 				} else if(type_name == alias_interned) {
 					auto& diag = push_diagnostic(diagnostic_type::AliasNotAllowed, get_location(mod, vs), mod.source, *mod.working_file);
@@ -273,7 +273,7 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, bo
 	};
 
 	parser["Block"] = [&](const peg::SemanticValues &vs) -> assignment_value_t {
-		auto out = blocks.back().block;
+		auto out = blocks.back().end();
 		blocks.pop_back();
 		return out;
 	};

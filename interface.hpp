@@ -17,7 +17,7 @@ namespace doir {
 
 		bool entity_exists(diagnose::manager& diagnostics, module& module, ecrs::entity_t root);
 		bool identifier_structure(diagnose::manager& diagnostics, module& module, interned_string ident, bool allow_builtins = true); // Builtins are things like type and alias
-		bool structure(diagnose::manager& diagnostics, module& module, ecrs::entity_t root, bool top_level = true);
+		bool structure(diagnose::manager& diagnostics, module& module, ecrs::entity_t root, bool top_level = true, ecrs::entity_t builtin_end = ecrs::invalid_entity);
 	}
 
 	// Tags
@@ -132,7 +132,7 @@ namespace doir {
 		doir::module* mod = nullptr;
 		static block_builder create(doir::module& mod);
 
-		// ecrs::entity_t end(std::optional<diagnose::source_location> location = {});
+		ecrs::entity_t end();
 
 		block_builder& build_global_block();
 		block_builder& clear();
@@ -165,7 +165,7 @@ namespace doir {
 
 		// "function" spec
 		// add : (a: i32, b: i32 = 5) i32 = { built block... }
-		function_builder push_function(interned_string name, ecrs::entity_t function_type);
+		function_builder push_function(interned_string name, ecrs::entity_t function_type, bool push_parameters = false);
 		// foo : () void
 		ecrs::entity_t push_valueless_function(interned_string name, ecrs::entity_t function_type);
 

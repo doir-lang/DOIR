@@ -7,33 +7,29 @@
 
 namespace doir {
 	struct byte_dumper {
-		const interned_string compiler_emit;
-		std::unordered_map<interned_string, std::byte> lookup;
+		std::vector<std::byte> values;
 
-		byte_dumper(string_interner& interner) : compiler_emit(interner.intern("compiler.emit")) {}
+		std::vector<std::byte>& interpret_number_assign(std::vector<std::byte>& out, const doir::module& mod, ecrs::entity_t subtree) {
+			if(!mod.has_component<doir::number>(subtree)) return out;
 
-		std::vector<std::byte>& interpret_number_assign(std::vector<std::byte>& out, const doir::module& mod, ecrs::entity_t root) {
-			if(!mod.has_component<doir::name>(root)) return out;
-			if(!mod.has_component<doir::number>(root)) return out;
-
-			auto name = mod.get_component<doir::name>(root);
-			auto dbg = mod.get_component<doir::number>(root).value;
-			size_t value = dbg;
-			lookup[name] = (std::byte)value;
+			size_t value = mod.get_component<doir::number>(subtree).value;
+			if(values.size() <= subtree)
+				values.resize(subtree * 2);
+			values[subtree] = (std::byte)value;
 			return out;
 		}
 
-		std::vector<std::byte>& interpret_call(std::vector<std::byte>& out, const doir::module& mod, ecrs::entity_t root) {
-			if(!mod.has_component<doir::lookup::call>(root)) return out;
+		std::vector<std::byte>& interpret_call(std::vector<std::byte>& out, const doir::module& mod, ecrs::entity_t subtree) {
+			if(!mod.has_component<doir::lookup::call>(subtree)) return out;
 
-			auto& call = mod.get_component<doir::lookup::call>(root);
-			auto inputs = mod.has_component<doir::function_inputs>(root)
-				? doir::lookup::function_inputs::to_lookup(mod.get_component<doir::function_inputs>(root))
-				: mod.get_component<doir::lookup::function_inputs>(root);
-			assert(!call.resolved());
-			if(call.name() == compiler_emit) {
-				assert(!inputs[0].resolved());
-				out.push_back(lookup[inputs[0].name()]);
+			auto& call = mod.get_component<doir::lookup::call>(subtree);
+			auto inputs = mod.has_component<doir::function_inputs>(subtree)
+				? doir::lookup::function_inputs::to_lookup(mod.get_component<doir::function_inputs>(subtree))
+				: mod.get_component<doir::lookup::function_inputs>(subtree);
+			assert(call.resolved());
+			if(call.entity() == 9/* emit */) {
+				assert(inputs[0].resolved());
+				out.push_back(values[inputs[0].entity()]);
 			}
 			return out;
 		}

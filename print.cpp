@@ -29,7 +29,7 @@ std::string print_function_type(const doir::module& mod, ecrs::entity_t type, bo
 	} else {
 		names.resize(inputs.size());
 		for(size_t i = 0; i < names.size(); ++i)
-			names[i] = "%" + std::to_string(i);
+			names[i] = "a" + std::to_string(i);
 	}
 
 	std::ostringstream out;
@@ -55,7 +55,7 @@ std::string print_lookup_name(const doir::module& mod, doir::lookup::lookup look
 		return out;
 	}
 
-	if(mod.has_component<doir::function_inputs>(lookup.entity()) || mod.has_component<doir::lookup::function_inputs>(lookup.entity()))
+	if(mod.has_component<doir::type_definition>(lookup.entity()) && (mod.has_component<doir::function_inputs>(lookup.entity()) || mod.has_component<doir::lookup::function_inputs>(lookup.entity())))
 		return print_function_type(mod, lookup.entity(), debug);
 
 	return "%" + std::to_string(lookup.entity());
@@ -153,16 +153,17 @@ std::ostream& print_type_of(std::ostream& out, const doir::module& mod, ecrs::en
 		out << indent_string << Export << ident << (pretty ? ": " : ":");
 
 		auto ft = mod.get_component<doir::type_of>(subtree).related[0];
-		auto inputs = mod.has_component<doir::function_inputs>(ft)
-			? doir::lookup::function_inputs::to_lookup(mod.get_component<doir::function_inputs>(ft))
-			: mod.get_component<doir::lookup::function_inputs>(ft);
-		std::optional<doir::lookup::function_return_type> return_type = {};
-		if(mod.has_component<doir::function_return_type>(ft))
-			return_type = {mod.get_component<doir::function_return_type>(ft).related[0]};
-		else if(mod.has_component<doir::lookup::function_return_type>(ft))
-			return_type = mod.get_component<doir::lookup::function_return_type>(ft);
 
 		if(mod.has_component<doir::block>(subtree)) {
+			auto inputs = mod.has_component<doir::function_inputs>(ft)
+				? doir::lookup::function_inputs::to_lookup(mod.get_component<doir::function_inputs>(ft))
+				: mod.get_component<doir::lookup::function_inputs>(ft);
+			std::optional<doir::lookup::function_return_type> return_type = {};
+			if(mod.has_component<doir::function_return_type>(ft))
+				return_type = {mod.get_component<doir::function_return_type>(ft).related[0]};
+			else if(mod.has_component<doir::lookup::function_return_type>(ft))
+				return_type = mod.get_component<doir::lookup::function_return_type>(ft);
+
 			auto parameters = inputs.associated_parameters(mod, mod.get_component<doir::block>(subtree));
 
 			out << "(";
@@ -178,15 +179,7 @@ std::ostream& print_type_of(std::ostream& out, const doir::module& mod, ecrs::en
 			out << (pretty ? " = " : "=");
 			print_block(out, mod, mod.get_component<doir::block>(subtree), pretty, debug, true, indent);
 		} else { // Valueless function
-			out << "(";
-			for(size_t i = 0; i < inputs.size(); ++i)
-				out << (i > 0 ? (pretty ? ", " : ", ") : "") << "%" << i << (pretty ? ": " : ":") << print_lookup_name(mod, inputs[i], debug);
-			out << ")";
-
-			if(return_type)
-				out << (pretty ? " -> " : "->") << print_lookup_name(mod, *return_type, debug);
-			if(debug)
-				out << "[" << ft << "]";
+			out << print_function_type(mod, ft, debug);
 		}
 
 	} else if(mod.has_component<doir::block>(subtree)) {
