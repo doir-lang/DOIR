@@ -1,14 +1,15 @@
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 
+#include "../interface.hpp"
 #include "../module.hpp"
 #include "util.hpp"
 
 namespace doir::sema {
 
-	void walk_impl(doir::module& mod, ecrs::entity_t e) {
+	bool walk_impl(doir::module& mod, ecrs::entity_t e) {
 		// ...
 	}
 
-	DOIR_MAKE_SORTED_WALKER(walk, false)
+	// DOIR_MAKE_SORTED_WALKER(walk, false)
 }

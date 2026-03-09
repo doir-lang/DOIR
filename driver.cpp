@@ -43,9 +43,14 @@ int main(int argc, char** argv) {
 	doir::verify::structure(doir::diagnostics(), mod, root);
 	root = doir::canonicalize::sort(mod, root);
 
-	// auto e = doir::lookup::resolve(mod, mod.interner.intern("T"), 28);
-	doir::sema::resolve_lookups(mod, root);
-	// doir::sema::strip_names(mod, root);
+	auto schedule = ecrs::system::sequential(
+		doir::system::sorted(root, doir::sema::resolve_lookups),
+		ecrs::system::parallel(
+			// doir::system::sorted(root, doir::sema::strip_names),
+			doir::system::sorted(root, doir::sema::validate_lookups_resolved)
+		)
+	);
+	schedule(mod);
 
 	doir::print(std::cout, mod, root, true, true);
 

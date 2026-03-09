@@ -91,7 +91,9 @@ namespace doir {
 	}
 
 	namespace sema {
-		bool resolve_lookups_impl(doir::module& mod, ecrs::entity_t e) {
+		bool resolve_lookups(ecrs::context& ctx, ecrs::entity_t e) {
+			auto& mod = (doir::module&)ctx; // TODO: Verify cast
+
 			if(mod.has_component<doir::lookup::lookup>(e)) {
 				auto& lookup = mod.get_component<doir::lookup::lookup>(e);
 				doir::lookup::resolve(mod, lookup, e);
@@ -121,6 +123,74 @@ namespace doir {
 			return true;
 		}
 
-		DOIR_MAKE_SORTED_WALKER(resolve_lookups, false)
+		bool validate_lookups_resolved(ecrs::context& mod, ecrs::entity_t e) {
+			bool valid = true;
+			if(mod.has_component<doir::lookup::lookup>(e)) {
+				auto& lookup = mod.get_component<doir::lookup::lookup>(e);
+				if(!lookup.resolved()) {
+					throw std::runtime_error("TODO: Failed to resolve lookup");
+					valid = false;
+				}
+			}
+			if(mod.has_component<doir::lookup::function_return_type>(e)) {
+				auto& lookup = mod.get_component<doir::lookup::function_return_type>(e);
+				if(lookup.resolved()) {
+					mod.add_component<doir::function_return_type>(e).related = {lookup.entity()};
+					mod.remove_component<doir::lookup::function_return_type>(e);
+				} else {
+					throw std::runtime_error("TODO: Failed to resolve lookup");
+					valid = false;
+				}
+			}
+			if(mod.has_component<doir::lookup::function_inputs>(e)) {
+				auto& lookups = mod.get_component<doir::lookup::function_inputs>(e);
+				for(auto& lookup: lookups)
+					if(!lookup.resolved()) {
+						throw std::runtime_error("TODO: Failed to resolve lookup");
+						valid = false;
+					}
+
+				if(valid) {
+					auto& old = mod.get_component<doir::lookup::function_inputs>(e);
+					auto& new_ = mod.add_component<doir::function_inputs>(e);
+					new_.related.reserve(old.size());
+					for(size_t i = 0; i < old.size(); ++i)
+						new_.related.push_back(old[i].entity());
+					mod.remove_component<doir::lookup::function_inputs>(e);
+				}
+			}
+			if(mod.has_component<doir::lookup::alias>(e)) {
+				auto& lookup = mod.get_component<doir::lookup::alias>(e);
+				if(lookup.resolved()) {
+					mod.add_component<doir::alias>(e).related = {lookup.entity()};
+					mod.remove_component<doir::lookup::alias>(e);
+				} else {
+					throw std::runtime_error("TODO: Failed to resolve lookup");
+					valid = false;
+				}
+			}
+			if(mod.has_component<doir::lookup::type_of>(e)) {
+				auto& lookup = mod.get_component<doir::lookup::type_of>(e);
+				if(lookup.resolved()) {
+					mod.add_component<doir::type_of>(e).related = {lookup.entity()};
+					mod.remove_component<doir::lookup::type_of>(e);
+				} else {
+					throw std::runtime_error("TODO: Failed to resolve lookup");
+					valid = false;
+				}
+			}
+			if(mod.has_component<doir::lookup::call>(e)) {
+				auto& lookup = mod.get_component<doir::lookup::call>(e);
+				if(lookup.resolved()) {
+					mod.add_component<doir::call>(e).related = {lookup.entity()};
+					mod.remove_component<doir::lookup::call>(e);
+				} else {
+					throw std::runtime_error("TODO: Failed to resolve lookup");
+					valid = false;
+				}
+			}
+
+			return valid;
+		}
 	}
 }
