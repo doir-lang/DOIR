@@ -15,6 +15,8 @@
 #include "sema/lookup.hpp"
 #include "sema/strip_names.hpp"
 
+#include "opt/inline_functions.hpp"
+
 #include "temp_byte_dumper.hpp"
 
 #include <filesystem>
@@ -43,15 +45,19 @@ int main(int argc, char** argv) {
 	doir::verify::structure(doir::diagnostics(), mod, root);
 	root = doir::canonicalize::sort(mod, root);
 
-	auto schedule = ecrs::system::sequential(
+	auto sema_schedule = ecrs::system::sequential(
 		doir::system::sorted(root, doir::sema::resolve_lookups),
 		ecrs::system::parallel(
 			// doir::system::sorted(root, doir::sema::strip_names),
 			doir::system::sorted(root, doir::sema::validate_lookups_resolved)
 		)
 	);
-	schedule(mod);
+	auto opt_schedule = ecrs::system::sequential(
+		doir::system::sorted(root, doir::opt::inline_functions)
+	);
 
+	sema_schedule(mod);
+	opt_schedule(mod);
 	doir::print(std::cout, mod, root, true, true);
 
 	{

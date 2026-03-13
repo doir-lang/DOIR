@@ -1,8 +1,8 @@
 #pragma once
 
-#include "../interface.hpp"
-#include "../module.hpp"
-#include "../libecrs/systems.hpp"
+#include "interface.hpp"
+#include "module.hpp"
+#include "libecrs/systems.hpp"
 #include <ranges>
 #include <algorithm>
 
@@ -10,7 +10,7 @@ namespace doir::system {
 	template<typename... Targs, std::invocable<ecrs::context&, ecrs::entity_t, Targs...> Tfunc>
 	auto sorted(ecrs::entity_t subtree, Tfunc&& func, bool independent = false) {
 		return [=](ecrs::context& context, Targs... args) -> bool {
-			constexpr static auto impl = [](const auto& impl, ecrs::entity_t subtree, bool independent, Tfunc&& func, ecrs::context& context, Targs... args) {
+			constexpr static auto impl = [](const auto& impl, ecrs::entity_t subtree, bool independent, const Tfunc& func, ecrs::context& context, Targs... args) {
 				if(!context.has_component<doir::block>(subtree))
 					return func(context, subtree, std::forward<Targs>(args)...);
 				else {

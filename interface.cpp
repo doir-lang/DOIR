@@ -53,28 +53,6 @@ namespace doir {
 		return *this;
 	}
 
-	block_builder& block_builder::move_exisiting(block_builder& source) {
-		assert(mod->has_component<doir::block>(block));
-		assert(mod->has_component<doir::block>(source.block));
-		auto& dest = mod->get_component<doir::block>(block);
-		auto& src = mod->get_component<doir::block>(source.block);
-		if(dest.related.empty())
-			dest.related = std::move(src.related);
-		else {
-			std::copy(src.related.begin(), src.related.end(), std::back_inserter(dest.related));
-			src.related.clear();
-		}
-		// Make sure they are labeled as having the new block as their parent
-		for(auto e: dest.related)
-			mod->get_or_add_component<doir::parent>(e).related = {block};
-		return *this;
-	}
-	block_builder& block_builder::copy_existing(const block_builder& source) {
-		assert(mod->has_component<doir::block>(block));
-		assert(mod->has_component<doir::block>(source.block));
-		throw std::runtime_error("Not implemented yet");
-	}
-
 	ecrs::entity_t push_common(doir::module *mod, ecrs::entity_t block, interned_string name) {
 		assert(mod->has_component<doir::block>(block));
 		auto out = mod->add_entity();
@@ -178,6 +156,8 @@ namespace doir {
 		if(mod->has_component<doir::function_return_type>(function_type))
 			mod->add_component<doir::function_return_type>(out_block) = mod->get_component<doir::function_return_type>(function_type);
 		else mod->add_component<lookup::function_return_type>(out_block) = mod->get_component<lookup::function_return_type>(function_type);
+
+		mod->get_or_add_component<doir::flags>(function_type).as_underlying() |= doir::flags::Inline; // TODO: Don't mark every function as inline!
 
 		if(!push_parameters) return {out_block, mod};
 

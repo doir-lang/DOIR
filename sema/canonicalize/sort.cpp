@@ -55,7 +55,7 @@ namespace doir::canonicalize {
 			}
 
 		} else if(mod.has_component<type_definition>(subtree)) {
-			if(mod.has_component<doir::function_inputs>(subtree)) {
+			if(mod.has_component<doir::function_inputs>(subtree) || mod.has_component<doir::lookup::function_inputs>(subtree)) {
 				auto inputs = mod.has_component<doir::function_inputs>(subtree)
 					? doir::lookup::function_inputs::to_lookup(mod.get_component<doir::function_inputs>(subtree))
 					: mod.get_component<doir::lookup::function_inputs>(subtree);

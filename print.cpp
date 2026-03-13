@@ -214,7 +214,7 @@ std::ostream& print_impl(std::ostream& out, const doir::module& mod, ecrs::entit
 			? doir::lookup::alias(mod.get_component<doir::alias>(subtree).related[0], mod.get_component<doir::alias>(subtree).file)
 			: mod.get_component<doir::lookup::alias>(subtree);
 
-		out << indent_string << Export << ident << (pretty ? ": " : ":") << type << (pretty ? " = " : "=")
+		out << indent_string << Export << ident << (pretty ? ": " : ":") << "alias" << (pretty ? " = " : "=")
 			<< print_lookup_name(mod, alias, debug);
 		if(debug && alias.file)
 			out << "[" << *alias.file << "]";
