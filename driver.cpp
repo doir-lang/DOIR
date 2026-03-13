@@ -15,6 +15,9 @@
 #include "sema/lookup.hpp"
 #include "sema/strip_names.hpp"
 
+#include "opt/inline_functions.hpp"
+// #include "opt/materialize_aliases.hpp"
+
 #include "temp_byte_dumper.hpp"
 
 #include <filesystem>
@@ -43,15 +46,23 @@ int main(int argc, char** argv) {
 	doir::verify::structure(doir::diagnostics(), mod, root);
 	root = doir::canonicalize::sort(mod, root);
 
-	auto schedule = ecrs::system::sequential(
-		doir::system::sorted(root, doir::sema::resolve_lookups),
+	auto sema_schedule = ecrs::system::sequential(
+		doir::system::sorted(doir::sema::resolve_lookups),
 		ecrs::system::parallel(
-			// doir::system::sorted(root, doir::sema::strip_names),
-			doir::system::sorted(root, doir::sema::validate_lookups_resolved)
+			// doir::system::sorted(doir::sema::strip_names),
+			doir::system::sorted(doir::sema::validate_lookups_resolved)
 		)
 	);
-	schedule(mod);
+	auto opt_schedule = ecrs::system::sequential(
+		doir::system::sorted(doir::opt::inline_functions, false, true)
+		// doir::system::sorted(doir::system::bind_root(doir::opt::materialize_aliases))
+	);
 
+	sema_schedule(mod);
+	opt_schedule(mod);
+	// doir::print(std::cout, mod, doir::canonicalize::new_root, true, true);
+	root = doir::canonicalize::sort(mod, doir::canonicalize::new_root);
+	doir::verify::structure(doir::diagnostics(), mod, root);
 	doir::print(std::cout, mod, root, true, true);
 
 	{

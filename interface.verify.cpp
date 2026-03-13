@@ -147,7 +147,7 @@ namespace doir::verify {
 				? std::optional<doir::flags>(mod.get_component<doir::flags>(subtree))
 				: std::optional<doir::flags>{};
 			if( !(call || call_lookup || function_def || function_def_lookup) && flags) {
-				if(flags->flatten_set() || flags->inline_set() || flags->pure_set() || flags->tail_set()) {
+				if((!block && flags->flatten_set()) || flags->inline_set() || flags->pure_set() || flags->tail_set()) {
 					throw std::runtime_error("TODO: Invalid flags");
 					valid = false;
 				}
@@ -161,19 +161,19 @@ namespace doir::verify {
 				doir::lookup::lookup call = mod.has_component<doir::call>(subtree)
 					? doir::lookup::lookup(mod.get_component<doir::call>(subtree).related[0])
 					: doir::lookup::lookup(mod.get_component<doir::lookup::call>(subtree));
-				if(call.resolved() && !verify::structure(diagnostics, mod, call.entity(), false, builtin_end)) valid = false;
+				// if(call.resolved() && !verify::structure(diagnostics, mod, call.entity(), false, builtin_end)) valid = false;
 				auto inputs = mod.has_component<doir::function_inputs>(subtree)
 					? doir::lookup::function_inputs::to_lookup(mod.get_component<doir::function_inputs>(subtree))
 					: mod.get_component<doir::lookup::function_inputs>(subtree);
-				for(auto& i: inputs)
-					if(i.resolved() && !verify::structure(diagnostics, mod, i.entity(), false, builtin_end)) valid = false;
+				// for(auto& i: inputs)
+				// 	if(i.resolved() && !verify::structure(diagnostics, mod, i.entity(), false, builtin_end)) valid = false;
 
 			} else if(function_def || function_def_lookup) {
 				if(!t.resolved()) {
 					throw std::runtime_error("TODO: function types can't be looked up");
 					return false;
 				}
-				if(!verify::structure(diagnostics, mod, t.entity(), false, builtin_end)) valid = false;
+				// if(!verify::structure(diagnostics, mod, t.entity(), false, builtin_end)) valid = false;
 
 				auto inputs = mod.has_component<doir::function_inputs>(t.entity())
 					? doir::lookup::function_inputs::to_lookup(mod.get_component<doir::function_inputs>(t.entity()))
@@ -252,10 +252,10 @@ namespace doir::verify {
 					}
 				}
 
-				if(return_type && return_type->resolved() && !verify::structure(diagnostics, mod, return_type->entity(), false, builtin_end))
-					valid = false;
-				for(auto& i: inputs)
-					if(i.resolved() && !verify::structure(diagnostics, mod, i.entity(), false, builtin_end)) valid = false;
+				// if(return_type && return_type->resolved() && !verify::structure(diagnostics, mod, return_type->entity(), false, builtin_end))
+				// 	valid = false;
+				// for(auto& i: inputs)
+				// 	if(i.resolved() && !verify::structure(diagnostics, mod, i.entity(), false, builtin_end)) valid = false;
 			}
 
 			if(mod.has_component<doir::flags>(subtree)) {
@@ -345,17 +345,17 @@ namespace doir::verify {
 				}
 			}
 
-			auto alias = mod.has_component<doir::alias>(subtree)
-				? lookup::alias(mod.get_component<doir::alias>(subtree).related[0])
-				: mod.get_component<lookup::alias>(subtree);
+			// auto alias = mod.has_component<doir::alias>(subtree)
+			// 	? lookup::alias(mod.get_component<doir::alias>(subtree).related[0])
+			// 	: mod.get_component<lookup::alias>(subtree);
 
-			if(alias.resolved())
-				return verify::structure(diagnostics, mod, alias.entity(), false, builtin_end);
+			// if(alias.resolved())
+			// 	return verify::structure(diagnostics, mod, alias.entity(), false, builtin_end);
 
 		} else if(mod.has_component<block>(subtree)) {
 			if(mod.has_component<doir::flags>(subtree)) {
 				auto flags = mod.get_component<doir::flags>(subtree).flags;
-				if( flags != doir::flags::None ) {
+				if( !(flags == doir::flags::None || flags == doir::flags::Flatten) ) {
 					throw std::runtime_error("Invalid flags");
 					valid = false;
 				}
@@ -377,9 +377,30 @@ namespace doir::verify {
 		if(mod.has_component<name>(subtree))
 			if(!verify::identifier_structure(diagnostics, mod, mod.get_component<name>(subtree), subtree <= builtin_end)) valid = false;
 
-		if(mod.has_component<doir::block>(subtree)) for(auto e: mod.get_component<doir::block>(subtree).related)
+		if(mod.has_component<doir::parent>(subtree)) {
+			auto parent = mod.get_component<doir::parent>(subtree).related[0];
+			if(!mod.has_component<doir::block>(parent)) {
+				throw std::runtime_error("TODO: Parents must point to a valid block");
+				valid = false;
+			}
+			auto& block = mod.get_component<doir::block>(parent);
+			if(std::find(block.related.begin(), block.related.end(), subtree) == block.related.end()) {
+				throw std::runtime_error("TODO: The parent of an entity must also list that entity in its block");
+				valid = false;
+			}
+		}
+
+		if(mod.has_component<doir::block>(subtree)) for(auto e: mod.get_component<doir::block>(subtree).related) {
+			if(mod.has_component<doir::parent>(e)) {
+				auto parent = mod.get_component<doir::parent>(e).related[0];
+				if(parent != subtree) {
+					throw std::runtime_error("TODO: Children of a block must list that block as their parent");
+					valid = false;
+				}
+			}
 			if(!verify::structure(diagnostics, mod, e, false, builtin_end))
 				valid = false;
+		}
 
 		return valid;
 	}

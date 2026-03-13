@@ -2,7 +2,7 @@
 #define WIN32_LEAN_AND_MEAN
 
 #include "lookup.hpp"
-#include "util.hpp"
+#include "../systems.hpp"
 
 namespace doir {
 	inline ecrs::entity_t find_block(doir::module& mod, ecrs::entity_t e) {

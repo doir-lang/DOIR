@@ -13,12 +13,35 @@
 
 
 namespace doir::canonicalize {
-	void sort_tree_walk(module& mod, ecrs::entity_t subtree, std::vector<size_t>& order, std::set<ecrs::entity_t>& found) {
-		if(found.contains(subtree))
-			return;
+	thread_local ecrs::entity_t new_root = ecrs::invalid_entity;
 
-		if(mod.has_component<doir::block>(subtree)) for(auto e: mod.get_component<doir::block>(subtree).related)
-			sort_tree_walk(mod, e, order, found);
+	void sort_tree_walk(module& mod, ecrs::entity_t subtree, std::vector<size_t>& order, std::set<ecrs::entity_t>& found) {
+		if(found.contains(subtree)) return;
+		found.insert(subtree);
+
+		bool function_def = mod.has_component<doir::function_return_type>(subtree);
+		bool function_def_lookup = mod.has_component<doir::lookup::function_return_type>(subtree);
+
+		if(mod.has_component<doir::block>(subtree)) {
+			auto& related = mod.get_component<doir::block>(subtree).related;
+			if(function_def || function_def_lookup) {
+					std::sort(related.begin(), related.end(), [&mod](ecrs::entity_t a, ecrs::entity_t b) -> bool {
+					std::optional<function_parameter> a_param = mod.has_component<doir::function_parameter>(a)
+						? mod.get_component<doir::function_parameter>(a) : std::optional<function_parameter>{};
+					std::optional<function_parameter> b_param = mod.has_component<doir::function_parameter>(b)
+						? mod.get_component<doir::function_parameter>(b) : std::optional<function_parameter>{};
+					if(a_param && b_param)
+						return a_param.value().index < b_param.value().index;
+					else if(a_param)
+						return true;
+					else if(b_param)
+						return false;
+					else return a < b;
+				});
+			}
+			for(auto e: related)
+				sort_tree_walk(mod, e, order, found);
+		}
 
 		if(mod.has_component<type_of>(subtree) || mod.has_component<lookup::type_of>(subtree)) {
 			lookup::type_of t = mod.has_component<type_of>(subtree)
@@ -33,8 +56,6 @@ namespace doir::canonicalize {
 			bool string = mod.has_component<doir::string>(subtree);
 			bool call = mod.has_component<doir::call>(subtree);
 			bool call_lookup = mod.has_component<doir::lookup::call>(subtree);
-			bool function_def = mod.has_component<doir::function_return_type>(subtree);
-			bool function_def_lookup = mod.has_component<doir::lookup::function_return_type>(subtree);
 			bool block = mod.has_component<doir::block>(subtree);
 
 			if(call || call_lookup) {
@@ -55,7 +76,7 @@ namespace doir::canonicalize {
 			}
 
 		} else if(mod.has_component<type_definition>(subtree)) {
-			if(mod.has_component<doir::function_inputs>(subtree)) {
+			if(mod.has_component<doir::function_inputs>(subtree) || mod.has_component<doir::lookup::function_inputs>(subtree)) {
 				auto inputs = mod.has_component<doir::function_inputs>(subtree)
 					? doir::lookup::function_inputs::to_lookup(mod.get_component<doir::function_inputs>(subtree))
 					: mod.get_component<doir::lookup::function_inputs>(subtree);
@@ -84,7 +105,6 @@ namespace doir::canonicalize {
 		}
 
 		order.push_back(subtree);
-		found.insert(subtree);
 	}
 
 	ecrs::entity_t sort(module& mod, ecrs::entity_t root) {
@@ -120,6 +140,6 @@ namespace doir::canonicalize {
 			doir::lookup::function_inputs, doir::lookup::alias, doir::lookup::type_of, doir::lookup::call
 		>({order});
 
-		return new_root;
+		return canonicalize::new_root = new_root;
 	}
 }

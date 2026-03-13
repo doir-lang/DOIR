@@ -2,7 +2,7 @@
 
 #include "../interface.hpp"
 #include "../module.hpp"
-#include "util.hpp"
+#include "../systems.hpp"
 
 namespace doir::sema {
 	inline bool strip_names(ecrs::context& mod, ecrs::entity_t subtree) {

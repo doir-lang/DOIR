@@ -1,6 +1,7 @@
 #include "../module.hpp"
 
 namespace doir::canonicalize {
-	// void sort_tree_walk(module& mod, ecrs::entity_t subtree, std::vector<size_t>& order, std::set<ecrs::entity_t>& found);
+	thread_local extern ecrs::entity_t new_root;
+
 	ecrs::entity_t sort(module& mod, ecrs::entity_t root);
 }

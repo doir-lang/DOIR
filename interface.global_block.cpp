@@ -7,6 +7,7 @@
 namespace doir {
 	block_builder& block_builder::build_global_block() {
 		auto pointer_sized_interned = mod->interner.intern("pointer_sized");
+		auto value_interned = mod->interner.intern("value");
 		auto T_interned = mod->interner.intern("T");
 		auto type = push_type(mod->interner.intern("type")).end();
 		mod->get_or_add_component<doir::flags>(type).as_underlying() |= doir::flags::Comptime;
@@ -30,7 +31,7 @@ namespace doir {
 		compiler.push_valueless_function(mod->interner.intern("emit"), compiler.push_function_type(mod->interner.intern("emit_t"), inputs, byte));
 
 		inputs = {type, T_interned};
-		names = {T_interned, mod->interner.intern("value")};
+		names = {T_interned, value_interned};
 		compiler.push_function(mod->interner.intern("return"), compiler.push_function_type(mod->interner.intern("return_t"), inputs, T_interned, names), true).end();
 		return *this;
 	}

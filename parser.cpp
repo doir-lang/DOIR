@@ -108,7 +108,9 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, bo
 	auto namespace_interned = mod.interner.intern("namespace");
 	auto alias_interned = mod.interner.intern("alias");
 
-	parser["assignment"] = [&, guarantee_source_location, compiler_interned, type_interned, namespace_interned, alias_interned](const peg::SemanticValues &vs) {
+	parser["assignment"] = [&, guarantee_source_location, compiler_interned, type_interned, namespace_interned, alias_interned]
+		(const peg::SemanticValues &vs)
+	{
 		if(vs.choice() == 0) { // Changing languages is not supported in the prototype!
 			auto& diag = push_diagnostic(diagnostic_type::LanguageChangeNotSupported, get_location(mod, vs), mod.source, *mod.working_file);
 			return ecrs::invalid_entity;
@@ -133,7 +135,9 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, bo
 		break; case 12: // value and sourceinfo
 			location = std::any_cast<diagnose::source_location::detailed>(vs[8 + Export]);
 		case 10: // value
-			if(vs[7 + Export].type() == typeid(function_type_t))
+			if(vs[7 + Export].type() == typeid(interned_string))
+				value = call_info{.function = alias_interned, .inputs = {{std::any_cast<interned_string>(vs[7 + Export])}}};
+			else if(vs[7 + Export].type() == typeid(function_type_t))
 				value = std::make_unique<function_type_t>(std::any_cast<function_type_t>(vs[7 + Export])); // Function type
 			else value = std::any_cast<assignment_value_t>(vs[7 + Export]);
 		}
@@ -164,13 +168,18 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, bo
 			} else invalid_function_type_error();
 		} else if(std::holds_alternative<call_info>(*value)) {
 			auto call = std::get<call_info>(*value);
-			if(type.type() == typeid(doir::lookup::type_of))
-				e = blocks.back().push_call(ident, std::any_cast<doir::lookup::type_of>(type).name(), call.function, call.inputs);
-			else e = blocks.back().push_call(ident, std::any_cast<function_type_t>(type).push_function_type(blocks.back()), call.function, call.inputs);
+			if(type.type() == typeid(doir::lookup::type_of)) {
+				auto name = std::any_cast<doir::lookup::type_of>(type).name();
+				if(name == alias_interned && call.function == alias_interned)
+					e = blocks.back().push_alias(ident, call.inputs[0].name());
+				else if(call.function == alias_interned)
+					throw std::runtime_error("TODO: Cannot directly copy registers, instead call copy or move");
+				else e = blocks.back().push_call(ident, name, call.function, call.inputs);
+			} else e = blocks.back().push_call(ident, std::any_cast<function_type_t>(type).push_function_type(blocks.back()), call.function, call.inputs);
 
 			if(call.Inline || call.flatten || call.tail) {
 				auto f = (doir::flags::Inline * call.Inline) | (doir::flags::Flatten * call.flatten) | (doir::flags::Tail * call.tail);
-				blocks.back().mod->add_component<doir::flags>(e) = (doir::flags&)f;
+				blocks.back().mod->add_component<doir::flags>(e).as_underlying() = f;
 			}
 		} else if(std::holds_alternative<ecrs::entity_t>(*value)) {
 			block_builder builder;

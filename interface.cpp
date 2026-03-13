@@ -53,34 +53,12 @@ namespace doir {
 		return *this;
 	}
 
-	block_builder& block_builder::move_exisiting(block_builder& source) {
-		assert(mod->has_component<doir::block>(block));
-		assert(mod->has_component<doir::block>(source.block));
-		auto& dest = mod->get_component<doir::block>(block);
-		auto& src = mod->get_component<doir::block>(source.block);
-		if(dest.related.empty())
-			dest.related = std::move(src.related);
-		else {
-			std::copy(src.related.begin(), src.related.end(), std::back_inserter(dest.related));
-			src.related.clear();
-		}
-		// Make sure they are labeled as having the new block as their parent
-		for(auto e: dest.related)
-			mod->get_or_add_component<doir::parent>(e).related = {block};
-		return *this;
-	}
-	block_builder& block_builder::copy_existing(const block_builder& source) {
-		assert(mod->has_component<doir::block>(block));
-		assert(mod->has_component<doir::block>(source.block));
-		throw std::runtime_error("Not implemented yet");
-	}
-
 	ecrs::entity_t push_common(doir::module *mod, ecrs::entity_t block, interned_string name) {
 		assert(mod->has_component<doir::block>(block));
 		auto out = mod->add_entity();
 		if(std::string_view{name} != "_")
 			mod->add_component<doir::name>(out) = {name};
-		mod->add_component<doir::parent>(out).related = {block};
+		mod->add_component<doir::parent>(out) = {{block}};
 		return mod->get_component<doir::block>(block).related.emplace_back(out);
 	}
 

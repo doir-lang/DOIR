@@ -11,6 +11,8 @@ namespace ecrs {
 
 namespace doir {
 
+	constexpr static ecrs::entity_t current_canonicalize_root = -2;
+
 	struct module;
 	namespace verify {
 		#define DOIR_BUILTIN_NAMES {"type", "alias", "namespace"}
@@ -19,6 +21,8 @@ namespace doir {
 		bool identifier_structure(diagnose::manager& diagnostics, module& module, interned_string ident, bool allow_builtins = true); // Builtins are things like type and alias
 		bool structure(diagnose::manager& diagnostics, module& module, ecrs::entity_t root, bool top_level = true, ecrs::entity_t builtin_end = ecrs::invalid_entity);
 	}
+
+	ecrs::entity_t deep_copy(module& module, ecrs::entity_t root, void(*extra_copy_instructions)(ecrs::entity_t dest, ecrs::entity_t src) = nullptr);
 
 	// Tags
 	struct flags {
@@ -30,10 +34,11 @@ namespace doir {
 			Export = (1 << 3),
 			Comptime = (1 << 4),
 			Constant = (1 << 5),
-			Pure = (1 << 6),
-			Inline = (1 << 7),
-			Flatten = (1 << 8),
-			Tail = (1 << 9),
+			Union = (1 << 6),
+			Pure = (1 << 7),
+			Inline = (1 << 8),
+			Flatten = (1 << 9),
+			Tail = (1 << 10),
 		} flags = None;
 
 		inline uint16_t& as_underlying() { return (uint16_t&)flags; }
@@ -43,6 +48,7 @@ namespace doir {
 		inline bool export_set() const { return flags & Export; }
 		inline bool comptime_set() const { return flags & Comptime; }
 		inline bool constant_set() const { return flags & Constant; }
+		inline bool union_set() const { return flags & Union; }
 		inline bool pure_set() const { return flags & Pure; }
 		inline bool inline_set() const { return flags & Inline; }
 		inline bool flatten_set() const { return flags & Flatten; }
@@ -139,7 +145,7 @@ namespace doir {
 		// Both of these functions append to the existing block content...
 		//	Thus it may need to be cleared first
 		block_builder& move_exisiting(block_builder& source);
-		block_builder& copy_existing(const block_builder& source);
+		block_builder& copy_existing(const block_builder& source, bool skip_parameters = false);
 
 		// "type_of" spec
 		// %0 : i32 = 5
