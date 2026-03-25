@@ -25,7 +25,7 @@ namespace doir {
 		return (get_component<doir::flags>(e).as_underlying() & check) > 0;
 	}
 
-	void substitute_entities_impl(module& mod, ecrs::entity_t subtree, const std::unordered_map<ecrs::entity_t, ecrs::entity_t>& substitutions) {
+	void substitute_entities_impl(module& mod, ecrs::entity_t subtree, const std::unordered_map<ecrs::entity_t, ecrs::entity_t>& substitutions, size_t depth, size_t max_depth) {
 		for(auto [to_find, to_replace]: substitutions) {
 			if(mod.has_component<doir::block>(subtree)){
 				auto& haystack = mod.get_component<doir::block>(subtree);
@@ -97,14 +97,14 @@ namespace doir {
 			}
 		}
 
-		if(mod.has_component<doir::block>(subtree)) {
+		if(depth < max_depth && mod.has_component<doir::block>(subtree)) {
 			for(auto& e: mod.get_component<doir::block>(subtree).related)
-				substitute_entities_impl(mod, e, substitutions);
+				substitute_entities_impl(mod, e, substitutions, depth + 1, max_depth);
 		}
 	}
 
-	void module::substitute_entities(ecrs::entity_t range, const std::unordered_map<ecrs::entity_t, ecrs::entity_t>& substitutions) {
+	void module::substitute_entities(ecrs::entity_t range, const std::unordered_map<ecrs::entity_t, ecrs::entity_t>& substitutions, size_t max_depth /* = -1*/) {
 		if(range == current_canonicalize_root) range = canonicalize::new_root;
-		substitute_entities_impl(*this, range, substitutions);
+		substitute_entities_impl(*this, range, substitutions, 0, max_depth);
 	}
 }

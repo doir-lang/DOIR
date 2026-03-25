@@ -3,8 +3,9 @@ i32 : type = compiler.base_type(%32, %32)
 
 add : (a: i32, b: i32) -> i32 = {
 	%0 : compiler.byte = 0x64
-	%1 : compiler.byte = compiler.emit(%0)
+	%1 : compiler.byte = compiler.emit(a)
 	%2 : alias = a
+	_ : i32 = compiler.indicate_return(i32)
 }
 
 a : i32

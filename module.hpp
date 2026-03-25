@@ -23,6 +23,6 @@ namespace doir {
 		}
 		bool flags_set(ecrs::entity_t e, decltype(doir::flags{}.as_underlying()) check);
 
-		void substitute_entities(ecrs::entity_t range, const std::unordered_map<ecrs::entity_t, ecrs::entity_t>& substitutions);
+		void substitute_entities(ecrs::entity_t range, const std::unordered_map<ecrs::entity_t, ecrs::entity_t>& substitutions, size_t max_depth = -1);
 	};
 }

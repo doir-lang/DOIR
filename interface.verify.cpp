@@ -390,16 +390,24 @@ namespace doir::verify {
 			}
 		}
 
-		if(mod.has_component<doir::block>(subtree)) for(auto e: mod.get_component<doir::block>(subtree).related) {
-			if(mod.has_component<doir::parent>(e)) {
-				auto parent = mod.get_component<doir::parent>(e).related[0];
-				if(parent != subtree) {
-					throw std::runtime_error("TODO: Children of a block must list that block as their parent");
-					valid = false;
-				}
-			}
-			if(!verify::structure(diagnostics, mod, e, false, builtin_end))
+		if(mod.has_component<doir::block>(subtree)) {
+			auto& related = mod.get_component<doir::block>(subtree).related;
+			if(related.size() != std::unordered_set<ecrs::entity_t>{related.begin(), related.end()}.size()) {
+				throw std::runtime_error("TODO: Duplicate elements in block");
 				valid = false;
+			}
+
+			for(auto e: related) {
+				if(mod.has_component<doir::parent>(e)) {
+					auto parent = mod.get_component<doir::parent>(e).related[0];
+					if(parent != subtree) {
+						throw std::runtime_error("TODO: Children of a block must list that block as their parent");
+						valid = false;
+					}
+				}
+				if(!verify::structure(diagnostics, mod, e, false, builtin_end))
+					valid = false;
+			}
 		}
 
 		return valid;

@@ -123,7 +123,7 @@ namespace doir {
 			return true;
 		}
 
-		bool validate_lookups_resolved(ecrs::context& mod, ecrs::entity_t e) {
+		bool validate::lookups_resolved(ecrs::context& mod, ecrs::entity_t e) {
 			bool valid = true;
 			if(mod.has_component<doir::lookup::lookup>(e)) {
 				auto& lookup = mod.get_component<doir::lookup::lookup>(e);

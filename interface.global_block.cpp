@@ -30,9 +30,25 @@ namespace doir {
 		inputs = {byte};
 		compiler.push_valueless_function(mod->interner.intern("emit"), compiler.push_function_type(mod->interner.intern("emit_t"), inputs, byte));
 
+		inputs = {type};
+		names = {T_interned};
+		auto return_t = compiler.push_function_type(mod->interner.intern("return_t"), inputs, T_interned, names);
+		compiler.push_function(mod->interner.intern("indicate_return"), return_t, true).end();
+		compiler.push_function(mod->interner.intern("indicate_yield"), return_t, true).end();
+
+		auto assembler = compiler.push_namespace("assembler");
+		auto register_ = assembler.push_alias(mod->interner.intern("register"), pointer_sized);
+
 		inputs = {type, T_interned};
 		names = {T_interned, value_interned};
-		compiler.push_function(mod->interner.intern("return"), compiler.push_function_type(mod->interner.intern("return_t"), inputs, T_interned, names), true).end();
+		assembler.push_function(mod->interner.intern("register_for"), assembler.push_function_type(mod->interner.intern("register_for_t"), inputs, register_, names), true).end();
+
+		inputs = {type};
+		names = {"_"};
+		auto return_register_t = assembler.push_function_type(mod->interner.intern("return_register_t"), inputs, register_, names);
+		assembler.push_function(mod->interner.intern("return_register"), return_register_t, true).end();
+		assembler.push_function(mod->interner.intern("yield_register"), return_register_t, true).end();
+
 		return *this;
 	}
 }

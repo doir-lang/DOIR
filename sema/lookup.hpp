@@ -13,6 +13,8 @@ namespace doir {
 
 	namespace sema {
 		bool resolve_lookups(ecrs::context& mod, ecrs::entity_t subtree);
-		bool validate_lookups_resolved(ecrs::context& mod, ecrs::entity_t subtree);
+		namespace validate {
+			bool lookups_resolved(ecrs::context& mod, ecrs::entity_t subtree);
+		}
 	}
 }

@@ -6,6 +6,7 @@
 #include <ranges>
 #include <algorithm>
 
+#include "print.hpp"
 #include "sema/canonicalize/sort.hpp"
 
 namespace doir::system {
@@ -43,7 +44,11 @@ namespace doir::system {
 			auto root = subtree;
 			if(subtree == current_canonicalize_root) root = canonicalize::new_root;
 			bool out = impl(impl, root, independent, func, mod, std::forward<Targs>(args)...);
-			if(sort_when_finished) canonicalize::sort(mod, root);
+			if(sort_when_finished) {
+				// doir::print(std::cout, mod, root, true, true);
+				root = canonicalize::sort(mod, root);
+				// doir::print(std::cout, mod, root, true, true);
+			}
 			return out;
 		};
 	}

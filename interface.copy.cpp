@@ -5,10 +5,16 @@
 #include "../interface.hpp"
 
 namespace doir {
-	void deep_copy_second_pass(module& mod, ecrs::entity_t out, ecrs::entity_t block, std::unordered_map<ecrs::entity_t, ecrs::entity_t>& subtitutions, std::unordered_map<ecrs::entity_t, ecrs::entity_t>& reverse_subtitutions, void(*extra_copy_instructions)(ecrs::entity_t dest, ecrs::entity_t src)) {
+	void deep_copy_copy_components(module& mod, ecrs::entity_t out, ecrs::entity_t block, std::unordered_map<ecrs::entity_t, ecrs::entity_t>& subtitutions, std::unordered_map<ecrs::entity_t, ecrs::entity_t>& reverse_subtitutions, void(*extra_copy_instructions)(ecrs::entity_t dest, ecrs::entity_t src)) {
 		auto subtree = reverse_subtitutions[out];
 
 		mod.get_or_add_component<doir::parent>(out) = {{block}};
+
+		if(mod.has_component<doir::name>(subtree))
+			mod.get_or_add_component<doir::name>(out) = mod.get_component<doir::name>(subtree);
+
+		if(mod.has_component<doir::flags>(subtree))
+			mod.get_or_add_component<doir::flags>(out) = mod.get_component<doir::flags>(subtree);
 
 		if(mod.has_component<doir::type_of>(subtree) || mod.has_component<doir::lookup::type_of>(subtree)) {
 			// Type == back link
@@ -37,7 +43,7 @@ namespace doir {
 			bool block = mod.has_component<doir::block>(subtree);
 
 			if(valueless) {
-				mod.get_or_add_component<doir::flags>(out).as_underlying() |= doir::flags::Valueless;
+				// mod.get_or_add_component<doir::flags>(out).as_underlying() |= doir::flags::Valueless;
 			} else if(number) {
 				mod.add_component<doir::number>(out) = mod.get_component<doir::number>(subtree);
 			} else if(string) {
@@ -147,7 +153,7 @@ namespace doir {
 			}
 
 		} else if(mod.has_component<doir::flags>(subtree) && mod.get_component<doir::flags>(subtree).namespace_set()) {
-			mod.add_component<doir::flags>(out).as_underlying() |= doir::flags::Namespace;
+			// mod.add_component<doir::flags>(out).as_underlying() |= doir::flags::Namespace;
 		} else if(mod.has_component<alias>(subtree) || mod.has_component<doir::lookup::alias>(subtree)) {
 			// alias == backlink
 			if(mod.has_component<doir::alias>(subtree)) {
@@ -164,15 +170,15 @@ namespace doir {
 		}
 
 		if(mod.has_component<doir::block>(subtree)) {
-			for(auto& e: mod.get_component<doir::block>(subtree).related)
-				deep_copy_second_pass(mod, e, block, subtitutions, reverse_subtitutions, extra_copy_instructions);
+			for(auto& e: mod.get_component<doir::block>(out).related)
+				deep_copy_copy_components(mod, e, out, subtitutions, reverse_subtitutions, extra_copy_instructions);
 		}
 
 		if(extra_copy_instructions)
 			extra_copy_instructions(out, subtree);
 	}
 
-	ecrs::entity_t deep_copy_impl(module& mod, ecrs::entity_t subtree, std::unordered_map<ecrs::entity_t, ecrs::entity_t>& subtitutions, std::unordered_map<ecrs::entity_t, ecrs::entity_t>& reverse_subtitutions) {
+	ecrs::entity_t deep_copy_build_structure(module& mod, ecrs::entity_t subtree, std::unordered_map<ecrs::entity_t, ecrs::entity_t>& subtitutions, std::unordered_map<ecrs::entity_t, ecrs::entity_t>& reverse_subtitutions) {
 		ecrs::entity_t out = mod.add_entity();
 		assert(!subtitutions.contains(subtree));
 		subtitutions[subtree] = out;
@@ -183,7 +189,7 @@ namespace doir {
 			auto& subtree_block = mod.get_component<doir::block>(subtree);
 			block.related.reserve(subtree_block.related.size());
 			for(auto& e: subtree_block.related)
-				block.related.push_back(deep_copy_impl(mod, e, subtitutions, reverse_subtitutions));
+				block.related.push_back(deep_copy_build_structure(mod, e, subtitutions, reverse_subtitutions));
 		}
 
 		return out;
@@ -193,8 +199,8 @@ namespace doir {
 		std::unordered_map<ecrs::entity_t, ecrs::entity_t> subtitutions;
 		std::unordered_map<ecrs::entity_t, ecrs::entity_t> reverse_subtitutions;
 		auto block = mod.get_component<doir::parent>(subtree).related[0];
-		auto out = deep_copy_impl(mod, subtree, subtitutions, reverse_subtitutions);
-		deep_copy_second_pass(mod, out, block, subtitutions, reverse_subtitutions, extra_copy_instructions);
+		auto out = deep_copy_build_structure(mod, subtree, subtitutions, reverse_subtitutions);
+		deep_copy_copy_components(mod, out, block, subtitutions, reverse_subtitutions, extra_copy_instructions);
 		return out;
 	}
 
@@ -229,10 +235,10 @@ namespace doir {
 		size_t start = block.related.size();
 		for(auto e: source_related) {
 			if(skip_parameters && mod->has_component<doir::function_parameter>(e)) continue;
-			block.related.push_back(deep_copy_impl(*mod, e, subtitutions, reverse_subtitutions));
+			block.related.push_back(deep_copy_build_structure(*mod, e, subtitutions, reverse_subtitutions));
 		}
 		for(size_t i = start; i < block.related.size(); ++i)
-			deep_copy_second_pass(*mod, block.related[i], this->block, subtitutions, reverse_subtitutions, nullptr);
+			deep_copy_copy_components(*mod, block.related[i], this->block, subtitutions, reverse_subtitutions, nullptr);
 
 		return *this;
 	}
