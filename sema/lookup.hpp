@@ -6,6 +6,9 @@
 #include "../string_helpers.hpp"
 
 namespace doir {
+	ecrs::entity_t find_parent(const doir::module& mod, ecrs::entity_t e);
+	bool inside_function(const doir::module& mod, ecrs::entity_t subtree);
+
 	namespace lookup {
 		ecrs::entity_t resolve(doir::module& mod, doir::interned_string lookup, ecrs::entity_t search_start);
 		ecrs::entity_t resolve(doir::module& mod, doir::lookup::lookup& lookup, ecrs::entity_t search_start);

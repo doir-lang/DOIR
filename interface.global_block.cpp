@@ -30,17 +30,27 @@ namespace doir {
 		inputs = {byte};
 		compiler.push_valueless_function(mod->interner.intern("emit"), compiler.push_function_type(mod->interner.intern("emit_t"), inputs, byte));
 
+		inputs = {pointer_sized, pointer_sized};
+		names = {value_interned, mod->interner.intern("arg")};
+		auto bitwise_t = compiler.push_function_type(mod->interner.intern("bitwise_t"), inputs, pointer_sized, names);
+		compiler.push_valueless_function(mod->interner.intern("bitwise_and"), bitwise_t);
+		compiler.push_valueless_function(mod->interner.intern("shift_right"), bitwise_t);
+
 		inputs = {type};
 		names = {T_interned};
 		auto return_t = compiler.push_function_type(mod->interner.intern("return_t"), inputs, T_interned, names);
 		compiler.push_function(mod->interner.intern("indicate_return"), return_t, true).end();
 		compiler.push_function(mod->interner.intern("indicate_yield"), return_t, true).end();
 
+		inputs = {type, T_interned};
+		names = {T_interned, value_interned};
+		compiler.push_function(mod->interner.intern("debug_print"), compiler.push_function_type(mod->interner.intern("debug_print_t"), inputs, byte, names), true).end();
+
 		auto assembler = compiler.push_namespace("assembler");
 		auto register_ = assembler.push_alias(mod->interner.intern("register"), pointer_sized);
 
-		inputs = {type, T_interned};
-		names = {T_interned, value_interned};
+		// inputs = {type, T_interned};
+		// names = {T_interned, value_interned};
 		assembler.push_function(mod->interner.intern("register_for"), assembler.push_function_type(mod->interner.intern("register_for_t"), inputs, register_, names), true).end();
 
 		inputs = {type};

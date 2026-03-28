@@ -136,7 +136,7 @@ namespace doir::canonicalize {
 
 		mod.reorder_entities<
 			doir::block, doir::parent, doir::function_return_type, doir::function_inputs,
-			doir::alias, doir::type_of, doir::call, doir::lookup::function_return_type,
+			doir::alias, doir::type_of, doir::call, doir::print_as_call, doir::lookup::function_return_type,
 			doir::lookup::function_inputs, doir::lookup::alias, doir::lookup::type_of, doir::lookup::call
 		>({order});
 

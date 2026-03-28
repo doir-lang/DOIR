@@ -5,13 +5,29 @@
 #include "../systems.hpp"
 
 namespace doir {
-	inline ecrs::entity_t find_block(doir::module& mod, ecrs::entity_t e) {
+	ecrs::entity_t find_block(const doir::module& mod, ecrs::entity_t e) {
 		if(mod.has_component<doir::block>(e))
 			return e;
 		if(e > mod.entity_count())
 			return ecrs::invalid_entity;
 		// TODO: How terrible of an idea is it to implement this recursively?
 		return find_block(mod, e + 1);
+	}
+
+	ecrs::entity_t find_parent(const doir::module& mod, ecrs::entity_t e) {
+		if(mod.has_component<doir::parent>(e))
+			return find_block(mod, mod.get_component<doir::parent>(e).related[0]);
+		else return find_block(mod, e);
+	}
+
+	bool inside_function(const doir::module& mod, ecrs::entity_t subtree) {
+		ecrs::entity_t last = ecrs::invalid_entity;
+		while(subtree != ecrs::invalid_entity && subtree != last) {
+			if(mod.has_component<doir::function_return_type>(subtree))
+				return true;
+			subtree = find_parent(mod, last = subtree);
+		}
+		return false;
 	}
 
 	inline ecrs::entity_t find_namespace(doir::module& mod, doir::block& block, std::string_view name) {

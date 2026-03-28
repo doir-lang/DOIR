@@ -19,6 +19,8 @@
 
 #include "opt/inline_functions.hpp"
 #include "opt/materialize_aliases.hpp"
+#include "opt/compute_compiler_namespace.hpp"
+#include "opt/mizu_materialize_immediates.hpp"
 
 #include "temp_byte_dumper.hpp"
 
@@ -52,15 +54,18 @@ int main(int argc, char** argv) {
 	auto sema_schedule = ecrs::system::sequential(
 		doir::system::sorted(doir::sema::validate::name_reuse),
 		doir::system::sorted(doir::sema::resolve_lookups),
-		doir::system::sorted(doir::sema::validate::lookups_resolved, true),
+		doir::system::sorted(doir::sema::validate::lookups_resolved),
 		ecrs::system::parallel(
 			// doir::system::sorted(doir::sema::strip_names),
 			doir::system::sorted(doir::sema::validate::function_arity, true)
 		)
 	);
 	auto opt_schedule = ecrs::system::sequential(
+		doir::system::sorted(doir::opt::compute_compiler_namespace),
+		doir::system::sorted(doir::opt::mizu::materialize_immediates, false, true),
 		doir::system::sorted(doir::opt::inline_functions, false, true),
-		doir::system::sorted(doir::system::bind_root(doir::opt::materialize_aliases))
+		doir::system::sorted(doir::opt::compute_compiler_namespace)
+		// doir::system::sorted(doir::system::bind_root(doir::opt::materialize_aliases))
 	);
 
 	sema_schedule(mod);

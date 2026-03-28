@@ -112,23 +112,13 @@ std::ostream& print_type_of(std::ostream& out, const doir::module& mod, ecrs::en
 		out << indent_string << Export << ident << (pretty ? ": " : ":") << type;
 		if(location) out << *location;
 
-	} else if(mod.has_component<doir::number>(subtree)) {
-		auto [ident, type, location, Export] = get_common_assignment_elements(mod, subtree, debug);
-		auto value = mod.get_component<doir::number>(subtree).value;
-		out << indent_string << Export << ident << (pretty ? ": " : ":") << type << (pretty ? " = " : "=") << value;
-		if(location) out << *location;
-
-	} else if(mod.has_component<doir::string>(subtree)) {
-		auto [ident, type, location, Export] = get_common_assignment_elements(mod, subtree, debug);
-		auto value = mod.get_component<doir::string>(subtree).value;
-		out << indent_string << Export << ident << (pretty ? ": " : ":") << type << (pretty ? " = " : "=") << value;
-		if(location) out << *location;
-
-	} else if(mod.has_component<doir::call>(subtree) || mod.has_component<doir::lookup::call>(subtree)) {
+	} else if(mod.has_component<doir::call>(subtree) || mod.has_component<doir::lookup::call>(subtree) || (mod.has_component<doir::print_as_call>(subtree) && !debug)) {
 		auto [ident, type, location, Export] = get_common_assignment_elements(mod, subtree, debug);
 		doir::lookup::lookup call = mod.has_component<doir::call>(subtree)
 			? doir::lookup::lookup(mod.get_component<doir::call>(subtree).related[0])
-			: doir::lookup::lookup(mod.get_component<doir::lookup::call>(subtree));
+			: mod.has_component<doir::print_as_call>(subtree)
+				? doir::lookup::lookup(mod.get_component<doir::print_as_call>(subtree).related[0])
+			 	: doir::lookup::lookup(mod.get_component<doir::lookup::call>(subtree));
 		auto inputs = mod.has_component<doir::function_inputs>(subtree)
 			? doir::lookup::function_inputs::to_lookup(mod.get_component<doir::function_inputs>(subtree))
 			: mod.get_component<doir::lookup::function_inputs>(subtree);
@@ -147,6 +137,18 @@ std::ostream& print_type_of(std::ostream& out, const doir::module& mod, ecrs::en
 			out << print_lookup_name(mod, inputs[i], debug);
 		}
 		out << ")";
+
+	} else if(mod.has_component<doir::number>(subtree)) {
+		auto [ident, type, location, Export] = get_common_assignment_elements(mod, subtree, debug);
+		auto value = mod.get_component<doir::number>(subtree).value;
+		out << indent_string << Export << ident << (pretty ? ": " : ":") << type << (pretty ? " = " : "=") << value;
+		if(location) out << *location;
+
+	} else if(mod.has_component<doir::string>(subtree)) {
+		auto [ident, type, location, Export] = get_common_assignment_elements(mod, subtree, debug);
+		auto value = mod.get_component<doir::string>(subtree).value;
+		out << indent_string << Export << ident << (pretty ? ": " : ":") << type << (pretty ? " = " : "=") << value;
+		if(location) out << *location;
 
 	} else if(mod.has_component<doir::function_return_type>(subtree) || mod.has_component<doir::lookup::function_return_type>(subtree)) {
 		auto [ident, type, location, Export] = get_common_assignment_elements(mod, subtree, debug);
@@ -194,7 +196,7 @@ std::ostream& print_type_of(std::ostream& out, const doir::module& mod, ecrs::en
 std::ostream& print_impl(std::ostream& out, const doir::module& mod, ecrs::entity_t subtree, bool pretty, bool debug, size_t indent /*= 0*/) {
 	auto indent_string = pretty ? std::string(indent, '\t') : "";
 
-	if(mod.has_component<doir::type_of>(subtree) || mod.has_component<doir::lookup::type_of>(subtree))
+	if(mod.has_component<doir::type_of>(subtree) || mod.has_component<doir::lookup::type_of>(subtree) || (mod.has_component<doir::print_as_call>(subtree) && !debug))
 		print_type_of(out, mod, subtree, pretty, debug, indent);
 	else if(mod.has_component<doir::type_definition>(subtree)) {
 		auto [ident, type, location, Export] = get_common_assignment_elements(mod, subtree, debug);
