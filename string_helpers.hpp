@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <vector>
 #include <string>
 #include <string_view>
@@ -56,6 +57,13 @@ namespace doir {
 			interned_string interned{p, s.size()};
 			table.emplace(interned);
 			return interned;
+		}
+
+		std::optional<interned_string> find(std::string_view s) const {
+			auto it = table.find(s);
+			if (it != table.end())
+				return interned_string{*it};
+			return {};
 		}
 
 		size_t size() const noexcept { return table.size(); }

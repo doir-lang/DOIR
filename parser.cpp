@@ -306,7 +306,8 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, bo
 		}
 
 		out.function = std::any_cast<interned_string>(vs[0 + has_modifier]);
-		for(size_t i = 3 + has_modifier; i < vs.size(); i += 3)
+		auto dbg = vs.size();
+		for(size_t i = 3 + has_modifier; i + 3 <= vs.size(); i += 3)
 			out.inputs.emplace_back(std::any_cast<interned_string>(vs[i]));
 
 		return out;

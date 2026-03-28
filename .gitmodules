@@ -7,3 +7,6 @@
 [submodule "libdiagnose"]
 	path = libdiagnose
 	url = https://github.com/doir-lang/libdiagnose
+[submodule "Mizu"]
+	path = Mizu
+	url = https://github.com/doir-lang/Mizu.git
