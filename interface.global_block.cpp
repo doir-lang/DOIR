@@ -19,7 +19,7 @@ namespace doir {
 		mod->get_or_add_component<doir::flags>(base_type_t).as_underlying() |= doir::flags::Comptime;
 		auto base_type = compiler.push_valueless_function(mod->interner.intern("base_type"), base_type_t);
 
-		auto sixtyfour = compiler.push_number("_", pointer_sized_interned, 64);
+		auto sixtyfour = compiler.push_number("_", pointer_sized_interned, sizeof(size_t) * 8);
 		inputs = {sixtyfour, sixtyfour};
 		auto pointer_sized = compiler.push_call(pointer_sized_interned, type, base_type, inputs);
 
@@ -58,6 +58,10 @@ namespace doir {
 		auto return_register_t = assembler.push_function_type(mod->interner.intern("return_register_t"), inputs, register_, names);
 		assembler.push_function(mod->interner.intern("return_register"), return_register_t, true).end();
 		assembler.push_function(mod->interner.intern("yield_register"), return_register_t, true).end();
+
+		inputs = {type, T_interned, return_register_t};
+		names = {T_interned, value_interned, mod->interner.intern("register")};
+		assembler.push_function(mod->interner.intern("pin_register"), assembler.push_function_type(mod->interner.intern("pin_register_t"), inputs, return_register_t, names), true).end();
 
 		return *this;
 	}

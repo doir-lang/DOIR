@@ -63,8 +63,7 @@ namespace doir::opt {
 
 				// TODO: Some sort of actual register allocation logic would be nice
 				if(!mod.has_component<assigned_register>(target))
-					// TODO: If the target is a constant then we should load it!
-					mod.add_component<assigned_register>(target) = {next_register++};
+					throw std::runtime_error("TODO: Entity " + std::to_string(target) + " doesn't have an associated reigster");
 				auto r = mod.get_component<assigned_register>(target).reg;
 				mod.get_or_add_component<assigned_register>(subtree).reg = r;
 

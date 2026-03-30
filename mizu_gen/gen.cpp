@@ -84,9 +84,8 @@ int main() {
 			std::cout << "}\n" << std::endl;
 
 		} else if(single_operand_ops.contains(program[i].op)) {
-			std::cout << name.data << " : (a : u64, b : u64) -> u64 = {\n"
+			std::cout << name.data << " : (a : u64) -> u64 = {\n"
 				<< "\trega : compiler.assembler.register = compiler.assembler.register_for(u64, a)\n"
-				<< "\tregb : compiler.assembler.register = compiler.assembler.register_for(u64, b)\n"
 				<< "\tregret : compiler.assembler.register = compiler.assembler.return_register(u64)\n";
 			emit(std::cout, op.op);
 			std::cout << "\t_ : compiler.assembler.register = inline emit_register(regret)\n"

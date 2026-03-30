@@ -121,16 +121,16 @@ namespace doir::opt {
 		return true;
 	}
 
-	size_t next_register = 0;
-
-	bool compute_register_for(doir::module& mod, ecrs::entity_t subtree, ecrs::entity_t target, ecrs::entity_t function) {
+	bool compute_register_for(doir::module& mod, ecrs::entity_t subtree, ecrs::entity_t target, ecrs::entity_t function, bool force_register_values) {
 		static ecrs::entity_t register_ = lookup::resolve(mod, "compiler.assembler.register", target);
 		target = resolve_alias(mod, target);
 
 		// TODO: Some sort of actual register allocation logic would be nice
-		if(!mod.has_component<assigned_register>(target))
-			// TODO: If the target is a constant then we should load it!
-			mod.add_component<assigned_register>(target) = {next_register++};
+		if(!mod.has_component<assigned_register>(target)) {
+			std::cerr << "WARNING: Entity " << target << " doesn't have an associated reigster" << std::endl;
+			if(force_register_values) mod.add_component<assigned_register>(target).reg = 0;
+			else return true;
+		}
 
 		std::cout << target << " -> " << mod.get_component<assigned_register>(target).reg << std::endl;
 
@@ -141,7 +141,7 @@ namespace doir::opt {
 		return true;
 	}
 
-	bool compute_compiler_namespace(ecrs::context& ctx, ecrs::entity_t subtree) {
+	bool compute_compiler_namespace(ecrs::context& ctx, ecrs::entity_t subtree, bool force_register_values) {
 		auto& mod = (doir::module&)ctx; // TODO: Verify cast
 		if(!mod.has_component<doir::call>(subtree)) return true;
 
@@ -187,7 +187,7 @@ namespace doir::opt {
 				return false;
 			}
 
-			return compute_register_for(mod, subtree, inputs.related[1], assembler_register_for);
+			return compute_register_for(mod, subtree, inputs.related[1], assembler_register_for, force_register_values);
 
 		} else if(function == assembler_yield_register) {
 			auto parent = doir::find_parent(mod, subtree);
@@ -196,7 +196,7 @@ namespace doir::opt {
 				return false;
 			}
 
-			return compute_register_for(mod, subtree, parent, assembler_yield_register);
+			return compute_register_for(mod, subtree, parent, assembler_yield_register, force_register_values);
 
 		} else if(function == assembler_return_register) {
 			// throw std::runtime_error("TODO: Non-inlined functions aren't yet supported... can't get return register");

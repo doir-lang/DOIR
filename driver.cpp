@@ -21,6 +21,7 @@
 #include "opt/materialize_aliases.hpp"
 #include "opt/compute_compiler_namespace.hpp"
 #include "opt/mizu_materialize_immediates.hpp"
+#include "opt/pin_registers.hpp"
 
 #include "temp_byte_dumper.hpp"
 
@@ -51,6 +52,7 @@ int main(int argc, char** argv) {
 	root = doir::canonicalize::sort(mod, root);
 	// doir::print(std::cout, mod, root, true, true);
 
+	using namespace std::placeholders;
 	auto sema_schedule = ecrs::system::sequential(
 		doir::system::sorted(doir::sema::validate::name_reuse),
 		doir::system::sorted(doir::sema::resolve_lookups),
@@ -61,10 +63,11 @@ int main(int argc, char** argv) {
 		)
 	);
 	auto opt_schedule = ecrs::system::sequential(
-		doir::system::sorted(doir::opt::compute_compiler_namespace),
+		doir::system::sorted(doir::opt::pin_registers),
+		doir::system::sorted(std::bind(doir::opt::compute_compiler_namespace, _1, _2, false)),
 		doir::system::sorted(doir::opt::mizu::materialize_immediates, false, true),
 		doir::system::sorted(doir::opt::inline_functions, false, true),
-		doir::system::sorted(doir::opt::compute_compiler_namespace)
+		doir::system::sorted(std::bind(doir::opt::compute_compiler_namespace, _1, _2, true))
 		// doir::system::sorted(doir::system::bind_root(doir::opt::materialize_aliases))
 	);
 
