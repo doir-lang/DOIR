@@ -147,7 +147,8 @@ std::ostream& print_type_of(std::ostream& out, const doir::module& mod, ecrs::en
 	} else if(mod.has_component<doir::string>(subtree)) {
 		auto [ident, type, location, Export] = get_common_assignment_elements(mod, subtree, debug);
 		auto value = mod.get_component<doir::string>(subtree).value;
-		out << indent_string << Export << ident << (pretty ? ": " : ":") << type << (pretty ? " = " : "=") << value;
+		out << indent_string << Export << ident << (pretty ? ": " : ":") << type << (pretty ? " = " : "=")
+			<< '"' << escape_python_string(value) << '"';
 		if(location) out << *location;
 
 	} else if(mod.has_component<doir::function_return_type>(subtree) || mod.has_component<doir::lookup::function_return_type>(subtree)) {
@@ -203,7 +204,12 @@ std::ostream& print_impl(std::ostream& out, const doir::module& mod, ecrs::entit
 		out << indent_string << Export << ident << (pretty ? ": " : ":") << type << (pretty ? " = " : "=");
 		if(mod.has_component<doir::block>(subtree))
 			print_block(out, mod, mod.get_component<doir::block>(subtree), pretty, debug, false, indent);
-		else out << print_function_type(mod, subtree, debug);
+		else if(mod.has_component<doir::pointer>(subtree)) {
+			auto& p = mod.get_component<doir::pointer>(subtree);
+			if(p.size == 0)
+				out << "type.pointer(" + print_lookup_name(mod, p.related[0], debug) << ")";
+			else out << "type.array(" + print_lookup_name(mod, p.related[0], debug) << ", " << p.size << ")";
+		} else out << print_function_type(mod, subtree, debug);
 
 	} else if(mod.has_component<doir::flags>(subtree) && mod.get_component<doir::flags>(subtree).namespace_set()) {
 		auto [ident, type, location, Export] = get_common_assignment_elements(mod, subtree, debug);

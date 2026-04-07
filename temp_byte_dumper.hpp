@@ -8,18 +8,32 @@
 
 namespace doir {
 	struct byte_dumper {
-		std::vector<std::byte> values;
+		std::vector<std::vector<std::byte>> values;
 
 		std::vector<std::byte>& interpret_number_assign(std::vector<std::byte>& out, const doir::module& mod, ecrs::entity_t subtree) {
-			if(!mod.has_component<doir::number>(subtree)) return out;
+			if(mod.has_component<doir::number>(subtree)) {
+				static auto byte = lookup::resolve((doir::module&)mod, *mod.interner.find("compiler.byte"), subtree);
+				if(mod.get_component<doir::type_of>(subtree).related[0] != byte) return out;
 
-			static auto byte = lookup::resolve((doir::module&)mod, *mod.interner.find("compiler.byte"), subtree);
-			if(mod.get_component<doir::type_of>(subtree).related[0] != byte) return out;
+				size_t value = mod.get_component<doir::number>(subtree).value;
+				if(values.size() <= subtree)
+					values.resize(subtree * 2, {});
+				values[subtree] = {(std::byte)value};
+				return out;
+			}
 
-			size_t value = mod.get_component<doir::number>(subtree).value;
-			if(values.size() <= subtree)
-				values.resize(subtree * 2, (std::byte)0);
-			values[subtree] = (std::byte)value;
+			if(mod.has_component<doir::string>(subtree)) {
+				static auto byte_pointer = lookup::resolve((doir::module&)mod, *mod.interner.find("compiler.byte_pointer"), subtree);
+				if(mod.get_component<doir::type_of>(subtree).related[0] != byte_pointer) return out;
+
+				auto value = mod.get_component<doir::string>(subtree).value;
+				if(values.size() <= subtree)
+					values.resize(subtree * 2, {});
+				auto begin = (std::byte*)value.data();
+				auto dbg = values[subtree] = {begin, begin + value.size()};
+				return out;
+			}
+
 			return out;
 		}
 
@@ -28,11 +42,17 @@ namespace doir {
 			if(doir::inside_function(mod, subtree)) return out;
 
 			static auto emit = lookup::resolve((doir::module&)mod, *mod.interner.find("compiler.emit"), subtree);
+			static auto emit_bytes = lookup::resolve((doir::module&)mod, *mod.interner.find("compiler.emit_bytes"), subtree);
 
 			auto& call = mod.get_component<doir::call>(subtree);
 			auto& inputs = mod.get_component<doir::function_inputs>(subtree);
-			if(call.related[0] == emit)
-				out.push_back(values.at(inputs.related[0]));
+			if(call.related[0] == emit) {
+				auto& dbg = values.at(inputs.related[0]);
+				out.push_back(dbg.at(0));
+			} else if(call.related[0] == emit_bytes) {
+				auto& dbg = values.at(inputs.related[0]);
+				out.append_range(dbg);
+			}
 			return out;
 		}
 

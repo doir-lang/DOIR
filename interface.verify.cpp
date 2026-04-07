@@ -211,11 +211,12 @@ namespace doir::verify {
 			if( !(mod.has_component<doir::block>(subtree)
 				|| mod.has_component<doir::function_return_type>(subtree)
 				|| mod.has_component<doir::lookup::function_return_type>(subtree) // TODO: Valid?
+				|| mod.has_component<doir::pointer>(subtree)
 				// || mod.has_component<doir::call>(root)
 				// || mod.has_component<doir::lookup::call>(root)
 			) ) {
 				std::cout << subtree << std::endl;
-				throw std::runtime_error("Types are required to have a `block` while function types are required to have a `function_inputs`");
+				throw std::runtime_error("Types are required to have a `block`, function types are required to have a `function_inputs`, and pointers/arrays must have `pointer`");
 				valid = false;
 			}
 
@@ -256,6 +257,17 @@ namespace doir::verify {
 				// 	valid = false;
 				// for(auto& i: inputs)
 				// 	if(i.resolved() && !verify::structure(diagnostics, mod, i.entity(), false, builtin_end)) valid = false;
+			}
+
+			if(mod.has_component<doir::pointer>(subtree)) {
+				static auto type = doir::lookup::resolve(mod, "type", subtree);
+				auto base = mod.get_component<doir::pointer>(subtree).related[0];
+				if( !(mod.has_component<doir::type_definition>(base)
+					|| (mod.has_component<doir::type_of>(base) && mod.get_component<doir::type_of>(base).related[0] == type))
+				) {
+					throw std::runtime_error("TODO: Pointers must have a type as their base");
+					valid = false;
+				}
 			}
 
 			if(mod.has_component<doir::flags>(subtree)) {

@@ -59,6 +59,31 @@ namespace doir::opt {
 		return true;
 	}
 
+	bool compute_pointer(doir::module& mod, ecrs::entity_t subtree, ecrs::entity_t function) {
+		if(!mod.has_component<doir::function_inputs>(subtree)) {
+			throw std::runtime_error("TODO: pointer expects one input");
+			return false;
+		}
+		auto inputs = mod.get_component<doir::function_inputs>(subtree).related;
+		if(inputs.size() != 1) {
+			throw std::runtime_error("TODO: pointer expects one input");
+			return false;
+		}
+		inputs = resolve_alias(mod, inputs);
+		if(!mod.has_component<doir::type_definition>(inputs[0])){
+			throw std::runtime_error("TODO: base_type parameter 0 must be a type");
+			return false;
+		}
+
+		mod.remove_component<doir::type_of>(subtree);
+		mod.remove_component<doir::call>(subtree);
+		mod.remove_component<doir::function_inputs>(subtree);
+
+		doir::block_builder::attach_pointer(mod, subtree, inputs[0]);
+
+		return true;
+	}
+
 	bool compute_bitwise_and(doir::module& mod, ecrs::entity_t subtree, ecrs::entity_t function) {
 		if(inside_function(mod, subtree))
 			return true;
@@ -145,6 +170,7 @@ namespace doir::opt {
 		auto& mod = (doir::module&)ctx; // TODO: Verify cast
 		if(!mod.has_component<doir::call>(subtree)) return true;
 
+		static ecrs::entity_t pointer = lookup::resolve(mod, "compiler.pointer", subtree);
 		static ecrs::entity_t base_type = lookup::resolve(mod, "compiler.base_type", subtree);
 		static ecrs::entity_t bitwise_and = lookup::resolve(mod, "compiler.bitwise_and", subtree);
 		static ecrs::entity_t shift_right = lookup::resolve(mod, "compiler.shift_right", subtree);
@@ -156,6 +182,9 @@ namespace doir::opt {
 		auto function = mod.get_component<doir::call>(subtree).related[0];
 		if(function == base_type)
 			return compute_base_type(mod, subtree, base_type);
+
+		else if(function == pointer)
+			return compute_pointer(mod, subtree, pointer);
 
 		else if(function == bitwise_and)
 			return compute_bitwise_and(mod, subtree, bitwise_and);

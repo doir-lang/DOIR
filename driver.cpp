@@ -80,6 +80,7 @@ int main(int argc, char** argv) {
 	doir::print(std::cout, mod, root, true, true);
 
 	{
+		mod.interner.intern("compiler.emit"); mod.interner.intern("compiler.emit_bytes");
 		auto bytes = doir::byte_dumper().interpret(mod, root);
 		std::ofstream fout("res.bin", std::ios::binary);
 		fout.write((char*)bytes.data(), bytes.size());

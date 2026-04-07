@@ -6,6 +6,7 @@
 #include <fp/string.hpp>
 
 #include <iostream>
+#include <iomanip>
 #include <cstddef>
 #include <ostream>
 #include <string_view>
@@ -21,21 +22,27 @@ const static mizu::opcode program[] = {
 
 std::unordered_set<mizu::instruction_t> single_operand_ops = {mizu::debug_print};
 
+static size_t id = 0;
+
 size_t emit_byte(std::ostream& out, std::byte& byte) {
-	static size_t id = 0;
 	out << "\t%" << id << " : compiler.byte = " << (int)byte << "\n"
 		<< "\t_ : compiler.byte = compiler.emit(%" << id << ")\n";
+	return id++;
+}
+
+size_t emit_bytes(std::ostream& out, fp::view<const std::byte> bytes) {
+	out << "\t%" << id << " : compiler.byte_pointer = \"";
+	for(auto b: bytes)
+		out << "\\x" << std::hex << std::setfill('0') << std::setw(2) << (int)b << std::dec;
+	out << "\"\n"
+		<< "\t_ : compiler.byte = compiler.emit_bytes(%" << id << ")\n";
 	return id++;
 }
 
 template<typename T>
 std::ostream& emit(std::ostream& out, const T& v) {
 	auto bytes = fp::view<const T>::from_variable(v).byte_view();
-	std::unordered_map<std::byte, size_t> cache;
-	for(auto byte : bytes)
-		if(cache.contains(byte))
-			out << "\t_ : compiler.byte = compiler.emit(%" << cache[byte] << ")\n";
-		else cache[byte] = emit_byte(out, byte);
+	emit_bytes(out, bytes);
 	return out;
 }
 
@@ -43,8 +50,6 @@ int main() {
 	auto num_opcodes = sizeof(program)/sizeof(program[0]);
 	auto binary = mizu::to_binary({program, num_opcodes});
 	auto portable = fp::view<mizu::serialization_opcode>((mizu::serialization_opcode*)binary.data(), num_opcodes);
-
-	sizeof(mizu::serialization_opcode);
 
 	std::cout << "_64 : compiler.pointer_sized = 64\n"
 		<< "u64 : type = compiler.base_type(_64, _64)\n"

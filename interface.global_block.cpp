@@ -26,9 +26,12 @@ namespace doir {
 		auto eight = compiler.push_number("_", pointer_sized, 8);
 		inputs = {eight, eight};
 		auto byte = compiler.push_call(mod->interner.intern("byte"), type, base_type, inputs);
+		auto byte_pointer = compiler.push_pointer(mod->interner.intern("byte_pointer"), byte);
 
 		inputs = {byte};
 		compiler.push_valueless_function(mod->interner.intern("emit"), compiler.push_function_type(mod->interner.intern("emit_t"), inputs, byte));
+		inputs = {byte_pointer};
+		compiler.push_valueless_function(mod->interner.intern("emit_bytes"), compiler.push_function_type(mod->interner.intern("emit_bytes_t"), inputs, byte));
 
 		inputs = {pointer_sized, pointer_sized};
 		names = {value_interned, mod->interner.intern("arg")};
@@ -41,6 +44,8 @@ namespace doir {
 		auto return_t = compiler.push_function_type(mod->interner.intern("return_t"), inputs, T_interned, names);
 		compiler.push_function(mod->interner.intern("indicate_return"), return_t, true).end();
 		compiler.push_function(mod->interner.intern("indicate_yield"), return_t, true).end();
+
+		compiler.push_function(mod->interner.intern("pointer"), return_t, true).end();
 
 		inputs = {type, T_interned};
 		names = {T_interned, value_interned};

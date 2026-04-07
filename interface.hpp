@@ -55,8 +55,6 @@ namespace doir {
 		inline bool tail_set() const { return flags & Tail; }
 	};
 
-	struct pointer { size_t size = 0; }; // Size == 0 implies no bounds information
-
 	struct name : public interned_string {};
 
 	struct block : public ecrs::relation<> {}; // When alone (no type_of etc...) represents a quoted block
@@ -74,6 +72,8 @@ namespace doir {
 	struct type_definition { // Also expects block attached
 		size_t size, align, unique = 0;
 	};
+
+	struct pointer : public ecrs::relation<1> { size_t size = 0; }; // Size == 0 implies no bounds information
 
 	struct alias : public ecrs::relation<1> {
 		std::optional<std::string_view> file = {}; // Aliases can reference other files
@@ -201,6 +201,9 @@ namespace doir {
 		ecrs::entity_t push_function_type(interned_string name, std::span<ecrs::entity_t> parameter_types, std::optional<ecrs::entity_t> return_type = {}, std::span<interned_string> parameter_names = {});
 		static ecrs::entity_t attach_function_type(doir::module& mod, ecrs::entity_t to, std::span<lookup::lookup> parameter_types, std::optional<lookup::lookup> return_type = {}, std::span<interned_string> parameter_names = {});
 		ecrs::entity_t push_function_type(interned_string name, std::span<lookup::lookup> parameter_types, std::optional<lookup::lookup> return_type = {}, std::span<interned_string> parameter_names = {});
+		// bp : type = type.pointer(byte)
+		static ecrs::entity_t attach_pointer(doir::module& mod, ecrs::entity_t to, ecrs::entity_t base, size_t size = 0);
+		ecrs::entity_t push_pointer(interned_string name, ecrs::entity_t base, size_t size = 0);
 
 		// "alias" spec
 		// color : alias = vec3

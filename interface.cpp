@@ -283,6 +283,16 @@ namespace doir {
 		return attach_function_type(*mod, out, argument_types, return_type, parameter_names);
 	}
 
+	ecrs::entity_t block_builder::attach_pointer(doir::module& mod, ecrs::entity_t to, ecrs::entity_t base, size_t size /* =0 */) {
+		mod.add_component<doir::type_definition>(to);
+		mod.add_component<doir::pointer>(to) = {{base}, size};
+		return to;
+	}
+	ecrs::entity_t block_builder::push_pointer(interned_string name, ecrs::entity_t base, size_t size /* =0 */) {
+		auto out = push_common(mod, block, name);
+		return attach_pointer(*mod, out, base);
+	}
+
 	ecrs::entity_t block_builder::attach_alias(doir::module& mod, ecrs::entity_t to, ecrs::entity_t ref) {
 		mod.add_component<doir::alias>(to) = {{ref}};
 		return to;
