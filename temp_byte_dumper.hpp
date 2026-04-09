@@ -39,7 +39,7 @@ namespace doir {
 
 		std::vector<std::byte>& interpret_call(std::vector<std::byte>& out, const doir::module& mod, ecrs::entity_t subtree) {
 			if(!mod.has_component<doir::call>(subtree)) return out;
-			if(doir::inside_function(mod, subtree)) return out;
+			if(doir::find_function_inside_of(mod, subtree)) return out;
 
 			static auto emit = lookup::resolve((doir::module&)mod, *mod.interner.find("compiler.emit"), subtree);
 			static auto emit_bytes = lookup::resolve((doir::module&)mod, *mod.interner.find("compiler.emit_bytes"), subtree);

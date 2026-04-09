@@ -3,6 +3,7 @@
 
 #include "interface.hpp"
 #include "module.hpp"
+#include "sema/lookup.hpp"
 
 namespace doir {
 	block_builder& block_builder::build_global_block() {
@@ -46,6 +47,7 @@ namespace doir {
 		compiler.push_function(mod->interner.intern("indicate_yield"), return_t, true).end();
 
 		compiler.push_function(mod->interner.intern("pointer"), return_t, true).end();
+		compiler.push_function(mod->interner.intern("always_inline"), return_t, true).end();
 
 		inputs = {type, T_interned};
 		names = {T_interned, value_interned};
@@ -64,10 +66,20 @@ namespace doir {
 		assembler.push_function(mod->interner.intern("return_register"), return_register_t, true).end();
 		assembler.push_function(mod->interner.intern("yield_register"), return_register_t, true).end();
 
-		inputs = {type, T_interned, return_register_t};
+		inputs = {type, T_interned, register_};
 		names = {T_interned, value_interned, mod->interner.intern("register")};
 		assembler.push_function(mod->interner.intern("pin_register"), assembler.push_function_type(mod->interner.intern("pin_register_t"), inputs, return_register_t, names), true).end();
 
+		inputs = {};
+		assembler.push_function(mod->interner.intern("begin_register_allocation"), assembler.push_function_type(mod->interner.intern("begin_register_allocation_t"), inputs, return_register_t), true).end();
+
 		return *this;
+	}
+
+	const std::unordered_set<ecrs::entity_t>& block_builder::get_type_modifiers(const doir::module& mod, ecrs::entity_t root){
+		static std::unordered_set<ecrs::entity_t> modifiers = {
+			lookup::resolve(mod, "compiler.always_inline", root)
+		};
+		return modifiers;
 	}
 }

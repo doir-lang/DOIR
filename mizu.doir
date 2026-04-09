@@ -1,6 +1,16 @@
 _64 : compiler.pointer_sized = 64
 u64 : type = compiler.base_type(_64, _64)
-emit_register : (r : compiler.assembler.register) -> compiler.assembler.register = {
+
+zero_parameters_t_no_inline : type = () -> u64
+zero_parameters_t : type = compiler.always_inline(zero_parameters_t_no_inline)
+one_parameters_t_no_inline : type = (a : u64) -> u64
+one_parameters_t : type = compiler.always_inline(one_parameters_t_no_inline)
+two_parameters_t_no_inline : type = (a : u64, b : u64) -> u64
+two_parameters_t : type = compiler.always_inline(two_parameters_t_no_inline)
+
+emit_register_t_no_inline : type = (r : compiler.assembler.register) -> compiler.assembler.register
+emit_register_t : type = compiler.always_inline(emit_register_t_no_inline)
+emit_register : emit_register_t = {
 	%8 : compiler.pointer_sized = 8
 	mask : compiler.pointer_sized = 0xFF
 	shift : compiler.pointer_sized = compiler.shift_right(r, %8)
@@ -26,7 +36,7 @@ load_upper_immediate_op : (T : type) -> T = {
 	_ : T = compiler.indicate_return(T)
 }
 
-add : (a : u64, b : u64) -> u64 = {
+add : two_parameters_t = {
 	rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 	regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 	regret : compiler.assembler.register = compiler.assembler.return_register(u64)
@@ -40,23 +50,37 @@ add : (a : u64, b : u64) -> u64 = {
 	_ : u64 = compiler.indicate_return(u64)
 }
 
-debug_print : (a : u64) -> u64 = {
+subtract : two_parameters_t = {
 	rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
+	regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 	regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-	%4 : compiler.byte_pointer = "\x04\x00\x00\x00\x00\x00\x00\x00"
+	%4 : compiler.byte_pointer = "\x26\x00\x00\x00\x00\x00\x00\x00"
 	_ : compiler.byte = compiler.emit_bytes(%4)
 	_ : compiler.assembler.register = inline emit_register(regret)
 	_ : compiler.assembler.register = inline emit_register(rega)
-	%5 : compiler.byte_pointer = "\x00\x00\x00\x00"
+	_ : compiler.assembler.register = inline emit_register(regb)
+	%5 : compiler.byte_pointer = "\x00\x00"
 	_ : compiler.byte = compiler.emit_bytes(%5)
 	_ : u64 = compiler.indicate_return(u64)
 }
 
-halt : () -> u64 = {
-	%6 : compiler.byte_pointer = "\x03\x00\x00\x00\x00\x00\x00\x00"
+debug_print : one_parameters_t = {
+	rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
+	regret : compiler.assembler.register = compiler.assembler.return_register(u64)
+	%6 : compiler.byte_pointer = "\x04\x00\x00\x00\x00\x00\x00\x00"
 	_ : compiler.byte = compiler.emit_bytes(%6)
-	%7 : compiler.byte_pointer = "\x00\x00\x00\x00\x00\x00\x00\x00"
+	_ : compiler.assembler.register = inline emit_register(regret)
+	_ : compiler.assembler.register = inline emit_register(rega)
+	%7 : compiler.byte_pointer = "\x00\x00\x00\x00"
 	_ : compiler.byte = compiler.emit_bytes(%7)
+	_ : u64 = compiler.indicate_return(u64)
+}
+
+halt : zero_parameters_t = {
+	%8 : compiler.byte_pointer = "\x03\x00\x00\x00\x00\x00\x00\x00"
+	_ : compiler.byte = compiler.emit_bytes(%8)
+	%9 : compiler.byte_pointer = "\x00\x00\x00\x00\x00\x00\x00\x00"
+	_ : compiler.byte = compiler.emit_bytes(%9)
 }
 
 x0 : compiler.assembler.register = 0
@@ -64,14 +88,19 @@ x1 : compiler.assembler.register = 1
 x2 : compiler.assembler.register = 2
 x3 : compiler.assembler.register = 3
 
+_ : u64 = compiler.assembler.begin_register_allocation()
+
 a : u64 = 5
-_ : u64 = compiler.assembler.pin_register(u64, a, x1)
 _ : u64 = load_immediate(u64, a)
 b : u64 = 6
-_ : u64 = compiler.assembler.pin_register(u64, b, x2)
 _ : u64 = load_immediate(u64, b)
-c : u64 = inline add(a, b)
-_ : u64 = compiler.assembler.pin_register(u64, c, x3)
-d : u64 = inline debug_print(c)
-_ : u64 = compiler.assembler.pin_register(u64, d, x3)
-_ : u64 = inline halt()
+c : u64 = add(a, b)
+// _ : u64 = compiler.assembler.pin_register(u64, c, x2)
+d : u64 = 7
+_ : u64 = load_immediate(u64, d)
+e : u64 = subtract(c, d)
+_ : u64 = compiler.assembler.pin_register(u64, e, x2)
+f : u64 = debug_print(e)
+_ : u64 = compiler.assembler.pin_register(u64, f, x2)
+_ : u64 = halt()
+_ : u64 = halt() // TODO: Are we losing the last instruction?

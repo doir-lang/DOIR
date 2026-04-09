@@ -5,11 +5,7 @@
 #include "../interface.hpp"
 
 namespace doir {
-	void deep_copy_copy_components(module& mod, ecrs::entity_t out, ecrs::entity_t block, std::unordered_map<ecrs::entity_t, ecrs::entity_t>& subtitutions, std::unordered_map<ecrs::entity_t, ecrs::entity_t>& reverse_subtitutions, void(*extra_copy_instructions)(ecrs::entity_t dest, ecrs::entity_t src)) {
-		auto subtree = reverse_subtitutions[out];
-
-		mod.get_or_add_component<doir::parent>(out) = {{block}};
-
+	void copy_components(module& mod, ecrs::entity_t out, ecrs::entity_t subtree, bool copy_block /*= true*/, std::unordered_map<ecrs::entity_t, ecrs::entity_t>* subtitutions /*= nullptr*/) {
 		if(mod.has_component<doir::name>(subtree))
 			mod.get_or_add_component<doir::name>(out) = mod.get_component<doir::name>(subtree);
 
@@ -21,13 +17,15 @@ namespace doir {
 			if(mod.has_component<doir::type_of>(subtree)) {
 				auto& destination = mod.add_component<doir::type_of>(out);
 				auto& source = mod.get_component<doir::type_of>(subtree);
-				destination.related[0] = subtitutions.contains(source.related[0]) ? subtitutions[source.related[0]] : source.related[0];
+				destination = source;
+				if(subtitutions) for(auto& e: destination.related)
+					e = subtitutions->contains(e) ? (*subtitutions)[e] : e;
 			}
 			if(mod.has_component<doir::lookup::type_of>(subtree)) {
 				auto& destination = mod.add_component<doir::lookup::type_of>(out);
 				auto& lookup = mod.get_component<doir::lookup::type_of>(subtree);
-				destination = lookup.resolved() && subtitutions.contains(lookup.entity())
-					? doir::lookup::type_of{subtitutions[lookup.entity()]} : lookup;
+				if(subtitutions) destination = lookup.resolved() && subtitutions->contains(lookup.entity())
+					? doir::lookup::type_of{(*subtitutions)[lookup.entity()]} : lookup;
 			}
 
 			if(mod.has_component<doir::function_parameter>(subtree))
@@ -53,30 +51,32 @@ namespace doir {
 				if(mod.has_component<doir::call>(subtree)) {
 					auto& destination = mod.add_component<doir::call>(out);
 					auto& source = mod.get_component<doir::call>(subtree);
-					destination.related[0] = subtitutions.contains(source.related[0]) ? subtitutions[source.related[0]] : source.related[0];
+					destination = source;
+					if(subtitutions) for(auto& e: destination.related)
+						e = subtitutions->contains(e) ? (*subtitutions)[e] : e;
 				}
 				if(mod.has_component<doir::lookup::call>(subtree)) {
 					auto& destination = mod.add_component<doir::lookup::call>(out);
 					auto& lookup = mod.get_component<doir::lookup::call>(subtree);
-					destination = lookup.resolved() && subtitutions.contains(lookup.entity())
-						? doir::lookup::call{subtitutions[lookup.entity()]} : lookup;
+					if(subtitutions) destination = lookup.resolved() && subtitutions->contains(lookup.entity())
+						? doir::lookup::call{(*subtitutions)[lookup.entity()]} : lookup;
 				}
 
 				// inputs == backlink
 				if(mod.has_component<doir::function_inputs>(subtree)) {
 					auto& destination = mod.add_component<doir::function_inputs>(out);
 					auto& source = mod.get_component<doir::function_inputs>(subtree);
-					destination.related.reserve(source.related.size());
-					for(auto& e: source.related)
-						destination.related.push_back(subtitutions.contains(e) ? subtitutions[e] : e);
+					destination = source;
+					if(subtitutions) for(auto& e: destination.related)
+						e = subtitutions->contains(e) ? (*subtitutions)[e] : e;
 				}
 				if(mod.has_component<doir::lookup::function_inputs>(subtree)) {
 					auto& destination = mod.add_component<doir::lookup::function_inputs>(out);
 					auto& lookups = mod.get_component<doir::lookup::function_inputs>(subtree);
 					destination.reserve(lookups.size());
-					for(auto& lookup: lookups)
-						destination.push_back(lookup.resolved() && subtitutions.contains(lookup.entity())
-							? doir::lookup::type_of{subtitutions[lookup.entity()]} : lookup);
+					if(subtitutions) for(auto& lookup: lookups)
+						destination.push_back(lookup.resolved() && subtitutions->contains(lookup.entity())
+							? doir::lookup::type_of{(*subtitutions)[lookup.entity()]} : lookup);
 				}
 
 				if(mod.has_component<doir::function_parameter_names>(subtree))
@@ -87,17 +87,17 @@ namespace doir {
 				if(mod.has_component<doir::function_inputs>(subtree)) {
 					auto& destination = mod.add_component<doir::function_inputs>(out);
 					auto& source = mod.get_component<doir::function_inputs>(subtree);
-					destination.related.reserve(source.related.size());
-					for(auto& e: source.related)
-						destination.related.push_back(subtitutions.contains(e) ? subtitutions[e] : e);
+					destination = source;
+					if(subtitutions) for(auto& e: destination.related)
+						e = subtitutions->contains(e) ? (*subtitutions)[e] : e;
 				}
 				if(mod.has_component<doir::lookup::type_of>(subtree)) {
 					auto& destination = mod.add_component<doir::lookup::function_inputs>(out);
 					auto& lookups = mod.get_component<doir::lookup::function_inputs>(subtree);
 					destination.reserve(lookups.size());
-					for(auto& lookup: lookups)
-					destination.push_back(lookup.resolved() && subtitutions.contains(lookup.entity())
-						? doir::lookup::type_of{subtitutions[lookup.entity()]} : lookup);
+					if(subtitutions) for(auto& lookup: lookups)
+						destination.push_back(lookup.resolved() && subtitutions->contains(lookup.entity())
+							? doir::lookup::type_of{(*subtitutions)[lookup.entity()]} : lookup);
 				}
 
 				if(mod.has_component<doir::function_parameter_names>(subtree))
@@ -107,13 +107,15 @@ namespace doir {
 				if(mod.has_component<doir::function_return_type>(subtree)) {
 					auto& destination = mod.add_component<doir::function_return_type>(out);
 					auto& source = mod.get_component<doir::function_return_type>(subtree);
-					destination.related[0] = subtitutions.contains(source.related[0]) ? subtitutions[source.related[0]] : source.related[0];
+					destination = source;
+					if(subtitutions) for(auto& e: destination.related)
+						e = subtitutions->contains(e) ? (*subtitutions)[e] : e;
 				}
 				if(mod.has_component<doir::lookup::function_return_type>(subtree)) {
 					auto& destination = mod.add_component<doir::lookup::function_return_type>(out);
 					auto& lookup = mod.get_component<doir::lookup::function_return_type>(subtree);
-					destination = lookup.resolved() && subtitutions.contains(lookup.entity())
-						? doir::lookup::function_return_type{subtitutions[lookup.entity()]} : lookup;
+					if(subtitutions) destination = lookup.resolved() && subtitutions->contains(lookup.entity())
+						? doir::lookup::function_return_type{(*subtitutions)[lookup.entity()]} : lookup;
 				}
 			}
 
@@ -125,31 +127,39 @@ namespace doir {
 				if(mod.has_component<doir::function_inputs>(subtree)) {
 					auto& destination = mod.add_component<doir::function_inputs>(out);
 					auto& source = mod.get_component<doir::function_inputs>(subtree);
-					destination.related.reserve(source.related.size());
-					for(auto& e: source.related)
-						destination.related.push_back(subtitutions.contains(e) ? subtitutions[e] : e);
+					destination = source;
+					if(subtitutions) for(auto& e: destination.related)
+						e = subtitutions->contains(e) ? (*subtitutions)[e] : e;
 				}
-				if(mod.has_component<doir::lookup::type_of>(subtree)) {
+				if(mod.has_component<doir::lookup::function_inputs>(subtree)) {
 					auto& destination = mod.add_component<doir::lookup::function_inputs>(out);
 					auto& lookups = mod.get_component<doir::lookup::function_inputs>(subtree);
 					destination.reserve(lookups.size());
-					for(auto& lookup: lookups)
-					destination.push_back(lookup.resolved() && subtitutions.contains(lookup.entity())
-						? doir::lookup::type_of{subtitutions[lookup.entity()]} : lookup);
+					if(subtitutions) for(auto& lookup: lookups)
+						destination.push_back(lookup.resolved() && subtitutions->contains(lookup.entity())
+							? doir::lookup::type_of{(*subtitutions)[lookup.entity()]} : lookup);
 				}
 
 				// return_type == backlink
 				if(mod.has_component<doir::function_return_type>(subtree)) {
 					auto& destination = mod.add_component<doir::function_return_type>(out);
 					auto& source = mod.get_component<doir::function_return_type>(subtree);
-					destination.related[0] = subtitutions.contains(source.related[0]) ? subtitutions[source.related[0]] : source.related[0];
+					destination = source;
+					if(subtitutions) for(auto& e: destination.related)
+						e = subtitutions->contains(e) ? (*subtitutions)[e] : e;
 				}
 				if(mod.has_component<doir::lookup::function_return_type>(subtree)) {
 					auto& destination = mod.add_component<doir::lookup::function_return_type>(out);
 					auto& lookup = mod.get_component<doir::lookup::function_return_type>(subtree);
-					destination = lookup.resolved() && subtitutions.contains(lookup.entity())
-						? doir::lookup::function_return_type{subtitutions[lookup.entity()]} : lookup;
+					if(subtitutions) destination = lookup.resolved() && subtitutions->contains(lookup.entity())
+						? doir::lookup::function_return_type{(*subtitutions)[lookup.entity()]} : lookup;
 				}
+			} else if(mod.has_component<doir::pointer>(subtree)) {
+				auto& destination = mod.add_component<doir::pointer>(out);
+				auto& source = mod.get_component<doir::pointer>(subtree);
+				destination = source;
+				if(subtitutions) for(auto& e: destination.related)
+					e = subtitutions->contains(e) ? (*subtitutions)[e] : e;
 			}
 
 		} else if(mod.has_component<doir::flags>(subtree) && mod.get_component<doir::flags>(subtree).namespace_set()) {
@@ -159,15 +169,33 @@ namespace doir {
 			if(mod.has_component<doir::alias>(subtree)) {
 				auto& destination = mod.add_component<doir::alias>(out);
 				auto& source = mod.get_component<doir::alias>(subtree);
-				destination.related[0] = subtitutions.contains(source.related[0]) ? subtitutions[source.related[0]] : source.related[0];
+				destination = source;
+				if(subtitutions) for(auto& e: destination.related)
+					e = subtitutions->contains(e) ? (*subtitutions)[e] : e;
 			}
 			if(mod.has_component<doir::lookup::alias>(subtree)) {
 				auto& destination = mod.add_component<doir::lookup::alias>(out);
 				auto& lookup = mod.get_component<doir::lookup::alias>(subtree);
-				destination = lookup.resolved() && subtitutions.contains(lookup.entity())
-					? doir::lookup::alias{subtitutions[lookup.entity()]} : lookup;
+				destination = lookup.resolved() && subtitutions->contains(lookup.entity())
+					? doir::lookup::alias{(*subtitutions)[lookup.entity()]} : lookup;
 			}
 		}
+
+		if(copy_block && mod.has_component<doir::block>(subtree)) {
+			auto& destination = mod.add_component<doir::block>(out);
+			auto& source = mod.get_component<doir::block>(subtree);
+			destination = source;
+			if(subtitutions) for(auto& e: destination.related)
+				e = subtitutions->contains(e) ? (*subtitutions)[e] : e;
+		}
+	}
+
+	void deep_copy_copy_components(module& mod, ecrs::entity_t out, ecrs::entity_t block, std::unordered_map<ecrs::entity_t, ecrs::entity_t>& subtitutions, std::unordered_map<ecrs::entity_t, ecrs::entity_t>& reverse_subtitutions, void(*extra_copy_instructions)(ecrs::entity_t dest, ecrs::entity_t src)) {
+		auto subtree = reverse_subtitutions[out];
+
+		mod.get_or_add_component<doir::parent>(out) = {{block}};
+
+		copy_components(mod, out, subtree, false, &subtitutions);
 
 		if(mod.has_component<doir::block>(subtree)) {
 			for(auto& e: mod.get_component<doir::block>(out).related)

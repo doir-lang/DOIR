@@ -3,6 +3,7 @@
 #include "string_helpers.hpp"
 #include "libecrs/relation.hpp"
 #include <diagnose/diagnostics.hpp>
+#include <unordered_set>
 #include <variant>
 
 namespace ecrs {
@@ -22,6 +23,7 @@ namespace doir {
 		bool structure(diagnose::manager& diagnostics, module& module, ecrs::entity_t root, bool top_level = true, ecrs::entity_t builtin_end = ecrs::invalid_entity);
 	}
 
+	void copy_components(module& mod, ecrs::entity_t out, ecrs::entity_t subtree, bool copy_block = true, std::unordered_map<ecrs::entity_t, ecrs::entity_t>* subtitutions = nullptr);
 	ecrs::entity_t deep_copy(module& module, ecrs::entity_t root, void(*extra_copy_instructions)(ecrs::entity_t dest, ecrs::entity_t src) = nullptr);
 
 	// Tags
@@ -142,6 +144,7 @@ namespace doir {
 		ecrs::entity_t end();
 
 		block_builder& build_global_block();
+		static const std::unordered_set<ecrs::entity_t>& get_type_modifiers(const doir::module& mod, ecrs::entity_t root);
 		block_builder& clear();
 		// Both of these functions append to the existing block content...
 		//	Thus it may need to be cleared first
@@ -224,21 +227,23 @@ namespace doir {
 	};
 
 	struct function_builder: public block_builder {
+		void push_parameters(ecrs::entity_t function_type, std::span<interned_string> parameter_names = {});
+
 		// (a : i32 = 5)
 		static ecrs::entity_t attach_number_parameter(doir::module& mod, ecrs::entity_t to, size_t index, ecrs::entity_t type, long double value);
-		ecrs::entity_t push_number_parameter(size_t index, interned_string name, ecrs::entity_t type, long double value);
+		ecrs::entity_t push_number_parameter(size_t index, interned_string name, ecrs::entity_t type, long double value, bool append = true);
 		static ecrs::entity_t attach_number_parameter(doir::module& mod, ecrs::entity_t to, size_t index, interned_string type_lookup, long double value);
-		ecrs::entity_t push_number_parameter(size_t index, interned_string name, interned_string type_lookup, long double value);
+		ecrs::entity_t push_number_parameter(size_t index, interned_string name, interned_string type_lookup, long double value, bool append = true);
 		// (b : u8p = "hello")
 		static ecrs::entity_t attach_string_parameter(doir::module& mod, ecrs::entity_t to, size_t index, ecrs::entity_t type, interned_string value);
-		ecrs::entity_t push_string_parameter(size_t index, interned_string name, ecrs::entity_t type, interned_string value);
+		ecrs::entity_t push_string_parameter(size_t index, interned_string name, ecrs::entity_t type, interned_string value, bool append = true);
 		static ecrs::entity_t attach_string_parameter(doir::module& mod, ecrs::entity_t to, size_t index, interned_string type_lookup, interned_string value);
-		ecrs::entity_t push_string_parameter(size_t index, interned_string name, interned_string type_lookup, interned_string value);
+		ecrs::entity_t push_string_parameter(size_t index, interned_string name, interned_string type_lookup, interned_string value, bool append = true);
 		// (c : i32)
 		static ecrs::entity_t attach_valueless_parameter(doir::module& mod, ecrs::entity_t to, size_t index, ecrs::entity_t type);
-		ecrs::entity_t push_valueless_parameter(size_t index, interned_string name, ecrs::entity_t type);
+		ecrs::entity_t push_valueless_parameter(size_t index, interned_string name, ecrs::entity_t type, bool append = true);
 		static ecrs::entity_t attach_valueless_parameter(doir::module& mod, ecrs::entity_t to, size_t index, interned_string type_lookup);
-		ecrs::entity_t push_valueless_parameter(size_t index, interned_string name, interned_string type_lookup);
+		ecrs::entity_t push_valueless_parameter(size_t index, interned_string name, interned_string type_lookup, bool append = true);
 	};
 
 }

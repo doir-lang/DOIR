@@ -53,13 +53,16 @@ namespace doir {
 		return *this;
 	}
 
-	ecrs::entity_t push_common(doir::module *mod, ecrs::entity_t block, interned_string name) {
+	ecrs::entity_t push_common(doir::module *mod, ecrs::entity_t block, interned_string name, bool append = true) {
 		assert(mod->has_component<doir::block>(block));
 		auto out = mod->add_entity();
 		if(std::string_view{name} != "_")
 			mod->add_component<doir::name>(out) = {name};
 		mod->add_component<doir::parent>(out) = {{block}};
-		return mod->get_component<doir::block>(block).related.emplace_back(out);
+		auto& related = mod->get_component<doir::block>(block).related;
+		if(append)
+			return related.emplace_back(out);
+		else return *related.insert(related.begin(), out);
 	}
 
 	ecrs::entity_t block_builder::attach_number(doir::module& mod, ecrs::entity_t to, ecrs::entity_t type, long double value) {
@@ -321,52 +324,75 @@ namespace doir {
 		return attach_namespace(*mod, out);
 	}
 
+	void function_builder::push_parameters(ecrs::entity_t function_type, std::span<interned_string> parameter_names /*= {}*/) {
+		if( !(mod->has_component<doir::function_inputs>(function_type) || mod->has_component<doir::lookup::function_inputs>(function_type))) return;
+		auto inputs = mod->has_component<doir::function_inputs>(function_type)
+			? doir::lookup::function_inputs::to_lookup(mod->get_component<doir::function_inputs>(function_type))
+			: mod->get_component<doir::lookup::function_inputs>(function_type);
+
+		std::vector<interned_string> names;
+		if(parameter_names.size()) names = {parameter_names.begin(),parameter_names.end()};
+		else if(mod->has_component<doir::function_parameter_names>(function_type)) {
+			auto& parameter_names = mod->get_component<doir::function_parameter_names>(function_type);
+			names = {parameter_names.begin(),parameter_names.end()};
+		} else {
+			names.reserve(inputs.size());
+			for(size_t i = 0; i < inputs.size(); ++i)
+				names.push_back(mod->interner.intern("a" + std::to_string(i)));
+		}
+
+		for(size_t i = inputs.size(); i--; )
+			if(inputs[i].resolved())
+				push_valueless_parameter(i, names[i], inputs[i].entity(), false);
+			else push_valueless_parameter(i, names[i], inputs[i].name(), false);
+	}
+
 	ecrs::entity_t function_builder::attach_number_parameter(doir::module& mod, ecrs::entity_t to, size_t index, ecrs::entity_t type, long double value) {
 		mod.add_component<doir::function_parameter>(to) = {index};
 		return attach_number(mod, to, type, value);;
 	}
-	ecrs::entity_t function_builder::push_number_parameter(size_t index, interned_string name, ecrs::entity_t type, long double value) {
-		auto out = push_common(mod, block, name);
+	ecrs::entity_t function_builder::push_number_parameter(size_t index, interned_string name, ecrs::entity_t type, long double value, bool append /* = true */) {
+		auto out = push_common(mod, block, name, append);
 		return attach_number_parameter(*mod, out, index, type, value);
 	}
 	ecrs::entity_t function_builder::attach_number_parameter(doir::module& mod, ecrs::entity_t to, size_t index, interned_string type_lookup, long double value) {
 		mod.add_component<doir::function_parameter>(to) = {index};
 		return attach_number(mod, to, type_lookup, value);;
 	}
-	ecrs::entity_t function_builder::push_number_parameter(size_t index, interned_string name, interned_string type_lookup, long double value) {
-		auto out = push_common(mod, block, name);
+	ecrs::entity_t function_builder::push_number_parameter(size_t index, interned_string name, interned_string type_lookup, long double value, bool append /* = true */) {
+		auto out = push_common(mod, block, name, append);
 		return attach_number_parameter(*mod, out, index, type_lookup, value);
 	}
 	ecrs::entity_t function_builder::attach_string_parameter(doir::module& mod, ecrs::entity_t to, size_t index, ecrs::entity_t type, interned_string value) {
 		mod.add_component<doir::function_parameter>(to) = {index};
 		return attach_string(mod, to, type, value);;
 	}
-	ecrs::entity_t function_builder::push_string_parameter(size_t index, interned_string name, ecrs::entity_t type, interned_string value) {
-		auto out = push_common(mod, block, name);
+	ecrs::entity_t function_builder::push_string_parameter(size_t index, interned_string name, ecrs::entity_t type, interned_string value, bool append /* = true */) {
+		auto out = push_common(mod, block, name, append);
 		return attach_string_parameter(*mod, out, index, type, value);
 	}
 	ecrs::entity_t function_builder::attach_string_parameter(doir::module& mod, ecrs::entity_t to, size_t index, interned_string type_lookup, interned_string value) {
 		mod.add_component<doir::function_parameter>(to) = {index};
 		return attach_string(mod, to, type_lookup, value);;
 	}
-	ecrs::entity_t function_builder::push_string_parameter(size_t index, interned_string name, interned_string type_lookup, interned_string value) {
-		auto out = push_common(mod, block, name);
+	ecrs::entity_t function_builder::push_string_parameter(size_t index, interned_string name, interned_string type_lookup, interned_string value, bool append /* = true */) {
+		auto out = push_common(mod, block, name, append);
 		return attach_string_parameter(*mod, out, index, type_lookup, value);
 	}
 	ecrs::entity_t function_builder::attach_valueless_parameter(doir::module& mod, ecrs::entity_t to, size_t index, ecrs::entity_t type) {
 		mod.add_component<doir::function_parameter>(to) = {index};
 		return attach_valueless(mod, to, type);;
 	}
-	ecrs::entity_t function_builder::push_valueless_parameter(size_t index, interned_string name, ecrs::entity_t type) {
-		auto out = push_common(mod, block, name);
+	ecrs::entity_t function_builder::push_valueless_parameter(size_t index, interned_string name, ecrs::entity_t type, bool append /* = true */) {
+		auto out = push_common(mod, block, name, append);
 		return attach_valueless_parameter(*mod, out, index, type);
 	}
 	ecrs::entity_t function_builder::attach_valueless_parameter(doir::module& mod, ecrs::entity_t to, size_t index, interned_string type_lookup) {
 		mod.add_component<doir::function_parameter>(to) = {index};
 		return attach_valueless(mod, to, type_lookup);;
 	}
-	ecrs::entity_t function_builder::push_valueless_parameter(size_t index, interned_string name, interned_string type_lookup) {
-		auto out = push_common(mod, block, name);
+	ecrs::entity_t function_builder::push_valueless_parameter(size_t index, interned_string name, interned_string type_lookup, bool append /* = true */) {
+		auto out = push_common(mod, block, name, append);
 		return attach_valueless_parameter(*mod, out, index, type_lookup);
 	}
 

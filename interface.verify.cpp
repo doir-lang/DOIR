@@ -6,6 +6,7 @@
 #include "diagnostics.hpp"
 #include "string_helpers.hpp"
 #include "sema/lookup.hpp"
+#include "sema/function_arity.hpp"
 
 #include <unordered_map>
 
@@ -120,11 +121,11 @@ namespace doir::verify {
 			bool function_def_lookup = mod.has_component<doir::lookup::function_return_type>(subtree);
 			bool block = mod.has_component<doir::block>(subtree);
 
-			if( (call || call_lookup || function_def || function_def_lookup || block) && mod.has_component<doir::function_parameter>(subtree)) {
-				// TODO: Should we maintain this rule?
-				throw std::runtime_error("TODO: Parameters can only have a string, a number, or nothing as a default value");
-				valid = false;
-			}
+			// if( (call || call_lookup || function_def || function_def_lookup || block) && mod.has_component<doir::function_parameter>(subtree)) {
+			// 	// TODO: Should we maintain this rule?
+			// 	throw std::runtime_error("TODO: Parameters can only have a string, a number, or nothing as a default value");
+			// 	valid = false;
+			// }
 
 			size_t count = valueless + number + string + call + call_lookup + function_def + function_def_lookup + block;
 			switch(count) {
@@ -175,9 +176,10 @@ namespace doir::verify {
 				}
 				// if(!verify::structure(diagnostics, mod, t.entity(), false, builtin_end)) valid = false;
 
-				auto inputs = mod.has_component<doir::function_inputs>(t.entity())
-					? doir::lookup::function_inputs::to_lookup(mod.get_component<doir::function_inputs>(t.entity()))
-					: mod.get_component<doir::lookup::function_inputs>(t.entity());
+				auto ft = doir::sema::validate::resolve_type_modifications(mod, t.entity());
+				auto inputs = mod.has_component<doir::function_inputs>(ft)
+					? doir::lookup::function_inputs::to_lookup(mod.get_component<doir::function_inputs>(ft))
+					: mod.get_component<doir::lookup::function_inputs>(ft);
 
 				if(mod.has_component<doir::function_parameter_names>(subtree)) {
 					auto& names = mod.get_component<doir::function_parameter_names>(subtree);

@@ -3,6 +3,7 @@
 
 #include "lookup.hpp"
 #include "../systems.hpp"
+#include "function_arity.hpp"
 
 namespace doir {
 	ecrs::entity_t find_block(const doir::module& mod, ecrs::entity_t e) {
@@ -20,17 +21,23 @@ namespace doir {
 		else return find_block(mod, e);
 	}
 
-	bool inside_function(const doir::module& mod, ecrs::entity_t subtree) {
+	// Returns
+	ecrs::entity_t find_function_inside_of(const doir::module& mod, ecrs::entity_t subtree) {
 		ecrs::entity_t last = ecrs::invalid_entity;
 		while(subtree != ecrs::invalid_entity && subtree != last) {
 			if(mod.has_component<doir::function_return_type>(subtree))
-				return true;
+				return subtree;
+			if(mod.has_component<doir::type_of>(subtree))
+				if(auto type = mod.get_component<doir::type_of>(subtree).related[0];
+					mod.has_component<doir::function_return_type>(sema::validate::resolve_type_modifications(mod, type))
+				)
+					return subtree;
 			subtree = find_parent(mod, last = subtree);
 		}
-		return false;
+		return ecrs::invalid_entity;
 	}
 
-	inline ecrs::entity_t find_namespace(doir::module& mod, doir::block& block, std::string_view name) {
+	inline ecrs::entity_t find_namespace(const doir::module& mod, const doir::block& block, std::string_view name) {
 		for(auto e: block.related)
 			if(mod.has_component<doir::name>(e)) {
 				std::string_view e_name = mod.get_component<doir::name>(e);
@@ -40,7 +47,7 @@ namespace doir {
 		return ecrs::invalid_entity;
 	}
 
-	inline ecrs::entity_t find_name_in_block(doir::module& mod, doir::block& block, std::string_view name) {
+	inline ecrs::entity_t find_name_in_block(const doir::module& mod, const doir::block& block, std::string_view name) {
 		for(auto e: block.related)
 			if(mod.has_component<doir::name>(e)) {
 				auto e_name = mod.get_component<doir::name>(e);
@@ -50,7 +57,7 @@ namespace doir {
 		return ecrs::invalid_entity;
 	}
 
-	ecrs::entity_t lookup::resolve(doir::module& mod, doir::interned_string lookup, ecrs::entity_t search_start) {
+	ecrs::entity_t lookup::resolve(const doir::module& mod, doir::interned_string lookup, ecrs::entity_t search_start) {
 		auto block = find_block(mod, search_start);
 		if(block == ecrs::invalid_entity)
 			return block;
@@ -96,7 +103,7 @@ namespace doir {
 		return ecrs::invalid_entity;
 	}
 
-	ecrs::entity_t lookup::resolve(doir::module& mod, doir::lookup::lookup& lookup, ecrs::entity_t search_start) {
+	ecrs::entity_t lookup::resolve(const doir::module& mod, doir::lookup::lookup& lookup, ecrs::entity_t search_start) {
 		if(lookup.resolved()) return lookup.entity();
 
 		auto out = resolve(mod, lookup.name(), search_start);
@@ -107,7 +114,7 @@ namespace doir {
 	}
 
 	namespace sema {
-		bool resolve_lookups(ecrs::context& ctx, ecrs::entity_t e) {
+		bool resolve_lookups(ecrs::context& ctx, ecrs::entity_t e, bool types_only) {
 			auto& mod = (doir::module&)ctx; // TODO: Verify cast
 
 			if(mod.has_component<doir::lookup::lookup>(e)) {
@@ -118,12 +125,29 @@ namespace doir {
 				auto& lookup = mod.get_component<doir::lookup::function_return_type>(e);
 				doir::lookup::resolve(mod, lookup, e);
 			}
-			if(mod.has_component<doir::lookup::function_inputs>(e)) {
-				auto& lookups = mod.get_component<doir::lookup::function_inputs>(e);
-				for(auto& lookup: lookups)
-					doir::lookup::resolve(mod, lookup, e);
+			if(mod.has_component<doir::lookup::call>(e)) {
+				auto& lookup = mod.get_component<doir::lookup::call>(e);
+				doir::lookup::resolve(mod, lookup, e);
 			}
-			if(mod.has_component<doir::lookup::alias>(e)) {
+			if(mod.has_component<doir::lookup::function_inputs>(e)) {
+				bool should_resolve = mod.has_component<doir::type_definition>(e) || !types_only;
+				if(!should_resolve && (mod.has_component<doir::call>(e) || mod.has_component<doir::lookup::call>(e))) {
+					doir::lookup::lookup lookup = mod.has_component<doir::call>(e)
+						? doir::lookup::lookup(mod.get_component<doir::call>(e).related[0])
+						: doir::lookup::lookup(mod.get_component<doir::lookup::call>(e));
+					if(lookup.resolved()) {
+						auto func = lookup.entity();
+						should_resolve = block_builder::get_type_modifiers(mod, e).contains(func);
+					}
+				}
+
+				if(should_resolve) {
+					auto& lookups = mod.get_component<doir::lookup::function_inputs>(e);
+					for(auto& lookup: lookups)
+						doir::lookup::resolve(mod, lookup, e);
+				}
+			}
+			if(!types_only && mod.has_component<doir::lookup::alias>(e)) {
 				auto& lookup = mod.get_component<doir::lookup::alias>(e);
 				doir::lookup::resolve(mod, lookup, e);
 			}
@@ -131,10 +155,39 @@ namespace doir {
 				auto& lookup = mod.get_component<doir::lookup::type_of>(e);
 				doir::lookup::resolve(mod, lookup, e);
 			}
-			if(mod.has_component<doir::lookup::call>(e)) {
-				auto& lookup = mod.get_component<doir::lookup::call>(e);
-				doir::lookup::resolve(mod, lookup, e);
-			}
+
+			// if(mod.has_component<doir::call>(e) || mod.has_component<doir::lookup::call>(e))
+			// 	if(mod.has_component<doir::function_inputs>(e) || mod.has_component<doir::lookup::function_inputs>(e)) {
+			// 		doir::lookup::lookup call = mod.has_component<doir::call>(e)
+			// 			? doir::lookup::lookup(mod.get_component<doir::call>(e).related[0])
+			// 			: doir::lookup::lookup(mod.get_component<doir::lookup::call>(e));
+			// 		if(!call.resolved()) return true;
+
+			// 		auto decl = call.entity();
+			// 		if(!mod.has_component<doir::block>(decl)) return true;
+			// 		doir::lookup::lookup lookup = mod.has_component<doir::type_of>(decl)
+			// 			? doir::lookup::lookup(mod.get_component<doir::type_of>(decl).related[0])
+			// 			: doir::lookup::lookup(mod.get_component<doir::lookup::type_of>(decl));
+			// 		if(!lookup.resolved()) return true;
+			// 		auto type = sema::validate::resolve_type_modifications(mod, lookup.entity());
+
+			// 		if( !(mod.has_component<doir::function_return_type>(decl) || mod.has_component<doir::lookup::function_return_type>(decl)) ) {
+			// 			if(mod.has_component<doir::function_return_type>(decl))
+			// 				mod.add_component<doir::function_return_type>(decl) = mod.get_component<doir::function_return_type>(type);
+			// 			else if(mod.has_component<doir::lookup::function_return_type>(decl))
+			// 				mod.add_component<doir::lookup::function_return_type>(decl) = mod.get_component<doir::lookup::function_return_type>(type);
+			// 		}
+
+			// 		if( !(mod.has_component<doir::function_inputs>(type) || mod.has_component<doir::lookup::function_inputs>(type)) ) return true;
+			// 		auto inputs = mod.has_component<doir::function_inputs>(type)
+			// 			? doir::lookup::function_inputs::to_lookup(mod.get_component<doir::function_inputs>(type))
+			// 			: mod.get_component<doir::lookup::function_inputs>(type);
+			// 		auto params = inputs.associated_parameters(mod, mod.get_component<doir::block>(decl));
+			// 		if(params.size()) return true;
+
+			// 		doir::function_builder builder{decl, &mod};
+			// 		builder.push_parameters(type);
+			// 	}
 
 			return true;
 		}

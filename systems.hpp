@@ -47,7 +47,6 @@ namespace doir::system {
 			if(sort_when_finished) {
 				// doir::print(std::cout, mod, root, true, true);
 				root = canonicalize::sort(mod, root);
-				// doir::print(std::cout, mod, root, true, true);
 			}
 			return out;
 		};

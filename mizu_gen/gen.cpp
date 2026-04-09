@@ -15,8 +15,9 @@
 
 const static mizu::opcode program[] = {
  // mizu::opcode{mizu::load_immediate, mizu::registers::t(0)}.set_immediate(40),
- mizu::opcode{mizu::add, 0, mizu::registers::t(0)},
- mizu::opcode{mizu::debug_print, 0, mizu::registers::t(0)},
+ mizu::opcode{mizu::add},
+ mizu::opcode{mizu::subtract},
+ mizu::opcode{mizu::debug_print},
  mizu::opcode{mizu::halt},
 };
 
@@ -53,7 +54,17 @@ int main() {
 
 	std::cout << "_64 : compiler.pointer_sized = 64\n"
 		<< "u64 : type = compiler.base_type(_64, _64)\n"
-		<< "emit_register : (r : compiler.assembler.register) -> compiler.assembler.register = {\n"
+		<< "\n"
+		<< "zero_parameters_t_no_inline : type = () -> u64\n"
+		<< "zero_parameters_t : type = compiler.always_inline(zero_parameters_t_no_inline)\n"
+		<< "one_parameters_t_no_inline : type = (a : u64) -> u64\n"
+		<< "one_parameters_t : type = compiler.always_inline(one_parameters_t_no_inline)\n"
+		<< "two_parameters_t_no_inline : type = (a : u64, b : u64) -> u64\n"
+		<< "two_parameters_t : type = compiler.always_inline(two_parameters_t_no_inline)\n"
+		<< "\n"
+		<< "emit_register_t_no_inline : type = (r : compiler.assembler.register) -> compiler.assembler.register\n"
+		<< "emit_register_t : type = compiler.always_inline(emit_register_t_no_inline)\n"
+		<< "emit_register : emit_register_t = {\n"
 		<< "\t%8 : compiler.pointer_sized = 8\n"
 		<< "\tmask : compiler.pointer_sized = 0xFF\n"
 		<< "\tshift : compiler.pointer_sized = compiler.shift_right(r, %8)\n"
@@ -77,19 +88,18 @@ int main() {
 		<< "}\n" << std::endl;
 
 
-
 	for(size_t i = 0; i < num_opcodes; ++i) {
 		auto op = portable[i];
 		auto name = *mizu::lookup_name(op.op);
 
 		if(program[i].op == mizu::halt) {
-			std::cout << name.data << " : () -> u64 = {\n";
+			std::cout << name.data << " : zero_parameters_t = {\n";
 			emit(std::cout, op.op);
 			emit<uint64_t>(std::cout, 0);
 			std::cout << "}\n" << std::endl;
 
 		} else if(single_operand_ops.contains(program[i].op)) {
-			std::cout << name.data << " : (a : u64) -> u64 = {\n"
+			std::cout << name.data << " : one_parameters_t = {\n"
 				<< "\trega : compiler.assembler.register = compiler.assembler.register_for(u64, a)\n"
 				<< "\tregret : compiler.assembler.register = compiler.assembler.return_register(u64)\n";
 			emit(std::cout, op.op);
@@ -100,7 +110,7 @@ int main() {
 				<< "}\n" << std::endl;
 
 		} else {
-			std::cout << name.data << " : (a : u64, b : u64) -> u64 = {\n"
+			std::cout << name.data << " : two_parameters_t = {\n"
 				<< "\trega : compiler.assembler.register = compiler.assembler.register_for(u64, a)\n"
 				<< "\tregb : compiler.assembler.register = compiler.assembler.register_for(u64, b)\n"
 				<< "\tregret : compiler.assembler.register = compiler.assembler.return_register(u64)\n";

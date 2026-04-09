@@ -12,6 +12,7 @@
 #include "print.hpp"
 
 #include "sema/canonicalize/sort.hpp"
+#include "sema/canonicalize/materialize_function_types_and_parameters.hpp"
 #include "sema/lookup.hpp"
 #include "sema/strip_names.hpp"
 #include "sema/function_arity.hpp"
@@ -22,6 +23,7 @@
 #include "opt/compute_compiler_namespace.hpp"
 #include "opt/mizu_materialize_immediates.hpp"
 #include "opt/pin_registers.hpp"
+#include "opt/allocate_registers.hpp"
 
 #include "temp_byte_dumper.hpp"
 
@@ -50,22 +52,30 @@ int main(int argc, char** argv) {
 	auto root = builders.front().block;
 	doir::verify::structure(doir::diagnostics(), mod, root);
 	root = doir::canonicalize::sort(mod, root);
-	// doir::print(std::cout, mod, root, true, true);
+	doir::system::sorted(doir::canonicalize::materialize_function_types_and_parameters, false, true)(mod);
+	// doir::print(std::cout, mod, doir::canonicalize::new_root, true, true);
 
 	using namespace std::placeholders;
 	auto sema_schedule = ecrs::system::sequential(
 		doir::system::sorted(doir::sema::validate::name_reuse),
-		doir::system::sorted(doir::sema::resolve_lookups),
+		doir::system::sorted(std::bind(doir::sema::resolve_lookups, _1, _2, true)),
+		doir::system::sorted(doir::canonicalize::materialize_function_types_and_parameters, false, true),
+		doir::system::sorted(std::bind(doir::sema::resolve_lookups, _1, _2, false)), // We may have materialized some function parameters which can now be found
+		// doir::system::print(std::cout),
 		doir::system::sorted(doir::sema::validate::lookups_resolved),
-		ecrs::system::parallel(
-			// doir::system::sorted(doir::sema::strip_names),
-			doir::system::sorted(doir::sema::validate::function_arity, true)
-		)
+		doir::system::sorted(doir::sema::validate::function_arity)
+		// ecrs::system::parallel(
+		// 	// doir::system::sorted(doir::sema::strip_names),
+
+		// )
 	);
 	auto opt_schedule = ecrs::system::sequential(
 		doir::system::sorted(doir::opt::pin_registers),
+		doir::system::sorted(doir::opt::allocate_registers, false, true),
+		doir::system::sorted(doir::opt::pin_registers),
 		doir::system::sorted(std::bind(doir::opt::compute_compiler_namespace, _1, _2, false)),
 		doir::system::sorted(doir::opt::mizu::materialize_immediates, false, true),
+		// doir::system::print(std::cout),
 		doir::system::sorted(doir::opt::inline_functions, false, true),
 		doir::system::sorted(std::bind(doir::opt::compute_compiler_namespace, _1, _2, true))
 		// doir::system::sorted(doir::system::bind_root(doir::opt::materialize_aliases))

@@ -34,7 +34,7 @@ namespace doir::opt {
 			}
 
 		size_t size_bits = mod.get_component<doir::number>(inputs[0]).value;
-		size_t align_bits = mod.get_component<doir::number>(inputs[0]).value;
+		size_t align_bits = mod.get_component<doir::number>(inputs[1]).value;
 		struct helper {
 			std::size_t operator()(const std::pair<size_t, size_t>& p) const noexcept {
 		        std::size_t h1 = std::hash<size_t>{}(p.first);
@@ -84,8 +84,38 @@ namespace doir::opt {
 		return true;
 	}
 
+	bool compute_always_inline(doir::module& mod, ecrs::entity_t subtree, ecrs::entity_t function) {
+		if(!mod.has_component<doir::function_inputs>(subtree)) {
+			throw std::runtime_error("TODO: always_inline expects one input");
+			return false;
+		}
+		auto inputs = mod.get_component<doir::function_inputs>(subtree).related;
+		if(inputs.size() != 1) {
+			throw std::runtime_error("TODO: always_inline expects one input");
+			return false;
+		}
+		inputs = resolve_alias(mod, inputs);
+		if(!mod.has_component<doir::type_definition>(inputs[0])){
+			// TODO: It would probably be good to relax this constraint in the future
+			throw std::runtime_error("TODO: always_inline parameter 0 must be a type");
+			return false;
+		}
+
+		auto type = inputs[0];
+
+		mod.remove_component<doir::type_of>(subtree);
+		mod.add_component<doir::print_as_call>(subtree).related[0] = function;
+		mod.remove_component<doir::call>(subtree);
+		mod.remove_component<doir::function_inputs>(subtree);
+
+		copy_components(mod, subtree, type);
+		mod.get_or_add_component<doir::flags>(subtree).as_underlying() |= doir::flags::Inline;
+
+		return true;
+	}
+
 	bool compute_bitwise_and(doir::module& mod, ecrs::entity_t subtree, ecrs::entity_t function) {
-		if(inside_function(mod, subtree))
+		if(find_function_inside_of(mod, subtree))
 			return true;
 
 		if(!mod.has_component<doir::function_inputs>(subtree)) {
@@ -116,7 +146,7 @@ namespace doir::opt {
 	}
 
 	bool compute_shift_right(doir::module& mod, ecrs::entity_t subtree, ecrs::entity_t function) {
-		if(inside_function(mod, subtree))
+		if(find_function_inside_of(mod, subtree))
 			return true;
 
 		if(!mod.has_component<doir::function_inputs>(subtree)) {
@@ -175,6 +205,7 @@ namespace doir::opt {
 		static ecrs::entity_t bitwise_and = lookup::resolve(mod, "compiler.bitwise_and", subtree);
 		static ecrs::entity_t shift_right = lookup::resolve(mod, "compiler.shift_right", subtree);
 		static ecrs::entity_t debug_print = lookup::resolve(mod, "compiler.debug_print", subtree);
+		static ecrs::entity_t always_inline = lookup::resolve(mod, "compiler.always_inline", subtree);
 		static ecrs::entity_t assembler_register_for = lookup::resolve(mod, "compiler.assembler.register_for", subtree);
 		static ecrs::entity_t assembler_return_register = lookup::resolve(mod, "compiler.assembler.return_register", subtree);
 		static ecrs::entity_t assembler_yield_register = lookup::resolve(mod, "compiler.assembler.yield_register", subtree);
@@ -182,6 +213,9 @@ namespace doir::opt {
 		auto function = mod.get_component<doir::call>(subtree).related[0];
 		if(function == base_type)
 			return compute_base_type(mod, subtree, base_type);
+
+		if(function == always_inline)
+			return compute_always_inline(mod, subtree, always_inline);
 
 		else if(function == pointer)
 			return compute_pointer(mod, subtree, pointer);
@@ -228,7 +262,13 @@ namespace doir::opt {
 			return compute_register_for(mod, subtree, parent, assembler_yield_register, force_register_values);
 
 		} else if(function == assembler_return_register) {
-			// throw std::runtime_error("TODO: Non-inlined functions aren't yet supported... can't get return register");
+			auto func = find_function_inside_of(mod, subtree);
+			if(func == ecrs::invalid_entity) {
+				throw std::runtime_error("TODO: Used return_register outside of a function");
+				return false;
+			}
+
+ 			// throw std::runtime_error("TODO: Non-inlined functions aren't yet supported... can't get return register");
 		}
 
 		return true;
