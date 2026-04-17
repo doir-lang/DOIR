@@ -1,3 +1,4 @@
+#include "sema/lookup.hpp"
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 
@@ -50,6 +51,14 @@ std::string print_lookup_name(const doir::module& mod, doir::lookup::lookup look
 
 	if(mod.has_component<doir::name>(lookup.entity())) {
 		auto out = std::string(mod.get_component<doir::name>(lookup.entity()));
+		auto parent = doir::find_parent(mod, lookup.entity());
+		while(
+			mod.has_component<doir::flags>(parent) && mod.get_component<doir::flags>(parent).namespace_set()
+			&& mod.has_component<doir::name>(parent)
+		) {
+			out = std::string(mod.get_component<doir::name>(parent)) + "." + out;
+			parent = doir::find_parent(mod, parent);
+		}
 		if(debug) out += "[" + std::to_string(lookup.entity()) + "]";
 		return out;
 	}
