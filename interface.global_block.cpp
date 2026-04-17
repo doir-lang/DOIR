@@ -13,6 +13,8 @@ namespace doir {
 		auto type = push_type(mod->interner.intern("type")).end();
 		mod->get_or_add_component<doir::flags>(type).as_underlying() |= doir::flags::Comptime;
 
+		push_type(mod->interner.intern("void")).end();
+
 		auto compiler = push_namespace("compiler");
 		std::vector<doir::lookup::lookup> inputs = {pointer_sized_interned, pointer_sized_interned};
 		std::vector<interned_string> names = {mod->interner.intern("size_bits"), mod->interner.intern("align_bits")};

@@ -17,25 +17,28 @@ namespace doir::system {
 				if(!mod.has_component<doir::block>(subtree))
 					return func(mod, subtree, std::forward<Targs>(args)...);
 				else {
-					auto& block = mod.get_component<doir::block>(subtree);
-					if(block.related.empty())
+					auto* block = &mod.get_component<doir::block>(subtree);
+					if(block->related.empty())
 						return func(mod, subtree, std::forward<Targs>(args)...);
 #ifdef ECRS_PARALLEL_SYSTEMS
 					else if (independent) {
 						bool valid = true;
-						auto range = std::ranges::views::iota(block.related[0], subtree + 1);
+						auto range = std::ranges::views::iota(block->related[0], subtree + 1);
 						std::for_each(std::execution::par_unseq, range.begin(), range.end(), [&](ecrs::entity_t e) {
 							valid &= func(mod, e, std::forward<Targs>(args)...);
 						});
 						return valid;
 					}
 #endif
-					else for(size_t e = block.related[0]; e <= subtree; ++e)
-						if(e == block.related[0]) {
+					else for(size_t e = block->related[0]; e <= subtree; ++e){
+						// if(!block->related.size())
+							block = &mod.get_component<doir::block>(subtree); // TODO: Why do we lose the block?
+						if(e == block->related[0]) {
 							if(!impl(impl, e, independent, func, mod, std::forward<Targs>(args)...)) // If the first child is a block its full range may not be captured by the loop!
 								return false;
 						} else if(!func(mod, e, std::forward<Targs>(args)...))
 							return false;
+					}
 				}
 				return true;
 			};

@@ -2,10 +2,17 @@
 // Likely will get: u1, u/i8, u/i16, u/i32, u/i64, f32, f64 (from a standard amd64 processor)
 
 type : namespace = {
+	set_attribute_id_t_nocomp : type = (T: type, attribute_id: index) -> type
+	set_attribute_id_t : type = comptime(set_attribute_id_t_nocomp)
+	export set_attribute_id : set_attribute_id_t
+
 	modifier_function_nocomp : type = (in: type) -> type
 	modifier_function : type = comptime(modifier_function_nocomp) // NOTE: If lookup can be out of order then this works...
 	export comptime : modifier_function // Marks the provided type as being a compile time constant
 
+	array_t_nocomp : type = (in: type, size: pointer_sized) -> entity
+	array_t : type = type.comptime(array_t_nocomp)
+	export array : array_t // Adds a sized pointer (array) to the given type
 	export pointer : modifier_function // Adds a pointer to the given type
 	export union : modifier_function // Converts a C "struct" to a C "union"
 	export pack : modifier_function // Reorganizes the type to be as tightly packed as possible
@@ -29,14 +36,44 @@ import_t : type = type.comptime(import_t_nocomp)
 export import : import_t
 
 meta : namespace = {
-	type : namespace = {
-		get_t_nocomp : type = (T: deduced type, register: T) -> type
-		get_t : type = type.comptime(meta.type.get_t_nocomp)
-		export get : meta.type.get_t
+	export entity : alias = compiler.pointer_sized
 
-		set_attribute_id_t_nocomp : type = (T: type, attribute_id: index) -> type
-		set_attribute_id_t : type = type.comptime(meta.type.set_attribute_id_t_nocomp)
-		export set_attribute_id : meta.type.set_attribute_id_t
+	reflect_t_nocomp : (T: deduced type, register: T) -> entity
+	reflect_t : type = type.comptime(reflect_t_nocomp)
+	export reflect : reflect_t
+	unreflect_t_nocomp : (e: entity) -> _
+	unreflect_t : type = type.comptime(unreflect_t_nocomp)
+	export unreflect : unreflect_t
+	unreflect_alias_t_nocomp : (e: entity) -> alias
+	unreflect_alias_t : type = type.comptime(unreflect_t_nocomp)
+	export unreflect_alias : unreflect_alias_t
+
+	// reflect versions of the functions in top level type namespace
+	type : namespace = {
+		is_t_nocomp : type = (e: entity) -> u1
+		is_t : type.comptime(is_t_nocomp)
+		is : is_t
+
+		set_attribute_id_t_nocomp : type = (e: entity, attribute_id: index) -> entity
+		set_attribute_id_t : type = type.comptime(set_attribute_id_t_nocomp)
+		export set_attribute_id : set_attribute_id_t
+
+		modifier_function_nocomp : type = (e: entity) -> entity
+		modifier_function : type = type.comptime(modifier_function_nocomp) // TODO: Need a way to specify global type not meta.type
+		export comptime : modifier_function // Marks the provided type as being a compile time constant
+
+		array_t_nocomp : type = (e: entity, size: pointer_sized) -> entity
+		array_t : type = type.comptime(array_t_nocomp)
+		export array : array_t // Adds a sized pointer (array) to the given type
+		export pointer : modifier_function // Adds a pointer to the given type
+		export union : modifier_function // Converts a C "struct" to a C "union"
+		export pack : modifier_function // Reorganizes the type to be as tightly packed as possible
+		export unique : modifier_function // Forces a type alias to be a completely unique type
+
+		size_function_nocomp : type = (e: entity) -> pointer_sized
+		size_function : type = comptime(size_function_nocomp)
+		export size_bits : size_function
+		export align_bits : size_function
 	}
 
 	source_location : namespace = {
@@ -48,13 +85,13 @@ meta : namespace = {
 		%1 : index = 1 // This needs to stay in sync with source_location in core compiler!
 		export location : type = meta.type.set_attribute_id(%0, %1)
 
-		get_t_nocomp : type = (T: deduced type, register: T) -> meta.source_location.location
-		get_t : type = type.comptime(meta.source_location.get_t_nocomp)
-		export get : meta.source_location.get_t
-		export get_start_line : (location: meta.source_location.location) -> index
-		export get_start_column : (location: meta.source_location.location) -> index
-		export get_end_line : (location: meta.source_location.location) -> index
-		export get_end_column : (location: meta.source_location.location) -> index
+		get_t_nocomp : type = (e: entity) -> location
+		get_t : type = type.comptime(get_t_nocomp)
+		export get : get_t
+		export get_start_line : (location: location) -> index
+		export get_start_column : (location: location) -> index
+		export get_end_line : (location: location) -> index
+		export get_end_column : (location: location) -> index
 	}
 }
 
@@ -84,6 +121,12 @@ export execute : (body: block) -> _ // returns type yielded by `body`
 export defer : (body: block) // executes `body` at each exit point from the current block
 export while : (condition : u1, body: block) -> _ // returns pointer(meta.type.get(execute(body)))
 export if : (condition: u1, then: block, else: block) -> _ // returns union(type{a: meta.type.get(execute(then)) b: meta.type.get(execute(else))})
+
+export copy : (T: type, v: T) -> T // Copies v into a new register
+export move : (T: type, v: T) -> T = {
+	%0 : T = inline copy(T, v)
+	_ : _  = return(%0)
+}
 
 attribute : namespace = {
 	%0 : type = (T: type) -> index

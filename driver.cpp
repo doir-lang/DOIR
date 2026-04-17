@@ -63,10 +63,9 @@ int main(int argc, char** argv) {
 		doir::system::sorted(std::bind(doir::sema::resolve_lookups, _1, _2, false)), // We may have materialized some function parameters which can now be found
 		// doir::system::print(std::cout),
 		doir::system::sorted(doir::sema::validate::lookups_resolved),
-		doir::system::sorted(doir::sema::validate::function_arity)
 		// ecrs::system::parallel(
 		// 	// doir::system::sorted(doir::sema::strip_names),
-
+			doir::system::sorted(doir::sema::validate::function_arity)
 		// )
 	);
 	auto opt_schedule = ecrs::system::sequential(

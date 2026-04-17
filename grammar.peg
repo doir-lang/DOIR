@@ -9,7 +9,7 @@ enforested_content <- matching_braces / [^{}]
 
 deducible_type <- (<'deduced'>_)? Type _
 parameter <- Identifier _ ':'_ deducible_type ('='_ Constant _)?
-FunctionType <- '('_ (parameter (','_ parameter)*)? ')' (_ <'->'>_ Type)?
+FunctionType <- '('_ (parameter (','_ parameter)*)? ')' _ <'->'>_ Type
 Type <- FunctionType / Identifier
 
 Block <- block_start assignment* '}'
