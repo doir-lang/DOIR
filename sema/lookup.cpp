@@ -2,6 +2,7 @@
 #define WIN32_LEAN_AND_MEAN
 
 #include "lookup.hpp"
+#include "interface.hpp"
 #include "../systems.hpp"
 #include "function_arity.hpp"
 
@@ -192,12 +193,18 @@ namespace doir {
 			return true;
 		}
 
-		bool validate::lookups_resolved(ecrs::context& mod, ecrs::entity_t e) {
+		bool validate::lookups_resolved(ecrs::context& ctx, ecrs::entity_t e) {
+			auto& mod = (doir::module&)ctx; // TODO: Verify cast
+
 			bool valid = true;
 			if(mod.has_component<doir::lookup::lookup>(e)) {
 				auto& lookup = mod.get_component<doir::lookup::lookup>(e);
 				if(!lookup.resolved()) {
-					throw std::runtime_error("TODO: Failed to resolve lookup");
+					auto& diag = push_diagnostic(doir::diagnostic_type::FailedToResolveLookup, doir::find_detailed_source_location(mod, e), mod.source, mod.working_file.value_or(invalid_file_name));
+					diagnose::diagnostic::annotation annotation;
+					annotation.message = std::string("Object ") + doir::ansi::info + std::string(lookup.name()) + diagnose::ansi::reset + " appears to not exist";
+					annotation.position = diag.location.start;
+					diag.annotations.push_back(annotation);
 					valid = false;
 				}
 			}
@@ -207,7 +214,11 @@ namespace doir {
 					mod.add_component<doir::function_return_type>(e).related = {lookup.entity()};
 					mod.remove_component<doir::lookup::function_return_type>(e);
 				} else {
-					throw std::runtime_error("TODO: Failed to resolve lookup");
+					auto& diag = push_diagnostic(doir::diagnostic_type::FailedToResolveLookup, doir::find_detailed_source_location(mod, e), mod.source, mod.working_file.value_or(invalid_file_name));
+					diagnose::diagnostic::annotation annotation;
+					annotation.message = std::string("Type ") + doir::ansi::info + std::string(lookup.name()) + diagnose::ansi::reset + " appears to not exist";
+					annotation.position = diag.location.start;
+					diag.annotations.push_back(annotation);
 					valid = false;
 				}
 			}
@@ -215,7 +226,11 @@ namespace doir {
 				auto& lookups = mod.get_component<doir::lookup::function_inputs>(e);
 				for(auto& lookup: lookups)
 					if(!lookup.resolved()) {
-						throw std::runtime_error("TODO: Failed to resolve lookup");
+						auto& diag = push_diagnostic(doir::diagnostic_type::FailedToResolveLookup, doir::find_detailed_source_location(mod, e), mod.source, mod.working_file.value_or(invalid_file_name));
+						diagnose::diagnostic::annotation annotation;
+						annotation.message = std::string("Function argument ") + doir::ansi::info + std::string(lookup.name()) + diagnose::ansi::reset + " appears to not exist";
+						annotation.position = diag.location.start;
+						diag.annotations.push_back(annotation);
 						valid = false;
 					}
 
@@ -234,7 +249,11 @@ namespace doir {
 					mod.add_component<doir::alias>(e).related = {lookup.entity()};
 					mod.remove_component<doir::lookup::alias>(e);
 				} else {
-					throw std::runtime_error("TODO: Failed to resolve lookup");
+					auto& diag = push_diagnostic(doir::diagnostic_type::FailedToResolveLookup, doir::find_detailed_source_location(mod, e), mod.source, mod.working_file.value_or(invalid_file_name));
+					diagnose::diagnostic::annotation annotation;
+					annotation.message = std::string("Alias ") + doir::ansi::info + std::string(lookup.name()) + diagnose::ansi::reset + " appears to not exist";
+					annotation.position = diag.location.start;
+					diag.annotations.push_back(annotation);
 					valid = false;
 				}
 			}
@@ -244,7 +263,11 @@ namespace doir {
 					mod.add_component<doir::type_of>(e).related = {lookup.entity()};
 					mod.remove_component<doir::lookup::type_of>(e);
 				} else {
-					throw std::runtime_error("TODO: Failed to resolve lookup");
+					auto& diag = push_diagnostic(doir::diagnostic_type::FailedToResolveLookup, doir::find_detailed_source_location(mod, e), mod.source, mod.working_file.value_or(invalid_file_name));
+					diagnose::diagnostic::annotation annotation;
+					annotation.message = std::string("Type ") + doir::ansi::info + std::string(lookup.name()) + diagnose::ansi::reset + " appears to not exist";
+					annotation.position = diag.location.start;
+					diag.annotations.push_back(annotation);
 					valid = false;
 				}
 			}
@@ -254,7 +277,15 @@ namespace doir {
 					mod.add_component<doir::call>(e).related = {lookup.entity()};
 					mod.remove_component<doir::lookup::call>(e);
 				} else {
-					throw std::runtime_error("TODO: Failed to resolve lookup");
+					auto location = doir::find_source_location(mod, e);
+					auto& diag = push_diagnostic(doir::diagnostic_type::FailedToResolveLookup, location, mod.source, mod.working_file.value_or(invalid_file_name));
+					diagnose::diagnostic::annotation annotation;
+					annotation.message = std::string("Function ") + doir::ansi::info + std::string(lookup.name()) + diagnose::ansi::reset + " appears to not exist";
+					auto start = mod.source.substr(location.start_byte, location.end_byte - location.start_byte).find(lookup.name());
+					if(start != std::string::npos) 
+						location.start_byte += start;
+					annotation.position = location.start(mod.source);
+					diag.annotations.push_back(annotation);
 					valid = false;
 				}
 			}

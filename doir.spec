@@ -156,15 +156,15 @@ Block <- '{'_ assignment* '}'
 function_call <- (<'flatten' | 'inline' | 'tail'>_)? Identifier _ '('_ (Identifier _ (','_ Identifier _)*)? ')'wsc
 
 Terminator <- ';' | '\n' | '\r\n' | '\r'
-Identifier <- !Keywords < ([%]/UnicodeIdentifierStart)([.]/UnicodeIdentifierContinue)* >
-Keywords <- ('deduced' | 'export' | 'flatten' | 'inline' | 'tail')_
+Identifier <- "%" ('"' < StringChar* > '"') / !Keywords < ([%]/UnicodeIdentifierStart)([.]/UnicodeIdentifierContinue)* > 
+Keywords <- ('deduced' | 'export' | 'flatten' | 'inline' | 'language' | 'tail')_
 SourceInfo <- ('<"' < (!'"' .)* > '":' / '<' < (!':' .)* > ':') < IntegerConstant > (<'-' IntegerConstant >)? ':' < IntegerConstant > (<'-' IntegerConstant > )? '>'
 
 Constant <- < FloatConstant > / < IntegerConstant > / ('"' < StringChar* > '"') / ('\'' < StringChar > '\'')
 IntegerConstant <- ('0x' HexDigit+) / ('0b' [01]*) / ('0' [0-7]*) / ([1-9][0-9]*)
 FloatConstant <- ('0x' (HexDigit* '.' HexDigit+ / HexDigit+ '.'?) ([pP][+\-]? [0-9]+)?)
 	/ (([0-9]* '.' [0-9]+ / [0-9]+ '.'?) ('e'i[+\-]? [0-9]+)? )
-StringChar <- (!['"\n\\] .) / ('\\' ['\"?\\%abfnrtv]) / ('\\' [0-7]+) / ('\\x' HexDigit+) / ('\\u' HexDigit HexDigit HexDigit HexDigit)
+StringChar <- (!['"\n\\] .) / ('\\' ['\"?\\%abfnrtv]) / ('\\' [0-7]+) / ('\\x' HexDigit+) / ('\\u' HexDigit HexDigit HexDigit HexDigit) / ('\\U' HexDigit HexDigit HexDigit HexDigit HexDigit HexDigit HexDigit HexDigit)
 HexDigit <- [a-f0-9]i
 
 _ <- ([ \t\n\v\f\r\x85\xA0\u2028\u2029\u0020\u3000\u1680\u2000-\u2006\u2008-\u200A\u205F\u00A0\u2007\u202F] / LongComment / LineComment)*

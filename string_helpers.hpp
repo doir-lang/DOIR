@@ -117,15 +117,20 @@ namespace doir {
 		return haystack;
 	}
 
+	struct string_processing_error : public std::runtime_error {
+		size_t start;
+		string_processing_error(std::string message, size_t start) : std::runtime_error(message), start(start) {}
+	};
+
 	namespace detail {
 		inline void append_utf8(std::string& out, uint32_t cp) {
 			// Check for invalid code points
 			if (cp > 0x10FFFF)
-				throw std::runtime_error("Unicode code point out of range");
+				throw string_processing_error("Unicode code point out of range", out.size());
 
 			// UTF-16 surrogate pairs (0xD800-0xDFFF) are invalid in UTF-8
 			if (cp >= 0xD800 && cp <= 0xDFFF)
-				throw std::runtime_error("Invalid Unicode code point (surrogate range)");
+				throw string_processing_error("Invalid Unicode code point (surrogate range)", out.size());
 
 			if (cp <= 0x7F) {
 				out.push_back(cp);
@@ -148,7 +153,7 @@ namespace doir {
 			if ('0' <= c && c <= '9') return c - '0';
 			if ('a' <= c && c <= 'f') return c - 'a' + 10;
 			if ('A' <= c && c <= 'F') return c - 'A' + 10;
-			throw std::runtime_error("invalid hex digit");
+			throw string_processing_error("Invalid hex digit", 0);
 		}
 
 		constexpr bool is_octal(char c) noexcept {
@@ -217,7 +222,7 @@ namespace doir {
 			}
 
 			if (++i >= literal.size())
-				throw std::runtime_error("trailing backslash in string");
+				throw string_processing_error("Trailing backslash in string", i);
 
 			char esc = literal[i];
 
@@ -236,7 +241,7 @@ namespace doir {
 
 			case 'x': { // \xhh
 				if (i + 2 >= literal.size())
-					throw std::runtime_error("invalid \\x escape: insufficient characters");
+					throw string_processing_error("Invalid \\x escape: insufficient characters", i);
 
 				uint32_t hi = detail::hex_digit(literal[++i]);
 				uint32_t v  = (hi << 4) | detail::hex_digit(literal[++i]);
@@ -246,7 +251,7 @@ namespace doir {
 
 			case 'u': { // \uXXXX
 				if (i + 4 >= literal.size())
-					throw std::runtime_error("invalid \\u escape: insufficient characters");
+					throw string_processing_error("Invalid \\u escape: insufficient characters", i);
 
 				uint32_t cp = 0;
 				for (int k = 0; k < 4; ++k)
@@ -258,14 +263,14 @@ namespace doir {
 
 			case 'U': { // \UXXXXXXXX
 				if (i + 8 >= literal.size())
-					throw std::runtime_error("invalid \\U escape: insufficient characters");
+					throw string_processing_error("Invalid \\U escape: insufficient characters", i);
 
 				uint32_t cp = 0;
 				for (int k = 0; k < 8; ++k)
 					cp = (cp << 4) | detail::hex_digit(literal[++i]);
 
 				if (cp > 0x10FFFF)
-					throw std::runtime_error("Unicode code point out of range");
+					throw string_processing_error("Unicode code point out of range", i);
 
 				detail::append_utf8(out, cp);
 				break;
@@ -280,7 +285,7 @@ namespace doir {
 							v = (v << 3) | (literal[++i] - '0');
 						else break;
 					out.push_back(static_cast<char>(v));
-				} else throw std::runtime_error(std::string("invalid escape sequence: \\") + esc);
+				} else throw string_processing_error(std::string("Invalid escape sequence: \\") + esc, i);
 			}
 		}
 
@@ -343,7 +348,7 @@ namespace doir {
 			}
 
 			if (++i >= literal.size())
-				throw std::runtime_error("trailing backslash in string");
+				throw string_processing_error("Trailing backslash in string", i);
 
 			char esc = literal[i];
 
@@ -362,7 +367,7 @@ namespace doir {
 
 			case 'x': { // \xh[h…] — one or more hex digits; we take all and keep the low 8 bits
 				if (i + 1 >= literal.size() || !std::isxdigit(static_cast<unsigned char>(literal[i + 1])))
-					throw std::runtime_error("invalid \\x escape: no hex digit follows");
+					throw string_processing_error("Invalid \\x escape: no hex digit follows", i);
 
 				uint32_t v = 0;
 				while (i + 1 < literal.size() && std::isxdigit(static_cast<unsigned char>(literal[i + 1])))
@@ -374,7 +379,7 @@ namespace doir {
 
 			case 'u': { // \uXXXX — exactly 4 hex digits, encoded as UTF-8
 				if (i + 4 >= literal.size())
-					throw std::runtime_error("invalid \\u escape: insufficient characters");
+					throw string_processing_error("Invalid \\u escape: insufficient characters", i);
 
 				uint32_t cp = 0;
 				for (int k = 0; k < 4; ++k)
@@ -386,14 +391,14 @@ namespace doir {
 
 			case 'U': { // \UXXXXXXXX — exactly 8 hex digits, encoded as UTF-8
 				if (i + 8 >= literal.size())
-					throw std::runtime_error("invalid \\U escape: insufficient characters");
+					throw string_processing_error("Invalid \\U escape: insufficient characters", i);
 
 				uint32_t cp = 0;
 				for (int k = 0; k < 8; ++k)
 					cp = (cp << 4) | detail::hex_digit(literal[++i]);
 
 				if (cp > 0x10FFFF)
-					throw std::runtime_error("Unicode code point out of range");
+					throw string_processing_error("Unicode code point out of range", i);
 
 				detail::append_utf8(out, cp);
 				break;
@@ -410,7 +415,7 @@ namespace doir {
 					}
 					out.push_back(static_cast<char>(static_cast<uint8_t>(v)));
 				} else {
-					throw std::runtime_error(std::string("invalid C++ escape sequence: \\") + esc);
+					throw string_processing_error(std::string("Invalid C++ escape sequence: \\") + esc, i);
 				}
 			}
 		}

@@ -4,10 +4,40 @@
 #include "interface.hpp"
 #include "module.hpp"
 #include "string_helpers.hpp"
+#include "diagnostics.hpp"
 
 #include <unordered_map>
 
 namespace doir {
+
+	diagnose::source_location find_source_location(module& mod, ecrs::entity_t subtree) {
+		if(mod.has_component<diagnose::source_location::detailed>(subtree))
+			return mod.get_component<diagnose::source_location::detailed>(subtree).to_bytes(mod.source);
+
+		if(mod.has_component<diagnose::source_location>(subtree))
+			return mod.get_component<diagnose::source_location>(subtree);
+
+		if(mod.has_component<doir::name>(subtree)) {
+			auto& name = mod.get_component<doir::name>(subtree);
+			auto start = mod.source.find(name);
+			if(start == std::string::npos) {
+				throw std::runtime_error("Failed to generate source location for entity: " + std::to_string(subtree));
+			}
+			auto end = start + name.size();
+
+			return diagnose::source_location{mod.working_file.value_or(invalid_file_name), start, end};
+		}
+
+		throw std::runtime_error("Failed to generate source location for entity: " + std::to_string(subtree));
+	}
+	diagnose::source_location::detailed find_detailed_source_location(module& mod, ecrs::entity_t subtree) {
+		// This prevents us from following the expensive path which converts a detailed to byte in the other function
+		if(mod.has_component<diagnose::source_location::detailed>(subtree))
+			return mod.get_component<diagnose::source_location::detailed>(subtree);
+
+		return find_source_location(mod, subtree).to_detailed(mod.source);
+	}
+	
 
 	std::vector<ecrs::entity_t> function_inputs::associated_parameters(const module& mod, const doir::block& block) {
 		std::vector<ecrs::entity_t> parameters; parameters.reserve(related.size());

@@ -35,6 +35,24 @@ diagnose::diagnostic doir::generate_diagnostic(doir::diagnostic_type type, diagn
 	break; case diagnostic_type::InvalidIdentifier:
 		out.kind = diagnose::diagnostic::error;
 		out.message = "Invalid identifier";
+	break; case diagnostic_type::InvalidType:
+		out.kind = diagnose::diagnostic::error;
+		out.message = "Invalid type";
+	break; case diagnostic_type::InvalidFunctionCall:
+		out.kind = diagnose::diagnostic::error;
+		out.message = "Invalid function call";
+	break; case diagnostic_type::CantStoreInFunctionRegister:
+		out.kind = diagnose::diagnostic::error;
+		out.message = "Cannot store this value in a function register";
+	break; case diagnostic_type::CantCopyRegisters:
+		out.kind = diagnose::diagnostic::error;
+		out.message = std::string("Cannot dirrectly ") + doir::ansi::info + "copy" + diagnose::ansi::reset + " registers";
+	break; case diagnostic_type::StringProcessingError:
+		out.kind = diagnose::diagnostic::error;
+		out.message = "Failed to process character string";
+    break; case diagnostic_type::FailedToResolveLookup:
+		out.kind = diagnose::diagnostic::error;
+		out.message = "Failed to resolve lookup";
 
 	// Warnings
 	break; case diagnostic_type::CompilerNamespaceReserved:
@@ -42,4 +60,68 @@ diagnose::diagnostic doir::generate_diagnostic(doir::diagnostic_type type, diagn
 		out.message = "`compiler` namespace reserved";
     }
     return out;
+}
+
+std::optional<doir::range> doir::parse_parameter_range(std::string_view text, size_t parameter_index) {
+    auto open = text.find('(');
+    if(open == std::string_view::npos)
+        return std::nullopt;
+
+    std::size_t depth = 0;
+    std::size_t current_parameter = 0;
+
+    std::size_t parameter_begin = open + 1;
+
+	// This function supports matching nested parameters for future proofing with doir+
+    for(std::size_t i = open + 1; i < text.size(); ++i) {
+        char c = text[i];
+
+        switch(c) {
+            case '(':
+            case '[':
+            case '{':
+            case '<':
+                ++depth;
+                break;
+
+            case ')':
+                if(depth == 0) {
+                    // Final parameter before ')'
+                    if(current_parameter == parameter_index) {
+                        return range{
+                            parameter_begin,
+                            i
+                        };
+                    }
+
+                    return std::nullopt;
+                }
+
+                --depth;
+                break;
+
+            case ']':
+            case '}':
+            case '>':
+                if(depth > 0)
+                    --depth;
+                break;
+
+            case ',':
+                if(depth == 0) {
+                    if(current_parameter == parameter_index) {
+                        return range{
+                            parameter_begin,
+                            i
+                        };
+                    }
+
+                    ++current_parameter;
+                    parameter_begin = i + 1;
+                }
+                break;
+        }
+    }
+
+    return std::nullopt;
 }

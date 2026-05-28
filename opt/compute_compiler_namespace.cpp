@@ -3,10 +3,11 @@
 #include "../module.hpp"
 #include "../interface.hpp"
 #include "../systems.hpp"
-#include "opt/materialize_aliases.hpp"
+#include "materialize_aliases.hpp"
 #include "storage.hpp"
 
 #include "../sema/lookup.hpp"
+#include "../sema/error_helper.hpp"
 #include <algorithm>
 #include <cstddef>
 #include <functional>
@@ -17,21 +18,23 @@
 namespace doir::opt {
 	bool compute_base_type(doir::module& mod, ecrs::entity_t subtree, ecrs::entity_t function) {
 		if(!mod.has_component<doir::function_inputs>(subtree)) {
-			throw std::runtime_error("TODO: base_type expects two inputs");
+			EXPECTS_X_INPUTS("base_type", "two");
 			return false;
 		}
 		auto inputs = mod.get_component<doir::function_inputs>(subtree).related;
 		if(inputs.size() != 2) {
-			throw std::runtime_error("TODO: base_type expects two inputs");
+			EXPECTS_X_INPUTS("base_type", "two");
 			return false;
 		}
 		inputs = resolve_alias(mod, inputs);
+		bool valid = true;
 		for(size_t i = 0; i < 2; ++i)
 			if(!mod.has_component<doir::number>(inputs[i])){
 				// TODO: It would probably be good to relax this constraint in the future
-				throw std::runtime_error("TODO: base_type parameter "+std::to_string(i)+" must be a numeric constant");
-				return false;
+				PARAMETER_ERROR("base_type", i, " must evaluate to a numeric constant");
+				valid = false;
 			}
+		if(!valid) return false;
 
 		size_t size_bits = mod.get_component<doir::number>(inputs[0]).value;
 		size_t align_bits = mod.get_component<doir::number>(inputs[1]).value;
@@ -61,17 +64,17 @@ namespace doir::opt {
 
 	bool compute_pointer(doir::module& mod, ecrs::entity_t subtree, ecrs::entity_t function) {
 		if(!mod.has_component<doir::function_inputs>(subtree)) {
-			throw std::runtime_error("TODO: pointer expects one input");
+			EXPECTS_X_INPUTS("pointer", "one");
 			return false;
 		}
 		auto inputs = mod.get_component<doir::function_inputs>(subtree).related;
 		if(inputs.size() != 1) {
-			throw std::runtime_error("TODO: pointer expects one input");
+			EXPECTS_X_INPUTS("pointer", "one");
 			return false;
 		}
 		inputs = resolve_alias(mod, inputs);
 		if(!mod.has_component<doir::type_definition>(inputs[0])){
-			throw std::runtime_error("TODO: base_type parameter 0 must be a type");
+			PARAMETER_ERROR("pointer", 0, " must evaluate to a type");
 			return false;
 		}
 
@@ -86,18 +89,17 @@ namespace doir::opt {
 
 	bool compute_always_inline(doir::module& mod, ecrs::entity_t subtree, ecrs::entity_t function) {
 		if(!mod.has_component<doir::function_inputs>(subtree)) {
-			throw std::runtime_error("TODO: always_inline expects one input");
+			EXPECTS_X_INPUTS("always_inline", "one");
 			return false;
 		}
 		auto inputs = mod.get_component<doir::function_inputs>(subtree).related;
 		if(inputs.size() != 1) {
-			throw std::runtime_error("TODO: always_inline expects one input");
+			EXPECTS_X_INPUTS("always_inline", "one");
 			return false;
 		}
 		inputs = resolve_alias(mod, inputs);
 		if(!mod.has_component<doir::type_definition>(inputs[0])){
-			// TODO: It would probably be good to relax this constraint in the future
-			throw std::runtime_error("TODO: always_inline parameter 0 must be a type");
+			PARAMETER_ERROR("always_inline", 0, " must evaluate to a type");
 			return false;
 		}
 
@@ -119,21 +121,23 @@ namespace doir::opt {
 			return true;
 
 		if(!mod.has_component<doir::function_inputs>(subtree)) {
-			throw std::runtime_error("TODO: bitwise_and expects two inputs");
+			EXPECTS_X_INPUTS("bitwise_and", "one");
 			return false;
 		}
 		auto inputs = mod.get_component<doir::function_inputs>(subtree).related;
 		if(inputs.size() != 2) {
-			throw std::runtime_error("TODO: bitwise_and expects two inputs");
+			EXPECTS_X_INPUTS("bitwise_and", "one");
 			return false;
 		}
 		inputs = resolve_alias(mod, inputs);
+		bool valid = true;
 		for(size_t i = 0; i < 2; ++i)
 			if(!mod.has_component<doir::number>(inputs[i])){
 				// TODO: It would probably be good to relax this constraint in the future
-				throw std::runtime_error("TODO: bitwise_and parameter "+std::to_string(i)+" must be a numeric constant");
-				return false;
+				PARAMETER_ERROR("bitwise_and", i, " must evaluate to a numeric constant");
+				valid = false;
 			}
+		if(!valid) return false;
 
 		size_t v = mod.get_component<doir::number>(inputs[0]).value;
 		size_t mask = mod.get_component<doir::number>(inputs[1]).value;
@@ -150,21 +154,23 @@ namespace doir::opt {
 			return true;
 
 		if(!mod.has_component<doir::function_inputs>(subtree)) {
-			throw std::runtime_error("TODO: shift_right expects two inputs");
+			EXPECTS_X_INPUTS("shift_right", "two");
 			return false;
 		}
 		auto inputs = mod.get_component<doir::function_inputs>(subtree).related;
 		if(inputs.size() != 2) {
-			throw std::runtime_error("TODO: shift_right expects two inputs");
+			EXPECTS_X_INPUTS("shift_right", "two");
 			return false;
 		}
 		inputs = resolve_alias(mod, inputs);
+		bool valid = true;
 		for(size_t i = 0; i < 2; ++i)
 			if(!mod.has_component<doir::number>(inputs[i])){
 				// TODO: It would probably be good to relax this constraint in the future
-				throw std::runtime_error("TODO: shift_right parameter "+std::to_string(i)+" must be a numeric constant");
-				return false;
+				PARAMETER_ERROR("shift_right", i, " must evaluate to a numeric constant");
+				valid = false;
 			}
+		if(!valid) return false;
 
 		size_t v = mod.get_component<doir::number>(inputs[0]).value;
 		size_t shift = mod.get_component<doir::number>(inputs[1]).value;
@@ -182,12 +188,14 @@ namespace doir::opt {
 
 		// TODO: Some sort of actual register allocation logic would be nice
 		if(!mod.has_component<assigned_register>(target)) {
-			std::cerr << "WARNING: Entity " << target << " doesn't have an associated reigster" << std::endl;
+			// NO_ASSOCIATED_REGISTER();
+			// diag.kind = diagnose::diagnostic::warning;
+			
 			if(force_register_values) mod.add_component<assigned_register>(target).reg = 0;
 			else return true;
 		}
 
-		std::cout << target << " -> " << mod.get_component<assigned_register>(target).reg << std::endl;
+		// std::cout << target << " -> " << mod.get_component<assigned_register>(target).reg << std::endl;
 
 		mod.remove_component<doir::type_of>(subtree);
 		mod.add_component<doir::print_as_call>(subtree).related[0] = function;
@@ -228,12 +236,12 @@ namespace doir::opt {
 
 		else if(function == debug_print) {
 			if(!mod.has_component<doir::function_inputs>(subtree)) {
-				throw std::runtime_error("TODO: debug_print expects two inputs");
+				EXPECTS_X_INPUTS("debug_print", "two");
 				return false;
 			}
 			auto& inputs = mod.get_component<doir::function_inputs>(subtree);
 			if(inputs.related.size() != 2) {
-				throw std::runtime_error("TODO: debug_print expects two inputs");
+				EXPECTS_X_INPUTS("debug_print", "two");
 				return false;
 			}
 
@@ -241,12 +249,12 @@ namespace doir::opt {
 
 		} else if(function == assembler_register_for) {
 			if(!mod.has_component<doir::function_inputs>(subtree)) {
-				throw std::runtime_error("TODO: register_for expects two inputs");
+				EXPECTS_X_INPUTS("register_for", "two");
 				return false;
 			}
 			auto& inputs = mod.get_component<doir::function_inputs>(subtree);
 			if(inputs.related.size() != 2) {
-				throw std::runtime_error("TODO: register_for expects two inputs");
+				EXPECTS_X_INPUTS("register_for", "two");
 				return false;
 			}
 
@@ -255,7 +263,12 @@ namespace doir::opt {
 		} else if(function == assembler_yield_register) {
 			auto parent = doir::find_parent(mod, subtree);
 			if(mod.has_component<doir::function_return_type>(parent)) {
-				throw std::runtime_error("TODO: Used yield_register in function... did you mean to use return_register?");
+				auto& diag = push_diagnostic(doir::diagnostic_type::InvalidFunctionCall, doir::find_detailed_source_location(mod, subtree), mod.source, mod.working_file.value_or(invalid_file_name));
+				diagnose::diagnostic::annotation annotation;
+				annotation.message = "Used " + std::string(doir::ansi::function) + "yield_register" + diagnose::ansi::reset + " in function... did you mean to use " 
+					+ doir::ansi::function + "return_register" + diagnose::ansi::reset + "?";
+				annotation.position = diag.location.start;
+				diag.annotations.push_back(annotation);
 				return false;
 			}
 
@@ -264,7 +277,11 @@ namespace doir::opt {
 		} else if(function == assembler_return_register) {
 			auto func = find_function_inside_of(mod, subtree);
 			if(func == ecrs::invalid_entity) {
-				throw std::runtime_error("TODO: Used return_register outside of a function");
+				auto& diag = push_diagnostic(doir::diagnostic_type::InvalidFunctionCall, doir::find_detailed_source_location(mod, subtree), mod.source, mod.working_file.value_or(invalid_file_name));
+				diagnose::diagnostic::annotation annotation;
+				annotation.message = "Used " + std::string(doir::ansi::function) + "return_register" + diagnose::ansi::reset + " outside of a function";
+				annotation.position = diag.location.start;
+				diag.annotations.push_back(annotation);
 				return false;
 			}
 

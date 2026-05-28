@@ -72,7 +72,7 @@ struct function_type_t {
 
 
 
-peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, bool guarantee_source_location /*= false */) {
+peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, bool guarantee_source_location /* = true */) {
 	auto grammar =
 #include "grammar.peg"
 	;
@@ -142,12 +142,8 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, bo
 			else value = std::any_cast<assignment_value_t>(vs[7 + Export]);
 		}
 
-		auto invalid_function_type_error = []() {
-			throw std::runtime_error("TODO: Cannot store this value in a function register");
-		};
-
 		auto& mod = *blocks.back().mod;
-		ecrs::entity_t e;
+		ecrs::entity_t e = ecrs::invalid_entity;
 		if(!value) {
 			if(type.type() == typeid(doir::lookup::type_of))
 				e = blocks.back().push_valueless(ident, std::any_cast<doir::lookup::type_of>(type).name());
@@ -158,23 +154,33 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, bo
 		} else if(std::holds_alternative<long double>(*value)) {
 			if(type.type() == typeid(doir::lookup::type_of))
 				e = blocks.back().push_number(ident, std::any_cast<doir::lookup::type_of>(type).name(), std::get<long double>(*value));
-			else invalid_function_type_error();
+			else {
+				push_diagnostic(diagnostic_type::CantStoreInFunctionRegister, get_location(mod, vs), mod.source, *mod.working_file);
+				return e;
+			}
 		} else if(std::holds_alternative<interned_string>(*value)) {
 			if(type.type() == typeid(doir::lookup::type_of)) {
 				auto name = std::any_cast<doir::lookup::type_of>(type).name();
 				if(name == alias_interned)
 					e = blocks.back().push_alias(ident, std::get<interned_string>(*value));
 				else e = blocks.back().push_string(ident, name, std::get<interned_string>(*value));
-			} else invalid_function_type_error();
+			} else { 
+				push_diagnostic(diagnostic_type::CantStoreInFunctionRegister, get_location(mod, vs), mod.source, *mod.working_file);
+				return e;
+			}
 		} else if(std::holds_alternative<call_info>(*value)) {
 			auto call = std::get<call_info>(*value);
 			if(type.type() == typeid(doir::lookup::type_of)) {
 				auto name = std::any_cast<doir::lookup::type_of>(type).name();
 				if(name == alias_interned && call.function == alias_interned)
 					e = blocks.back().push_alias(ident, call.inputs[0].name());
-				else if(call.function == alias_interned)
-					throw std::runtime_error("TODO: Cannot directly copy registers, instead call copy or move");
-				else e = blocks.back().push_call(ident, name, call.function, call.inputs);
+				else if(call.function == alias_interned) {
+					auto& diag = push_diagnostic(diagnostic_type::CantCopyRegisters, get_location(mod, vs), mod.source, *mod.working_file);
+					diagnose::diagnostic::annotation annotation;
+					annotation.message = "Instead call "s + doir::ansi::function + "copy" + diagnose::ansi::reset + " or " + doir::ansi::function + "move" + diagnose::ansi::reset;
+					annotation.position = diag.location.start;
+					diag.annotations.push_back(annotation);
+				} else e = blocks.back().push_call(ident, name, call.function, call.inputs);
 			} else e = blocks.back().push_call(ident, std::any_cast<function_type_t>(type).push_function_type(blocks.back()), call.function, call.inputs);
 
 			if(call.Inline || call.flatten || call.tail) {
@@ -215,28 +221,44 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, bo
 
 		} else if(std::holds_alternative<std::shared_ptr<struct function_type_t>>(*value)) {
 			if(type.type() != typeid(doir::lookup::type_of)) {
-				throw std::runtime_error("TODO: Function types can only be assigned to registers of type `type`");
+				auto& diag = push_diagnostic(diagnostic_type::InvalidType, get_location(mod, vs), mod.source, *mod.working_file);
+				diagnose::diagnostic::annotation annotation;
+				annotation.message = "Function types can only be assigned to registers of type "s + doir::ansi::type + "type" + diagnose::ansi::reset;
+				annotation.position = diag.location.start;
+				diag.annotations.push_back(annotation);
 			}
 			auto type_name = std::any_cast<doir::lookup::type_of>(type).name();
 			if(type_name != type_interned) {
-				throw std::runtime_error("TODO: Function types can only be assigned to registers of type `type`");
+				auto& diag = push_diagnostic(diagnostic_type::InvalidType, get_location(mod, vs), mod.source, *mod.working_file);
+				diagnose::diagnostic::annotation annotation;
+				annotation.message = "Function types can only be assigned to registers of type "s + doir::ansi::type + "type" + diagnose::ansi::reset;
+				annotation.position = diag.location.start;
+				diag.annotations.push_back(annotation);
 			}
 
 			auto& function = std::get<std::shared_ptr<struct function_type_t>>(*value);
 			function->push_function_type(blocks.back(), ident);
 		}
 
+		// if(e == ecrs::invalid_entity) return e;
+
 		if(location) mod.add_component<diagnose::source_location::detailed>(e) = *location;
-		else if(guarantee_source_location) mod.add_component<diagnose::source_location>(e) = get_location(*blocks.back().mod, vs);
+		else if(guarantee_source_location && !(mod.has_component<diagnose::source_location>(e) || mod.has_component<diagnose::source_location::detailed>(e)) )
+			mod.get_or_add_component<diagnose::source_location>(e) = get_location(*blocks.back().mod, vs);
 
 		if(Export) blocks.back().mod->get_or_add_component<doir::flags>(e) = {doir::flags::Export};
 		return e;
 	};
 
-	parser["deducible_type"] = [](const peg::SemanticValues &vs) {
+	parser["deducible_type"] = [&](const peg::SemanticValues &vs) {
 		auto dbg = vs.size();
-		if(vs.tokens.size())
-			throw std::runtime_error("Deducible types not yet supported!");
+		if(vs.tokens.size()) {
+			auto& diag = push_diagnostic(diagnostic_type::InvalidType, get_location(mod, vs), mod.source, *mod.working_file);
+			diagnose::diagnostic::annotation annotation;
+			annotation.message = std::string(doir::ansi::type) + "Deducible" + diagnose::ansi::reset + " types not yet supported";
+			annotation.position = diag.location.start;
+			diag.annotations.push_back(annotation);
+		}
 		return vs[0];
 	};
 
@@ -378,10 +400,34 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, bo
 		return out;
 	};
 
+	constexpr static auto escape_string = [](doir::module& mod, const peg::SemanticValues &vs) {
+		try {
+			auto unescaped = unescape_python_string(vs.token(0));
+			return mod.interner.intern(unescaped);
+		} catch(string_processing_error e) {
+			auto source_location = get_location(mod, vs);
+			auto& diag = push_diagnostic(diagnostic_type::StringProcessingError, source_location, mod.source, *mod.working_file);
+			diagnose::diagnostic::annotation annotation;
+			annotation.message = e.what();
+			source_location.start_byte += e.start;
+			source_location.end_byte = source_location.start_byte + 1;
+			annotation.position = source_location.to_detailed(mod.source).start;
+			diag.annotations.push_back(annotation);
+			return mod.interner.intern("<error>");
+		}
+	};
+
 	parser["Identifier"] = [&](const peg::SemanticValues &vs) {
-		auto out = mod.interner.intern(vs.token(0));
-		verify::identifier_structure(diagnostics(), *blocks.back().mod, out);
-		return out;
+		switch(vs.choice()) {
+		break; case 0: // String
+			return escape_string(mod, vs); // TODO: Are there later identifier verifies which need to be aware that this is a special snowflake?
+		break; case 1: { // Normal
+			auto out = mod.interner.intern(vs.token(0));
+			verify::identifier_structure(diagnostics(), *blocks.back().mod, out);
+			return out;
+		}
+		}
+		throw std::runtime_error("Identifier unreachable");
 	};
 
 	parser["Constant"] = [&](const peg::SemanticValues &vs) -> assignment_value_t {
@@ -393,8 +439,7 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, bo
 				else return out;
 			}
 			break; case 2: case 3: {
-				auto unescaped = unescape_python_string(vs.token(0));
-				return mod.interner.intern(unescaped);
+				return escape_string(mod, vs);
 			}
 		}
 		throw std::runtime_error("Constant Unreachable");

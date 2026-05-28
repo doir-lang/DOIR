@@ -3,6 +3,7 @@
 
 #include "module.hpp"
 #include "file_manager.hpp"
+#include "diagnostics.hpp"
 #include "peglib.h"
 #include "systems.hpp"
 
@@ -17,7 +18,9 @@ namespace doir {
 	}
 
 	bool module::parse_file(peg::parser& parser, std::string_view path) {
-		return parse(parser, doir::file_manager::singleton().get_file_string(path), path);
+		auto source = doir::file_manager::singleton().get_file_string(path);
+		diagnostics().register_source(path, source);
+		return parse(parser, source, path);
 	}
 
 	bool module::flags_set(ecrs::entity_t e, decltype(doir::flags{}.as_underlying()) check) {

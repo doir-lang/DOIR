@@ -5,8 +5,9 @@
 #include "../systems.hpp"
 
 #include "../sema/lookup.hpp"
-#include "../opt/materialize_aliases.hpp"
-#include "opt/compute_compiler_namespace.hpp"
+#include "../sema/error_helper.hpp"
+#include "materialize_aliases.hpp"
+#include "compute_compiler_namespace.hpp"
 #include <string>
 #include <vector>
 
@@ -31,18 +32,18 @@ namespace doir::opt {
 			if( !(function == load_immediate || function == load_upper_immediate) ) return true;
 
 			if(!mod.has_component<doir::function_inputs>(subtree)) {
-				throw std::runtime_error("TODO: load_immediate expects two inputs");
+				EXPECTS_X_INPUTS("load_immediate", "two");
 				return false;
 			}
 			auto inputs = mod.get_component<doir::function_inputs>(subtree).related;
 			if(inputs.size() != 2) {
-				throw std::runtime_error("TODO: load_immediate expects two inputs");
+				EXPECTS_X_INPUTS("load_immediate", "two");
 				return false;
 			}
 			inputs = resolve_alias(mod, inputs);
 			if(!mod.has_component<doir::number>(inputs[1])){
 				// TODO: It would probably be good to relax this constraint in the future
-				throw std::runtime_error("TODO: load_immediate parameter 0 must be a numeric constant");
+				PARAMETER_ERROR("load_immediate", 0, " must evaluate to a numeric constant");
 				return false;
 			}
 
@@ -62,13 +63,15 @@ namespace doir::opt {
 				mod.get_or_add_component<doir::flags>(c).as_underlying() = doir::flags::Inline;
 
 				// TODO: Some sort of actual register allocation logic would be nice
-				if(!mod.has_component<assigned_register>(target))
-					throw std::runtime_error("TODO: Entity " + std::to_string(target) + " doesn't have an associated reigster");
+				if(!mod.has_component<assigned_register>(target)) {
+					NO_ASSOCIATED_REGISTER();
+					return false;
+				}
 				auto r = mod.get_component<assigned_register>(target).reg;
 				mod.get_or_add_component<assigned_register>(subtree).reg = r;
 
-				std::cout << target << " -> " << r << std::endl;
-				std::cout << subtree << " -> " << r << std::endl;
+				// std::cout << target << " -> " << r << std::endl;
+				// std::cout << subtree << " -> " << r << std::endl;
 
 				uint8_t low = r & 0xFF;
 	   			inputs = {builder.push_number(mod.interner.intern("low"), byte, low)};

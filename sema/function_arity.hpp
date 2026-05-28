@@ -3,6 +3,7 @@
 #include "../module.hpp"
 #include "../interface.hpp"
 #include "../systems.hpp"
+#include "diagnostics.hpp"
 #include "sema/lookup.hpp"
 #include <stdexcept>
 
@@ -45,7 +46,17 @@ namespace doir::sema::validate {
 		// }
 
 		if(call_inputs.related.size() != decl_inputs.related.size()) {
-			throw std::runtime_error("TODO: Function arity differs");
+			auto location = doir::find_source_location(mod, subtree);
+			auto& diag = push_diagnostic(doir::diagnostic_type::InvalidFunctionCall, location, mod.source, mod.working_file.value_or(invalid_file_name));
+			diagnose::diagnostic::annotation annotation;
+			annotation.message = "Number of function parameters " + std::string(doir::ansi::info) + std::to_string(call_inputs.related.size()) + diagnose::ansi::reset
+				+ " differs from exepected number " + std::string(doir::ansi::info) + std::to_string(decl_inputs.related.size()) + diagnose::ansi::reset; 
+
+				auto range = parse_parameter_range(mod.source.substr(location.start_byte, location.end_byte - location.start_byte), call_inputs.related.size() - 1);
+				if(range) 
+					location.start_byte += (range->start + range->end) / 2;
+			annotation.position = location.start(mod.source);
+			diag.annotations.push_back(annotation);
 			return false;
 		}
 		return true;

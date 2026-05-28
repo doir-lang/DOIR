@@ -3,12 +3,15 @@
 #include <diagnose/diagnostics.hpp>
 
 namespace doir {
+	constexpr static std::string_view invalid_file_name = "<unknown>";
+
 	diagnose::manager& diagnostics();
 
 	struct ansi {
 		constexpr static const char* info = diagnose::manager::get_kind_color(diagnose::diagnostic::info);
 		constexpr static const char* file = diagnose::ansi::magenta;
 		constexpr static const char* type = diagnose::ansi::cyan;
+		constexpr static const char* function = diagnose::ansi::blue;
 	};
 
 	enum class diagnostic_type {
@@ -21,6 +24,12 @@ namespace doir {
 		NumberingOutOfOrder,
 		AliasNotAllowed,
 		InvalidIdentifier,
+		InvalidType,
+		InvalidFunctionCall,
+		CantStoreInFunctionRegister,
+		CantCopyRegisters,
+		StringProcessingError,
+		FailedToResolveLookup,
 
 		// Warnings
 		CompilerNamespaceReserved,
@@ -38,4 +47,8 @@ namespace doir {
 		return diagnostics().push(generate_diagnostic(type, location, source, path));
 	}
 
+	struct range {
+		size_t start, end;
+	};
+	std::optional<range> parse_parameter_range(std::string_view text, size_t parameter_index);
 }

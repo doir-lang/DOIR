@@ -81,7 +81,15 @@ int main(int argc, char** argv) {
 	);
 
 	sema_schedule(mod);
+	if(doir::diagnostics().count() > 0) {
+		doir::diagnostics().print_all();
+		if(doir::diagnostics().has_errors()) return -1;
+	}
 	opt_schedule(mod);
+	if(doir::diagnostics().count() > 0) {
+		doir::diagnostics().print_all();
+		if(doir::diagnostics().has_errors()) return -1;
+	}
 	// doir::print(std::cout, mod, doir::canonicalize::new_root, true, true);
 	root = doir::canonicalize::sort(mod, doir::canonicalize::new_root);
 	// doir::print(std::cout, mod, root, true, true);

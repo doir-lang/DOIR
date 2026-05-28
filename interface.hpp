@@ -23,6 +23,9 @@ namespace doir {
 		bool structure(diagnose::manager& diagnostics, module& module, ecrs::entity_t root, bool top_level = true, ecrs::entity_t builtin_end = ecrs::invalid_entity);
 	}
 
+	diagnose::source_location::detailed find_detailed_source_location(module& mod, ecrs::entity_t subtree);
+	diagnose::source_location find_source_location(module& mod, ecrs::entity_t subtree);
+
 	void copy_components(module& mod, ecrs::entity_t out, ecrs::entity_t subtree, bool copy_block = true, std::unordered_map<ecrs::entity_t, ecrs::entity_t>* subtitutions = nullptr);
 	ecrs::entity_t deep_copy(module& module, ecrs::entity_t root, void(*extra_copy_instructions)(ecrs::entity_t dest, ecrs::entity_t src) = nullptr);
 

@@ -19,8 +19,8 @@ namespace doir::verify {
 		else start = mod.source.find(s);
 
 		if(start == std::string_view::npos)
-			return {mod.working_file.value_or("<unknown>"), 0, 0};
-		return {mod.working_file.value_or("<unknown>"), start, start + s.length()};
+			return {mod.working_file.value_or(invalid_file_name), 0, 0};
+		return {mod.working_file.value_or(invalid_file_name), start, start + s.length()};
 	}
 
 	bool entity_exists(diagnose::manager &diagnostics, module &mod, ecrs::entity_t subtree) {
@@ -89,9 +89,17 @@ namespace doir::verify {
 			else {
 				auto& b = mod.get_component<doir::block>(compiler);
 				auto max = *std::max_element(b.related.begin(), b.related.end());
-				builtin_end = std::max(compiler, max);
+				auto& l = mod.get_component<doir::block>(b.related.back());
+				auto last_max = *std::max_element(l.related.begin(), l.related.end());
+				builtin_end = std::max({compiler, max, last_max});
 			}
 		}
+
+		// It momentarily seemed like a good idea to require everything to have a source location...
+		// if( subtree > builtin_end && !(mod.has_component<diagnose::source_location>(subtree) || mod.has_component<diagnose::source_location::detailed>(subtree)) ) {
+		// 	throw std::runtime_error("TODO: All entities must have a source_location attached");
+		// 	return false;
+		// }
 
 		if(mod.has_component<type_of>(subtree) || mod.has_component<lookup::type_of>(subtree)) {
 			valid = true;
