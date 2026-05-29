@@ -10,6 +10,7 @@
 #include "interface.hpp"
 #include "parser.hpp"
 #include "print.hpp"
+#include "systems.hpp"
 
 #include "sema/canonicalize/sort.hpp"
 #include "sema/canonicalize/materialize_function_types_and_parameters.hpp"
@@ -17,6 +18,7 @@
 #include "sema/strip_names.hpp"
 #include "sema/function_arity.hpp"
 #include "sema/name_reuse.hpp"
+#include "sema/comptime.hpp"
 
 #include "opt/inline_functions.hpp"
 #include "opt/materialize_aliases.hpp"
@@ -65,6 +67,10 @@ int main(int argc, char** argv) {
 		doir::system::sorted(doir::sema::validate::lookups_resolved),
 		// ecrs::system::parallel(
 		// 	// doir::system::sorted(doir::sema::strip_names),
+			ecrs::system::sequential(
+				doir::system::fixed_point(doir::system::sorted(doir::sema::bubble_comptime)),
+				doir::system::sorted(doir::sema::validate::comptime)
+			),
 			doir::system::sorted(doir::sema::validate::function_arity)
 		// )
 	);

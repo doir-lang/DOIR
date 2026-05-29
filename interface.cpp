@@ -65,6 +65,27 @@ namespace doir {
 		return parameters;
 	}
 
+	ecrs::entity_t type_definition::base_type(const module& mod, ecrs::entity_t e) {
+		e = alias::resolve(mod, e);
+
+		if(mod.has_component<doir::pointer>(e)) 
+			return base_type(mod, mod.get_component<doir::pointer>(e).related[0]);
+
+		return e;
+	}
+
+	ecrs::entity_t alias::resolve(const module& mod, ecrs::entity_t alias) {
+		while(mod.has_component<doir::alias>(alias))
+			alias = mod.get_component<doir::alias>(alias).related[0];
+		return alias;
+	}
+
+	std::vector<ecrs::entity_t> alias::resolve(const module& mod, std::vector<ecrs::entity_t> aliases) {
+		for(auto& alias: aliases)
+			alias = resolve(mod, alias);
+		return aliases;
+	}
+
 	block_builder block_builder::create(doir::module &mod) {
 		block_builder out;
 		out.mod = &mod;
@@ -98,6 +119,7 @@ namespace doir {
 	ecrs::entity_t block_builder::attach_number(doir::module& mod, ecrs::entity_t to, ecrs::entity_t type, long double value) {
 		mod.add_component<doir::type_of>(to) = {{type}};
 		mod.add_component<doir::number>(to) = {.value = value};
+		mod.get_or_add_component<doir::flags>(to).as_underlying() |= doir::flags::Comptime;
 		return to;
 	}
 	ecrs::entity_t block_builder::push_number(interned_string name, ecrs::entity_t type, long double value) {
@@ -108,6 +130,7 @@ namespace doir {
 	ecrs::entity_t block_builder::attach_number(doir::module& mod, ecrs::entity_t to, interned_string type_lookup, long double value) {
 		mod.add_component<doir::lookup::type_of>(to) = {{type_lookup}};
 		mod.add_component<doir::number>(to) = {.value = value};
+		mod.get_or_add_component<doir::flags>(to).as_underlying() |= doir::flags::Comptime;
 		return to;
 	}
 	ecrs::entity_t block_builder::push_number(interned_string name, interned_string type_lookup, long double value) {
@@ -118,6 +141,7 @@ namespace doir {
 	ecrs::entity_t block_builder::attach_string(doir::module& mod, ecrs::entity_t to, ecrs::entity_t type, interned_string value) {
 		mod.add_component<doir::type_of>(to) = {{type}};
 		mod.add_component<doir::string>(to) = {.value = value};
+		mod.get_or_add_component<doir::flags>(to).as_underlying() |= doir::flags::Comptime;
 		return to;
 	}
 	ecrs::entity_t block_builder::push_string(interned_string name, ecrs::entity_t type, interned_string value) {
@@ -127,6 +151,7 @@ namespace doir {
 	ecrs::entity_t block_builder::attach_string(doir::module& mod, ecrs::entity_t to, interned_string type_lookup, interned_string value) {
 		mod.add_component<doir::lookup::type_of>(to) = {{type_lookup}};
 		mod.add_component<doir::string>(to) = {.value = value};
+		mod.get_or_add_component<doir::flags>(to).as_underlying() |= doir::flags::Comptime;
 		return to;
 	}
 	ecrs::entity_t block_builder::push_string(interned_string name, interned_string type_lookup, interned_string value) {
@@ -319,6 +344,7 @@ namespace doir {
 	ecrs::entity_t block_builder::attach_pointer(doir::module& mod, ecrs::entity_t to, ecrs::entity_t base, size_t size /* =0 */) {
 		mod.add_component<doir::type_definition>(to);
 		mod.add_component<doir::pointer>(to) = {{base}, size};
+		mod.get_or_add_component<doir::flags>(to).as_underlying() |= doir::flags::Comptime;
 		return to;
 	}
 	ecrs::entity_t block_builder::push_pointer(interned_string name, ecrs::entity_t base, size_t size /* =0 */) {

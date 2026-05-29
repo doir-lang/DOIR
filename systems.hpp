@@ -65,6 +65,19 @@ namespace doir::system {
 		using namespace std::placeholders;
 		return std::bind(func, _1, _2, current_canonicalize_root);
 	}
+
+	bool& fixed_point_changed();
+
+	template<typename Tsystem>
+	auto fixed_point(Tsystem system) {
+		return [=](ecrs::context& context, auto... args) -> bool {
+			do {
+				fixed_point_changed() = false;
+				if(!system(context, args...)) return false;
+			} while(fixed_point_changed());
+			return true;
+		};
+	}
 }
 
 #define DOIR_MAKE_SORTED_WALKER(function, independent)\

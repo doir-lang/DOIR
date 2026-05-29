@@ -93,8 +93,13 @@ int main() {
 	auto binary = mizu::to_binary({program, num_opcodes});
 	auto portable = fp::view<mizu::serialization_opcode>((mizu::serialization_opcode*)binary.data(), num_opcodes);
 
-	std::cout << "_64 : compiler.pointer_sized = 64\n"
+	std::cout << "mizu : namespace = {\n"
+		<< "\n"
+		<< "_64 : compiler.pointer_sized = 64\n"
 		<< "u64 : type = compiler.base_type(_64, _64)\n"
+		<< "comptime : namespace = {\n"
+		<< "\tu64 : type = compiler.comptime_base_type(_64, _64)\n"
+		<< "}\n"
 		<< "\n"
 		<< "zero_parameters_t_no_inline : type = () -> u64\n"
 		<< "zero_parameters_t : type = compiler.always_inline(zero_parameters_t_no_inline)\n"
@@ -102,9 +107,9 @@ int main() {
 		<< "one_parameters_t : type = compiler.always_inline(one_parameters_t_no_inline)\n"
 		<< "two_parameters_t_no_inline : type = (a : u64, b : u64) -> u64\n"
 		<< "two_parameters_t : type = compiler.always_inline(two_parameters_t_no_inline)\n"
-		<< "immediate_t_no_inline : type = (immediate: u64) -> u64\n"
+		<< "immediate_t_no_inline : type = (immediate: comptime.u64) -> u64\n"
 		<< "immediate_t : type = compiler.always_inline(immediate_t_no_inline)\n"
-		<< "branch_immediate_t_no_inline : type = (a: u64, immediate: u64) -> u64\n"
+		<< "branch_immediate_t_no_inline : type = (a: u64, immediate: comptime.u64) -> u64\n"
 		<< "branch_immediate_t : type = compiler.always_inline(branch_immediate_t_no_inline)\n"
 		<< "\n"
 		<< "emit_register_t_no_inline : type = (r : compiler.assembler.register) -> compiler.assembler.register\n"
@@ -180,18 +185,18 @@ int main() {
 			emit(std::cout, op.op);
 			std::cout << "\t_ : compiler.assembler.register = inline emit_register(regret)\n"
 				<< "\tmask : compiler.pointer_sized = 0xFF\n"
-				<< "\tlowest : compiler.byte = compiler.bitwise_and(label, mask)\n"
+				<< "\tlowest : compiler.byte = compiler.bitwise_and(immediate, mask)\n"
 				<< "\t_ : compiler.byte = compiler.emit(lowest)\n"
 				<< "\t%8 : compiler.pointer_sized = 8\n"
-				<< "\tshift_8 : compiler.pointer_sized = compiler.shift_right(label, %8)\n"
+				<< "\tshift_8 : compiler.pointer_sized = compiler.shift_right(immediate, %8)\n"
 				<< "\tlow : compiler.byte = compiler.bitwise_and(shift_8, mask)\n"
 				<< "\t_ : compiler.byte = compiler.emit(low)\n"
 				<< "\t%16 : compiler.pointer_sized = 16\n"
-				<< "\tshift_16 : compiler.pointer_sized = compiler.shift_right(label, %16)\n"
+				<< "\tshift_16 : compiler.pointer_sized = compiler.shift_right(immediate, %16)\n"
 				<< "\thigh : compiler.byte = compiler.bitwise_and(shift_16, mask)\n"
 				<< "\t_ : compiler.byte = compiler.emit(high)\n"
 				<< "\t%24 : compiler.pointer_sized = 24\n"
-				<< "\tshift_24 : compiler.pointer_sized = compiler.shift_right(label, %24)\n"
+				<< "\tshift_24 : compiler.pointer_sized = compiler.shift_right(immediate, %24)\n"
 				<< "\thighest : compiler.byte = compiler.bitwise_and(shift_24, mask)\n"
 				<< "\t_ : compiler.byte = compiler.emit(highest)\n";
 			emit<uint16_t>(std::cout, 0);
@@ -206,10 +211,10 @@ int main() {
 			std::cout << "\t_ : compiler.assembler.register = inline emit_register(regret)\n"
 				<< "\t_ : compiler.assembler.register = inline emit_register(rega)\n"
 				<< "\tmask : compiler.pointer_sized = 0xFF\n"
-				<< "\tlow : compiler.byte = compiler.bitwise_and(label, mask)\n"
+				<< "\tlow : compiler.byte = compiler.bitwise_and(immediate, mask)\n"
 				<< "\t_ : compiler.byte = compiler.emit(low)\n"
 				<< "\t%8 : compiler.pointer_sized = 8\n"
-				<< "\tshift_8 : compiler.pointer_sized = compiler.shift_right(label, %8)\n"
+				<< "\tshift_8 : compiler.pointer_sized = compiler.shift_right(immediate, %8)\n"
 				<< "\thigh : compiler.byte = compiler.bitwise_and(shift_8, mask)\n"
 				<< "\t_ : compiler.byte = compiler.emit(high)\n";
 			emit<uint16_t>(std::cout, 0);
@@ -241,6 +246,7 @@ int main() {
 				<< "}\n" << std::endl;
 		}
 
-		std::cout << "\n_ : u64 = compiler.assembler.begin_register_allocation()\n" << std::endl;
 	}
+	std::cout << "}\n"
+		<< "\n_ : mizu.u64 = compiler.assembler.begin_register_allocation()\n" << std::endl;
 }

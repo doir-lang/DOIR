@@ -131,11 +131,13 @@ std::ostream& print_type_of(std::ostream& out, const doir::module& mod, ecrs::en
 			? doir::lookup::function_inputs::to_lookup(mod.get_component<doir::function_inputs>(subtree))
 			: mod.get_component<doir::lookup::function_inputs>(subtree);
 		std::string flags = "";
+		bool comptime = false;
 		if(mod.has_component<doir::flags>(subtree)) {
 			auto f = mod.get_component<doir::flags>(subtree);
 			if(f.inline_set()) flags += "inline ";
 			if(f.flatten_set()) flags += "flatten ";
 			if(f.tail_set()) flags += "tail ";
+			if(debug && f.comptime_set()) flags += "comptime ";
 		}
 		out << indent_string << Export << ident << (pretty ? ": " : ":") << type << (pretty ? " = " : "=")
 			<< flags << print_lookup_name(mod, call, debug) << "(";

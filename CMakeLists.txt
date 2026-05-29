@@ -11,7 +11,7 @@ ADD_SUBDIRECTORY(libdiagnose)
 
 add_library(doir
 	diagnostics.cpp interface.cpp interface.copy.cpp interface.global_block.cpp interface.verify.cpp
-	module.cpp print.cpp parser.cpp
+	module.cpp systems.cpp print.cpp parser.cpp
 	sema/canonicalize/sort.cpp sema/lookup.cpp
 	opt/inline_functions.cpp opt/compute_compiler_namespace.cpp
 )

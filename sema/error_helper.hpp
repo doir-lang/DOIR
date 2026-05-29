@@ -19,7 +19,7 @@
 	if(range) \
 		location.start_byte += (range->start + range->end) / 2;\
 	annotation.position = location.start(mod.source);\
-	diag.annotations.push_back(annotation);
+	diag.annotations.push_back(annotation)
 
 #define NO_ASSOCIATED_REGISTER()\
 	auto& diag = push_diagnostic(doir::diagnostic_type::InvalidFunctionCall, doir::find_detailed_source_location(mod, subtree), mod.source, mod.working_file.value_or(invalid_file_name));\

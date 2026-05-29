@@ -24,10 +24,10 @@ namespace doir::opt {
 			EXPECTS_X_INPUTS("pin_register", "three");
 			return true;
 		}
-		inputs = resolve_alias(mod, inputs);
+		inputs = doir::alias::resolve(mod, inputs);
 
 		if(!mod.has_component<doir::number>(inputs[2])) {
-			PARAMETER_ERROR("pin_register", 2, " must be be a numeric constant")
+			PARAMETER_ERROR("pin_register", 2, " must be be a numeric constant");
 			return true;
 		}
 

@@ -15,7 +15,11 @@ diagnose::source_location get_location(doir::module& mod, const peg::SemanticVal
 	auto sv = vs.sv();
 	out.file = vs.path;
 	out.start_byte = sv.data() - mod.source.data();
-	out.end_byte = out.start_byte + sv.size() - 1;
+	out.end_byte = out.start_byte + sv.size();
+	while(sv.back() == '\n' || sv.back() == '\r' || std::isspace(sv.back())) {
+		out.end_byte--;
+		sv = sv.substr(0, sv.length() - 1);
+	}
 	return out;
 }
 
@@ -237,7 +241,7 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, bo
 			}
 
 			auto& function = std::get<std::shared_ptr<struct function_type_t>>(*value);
-			function->push_function_type(blocks.back(), ident);
+			e = function->push_function_type(blocks.back(), ident);
 		}
 
 		// if(e == ecrs::invalid_entity) return e;

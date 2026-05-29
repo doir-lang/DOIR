@@ -40,7 +40,7 @@ namespace doir::opt {
 				EXPECTS_X_INPUTS("load_immediate", "two");
 				return false;
 			}
-			inputs = resolve_alias(mod, inputs);
+			inputs = doir::alias::resolve(mod, inputs);
 			if(!mod.has_component<doir::number>(inputs[1])){
 				// TODO: It would probably be good to relax this constraint in the future
 				PARAMETER_ERROR("load_immediate", 0, " must evaluate to a numeric constant");

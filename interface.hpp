@@ -76,12 +76,21 @@ namespace doir {
 
 	struct type_definition { // Also expects block attached
 		size_t size, align, unique = 0;
+		bool always_comptime = false;
+
+		static ecrs::entity_t base_type(const module& mod, ecrs::entity_t e);
 	};
 
-	struct pointer : public ecrs::relation<1> { size_t size = 0; }; // Size == 0 implies no bounds information
+	struct pointer : public ecrs::relation<1> { 
+		size_t size = 0; // Size == 0 implies no bounds information
+		static ecrs::entity_t base_type(const module& mod, ecrs::entity_t e) { return type_definition::base_type(mod, e); }
+	}; 
 
 	struct alias : public ecrs::relation<1> {
 		std::optional<std::string_view> file = {}; // Aliases can reference other files
+
+		static ecrs::entity_t resolve(const module& ctx, ecrs::entity_t alias);
+		static std::vector<ecrs::entity_t> resolve(const module& ctx, std::vector<ecrs::entity_t> aliases);
 	};
 
 	struct type_of : public ecrs::relation<1> {}; // Expects a number, string, valueless, or block attached
