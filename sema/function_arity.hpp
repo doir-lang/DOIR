@@ -50,7 +50,7 @@ namespace doir::sema::validate {
 			auto& diag = push_diagnostic(doir::diagnostic_type::InvalidFunctionCall, location, mod.source, mod.working_file.value_or(invalid_file_name));
 			diagnose::diagnostic::annotation annotation;
 			annotation.message = "Number of function parameters " + std::string(doir::ansi::info) + std::to_string(call_inputs.related.size()) + diagnose::ansi::reset
-				+ " differs from exepected number " + std::string(doir::ansi::info) + std::to_string(decl_inputs.related.size()) + diagnose::ansi::reset; 
+				+ " differs from expected number " + std::string(doir::ansi::info) + std::to_string(decl_inputs.related.size()) + diagnose::ansi::reset; 
 
 				auto range = parse_parameter_range(mod.source.substr(location.start_byte, location.end_byte - location.start_byte), call_inputs.related.size() - 1);
 				if(range) 

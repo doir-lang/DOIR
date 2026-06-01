@@ -10,14 +10,14 @@
 #include <string>
 
 namespace doir::sema {
-	
 
 	// NOTE: This system is fixed point aware
-	// This system bubbles comptime awareness down through the 
+	// This system bubbles comptime awareness down through the
 	inline bool bubble_comptime(ecrs::context& ctx, ecrs::entity_t subtree) {
 		auto& mod = (doir::module&)ctx; // TODO: Verify cast
 		if(mod.has_component<doir::call>(subtree)) {
 			if(!mod.has_component<doir::function_inputs>(subtree)) return true;
+			if(mod.flags_set(subtree, doir::flags::NoComptime)) return true;
 
 			auto& inputs = mod.get_component<doir::function_inputs>(subtree);
 			bool comptime = true;
@@ -44,6 +44,8 @@ namespace doir::sema {
 			}
 
 		} else if(mod.has_component<doir::type_of>(subtree)) {
+			if(mod.flags_set(subtree, doir::flags::NoComptime)) return true;
+
 			auto type = doir::type_definition::base_type(mod, mod.get_component<doir::type_of>(subtree).related[0]);
 
 			static ecrs::entity_t comptime_base_type = doir::lookup::resolve(mod, "compiler.comptime_base_type", subtree);
@@ -52,7 +54,7 @@ namespace doir::sema {
 				always_comptime = true;
 			else if(!mod.has_component<doir::type_definition>(type)) return true;
 			else always_comptime = mod.get_component<doir::type_definition>(type).always_comptime;
-			
+
 			bool is_comptime = mod.flags_set(subtree, doir::flags::Comptime);
 			if(!is_comptime && always_comptime) {
 				mod.get_or_add_component<doir::flags>(subtree).as_underlying() |= doir::flags::Comptime;
@@ -79,7 +81,7 @@ namespace doir::sema {
 					non_comptime_input = i;
 					break;
 				}
-			}		
+			}
 
 			if(non_comptime_input != -1 && mod.flags_set(subtree, doir::flags::Comptime)) {
 				static ecrs::entity_t register_for = lookup::resolve(mod, "compiler.assembler.register_for", subtree);

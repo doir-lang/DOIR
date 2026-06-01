@@ -46,7 +46,7 @@ diagnose::diagnostic doir::generate_diagnostic(doir::diagnostic_type type, diagn
 		out.message = "Cannot store this value in a function register";
 	break; case diagnostic_type::CantCopyRegisters:
 		out.kind = diagnose::diagnostic::error;
-		out.message = std::string("Cannot dirrectly ") + doir::ansi::info + "copy" + diagnose::ansi::reset + " registers";
+		out.message = std::string("Cannot directly ") + doir::ansi::info + "copy" + diagnose::ansi::reset + " registers";
 	break; case diagnostic_type::StringProcessingError:
 		out.kind = diagnose::diagnostic::error;
 		out.message = "Failed to process character string";

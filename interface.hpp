@@ -26,7 +26,7 @@ namespace doir {
 	diagnose::source_location::detailed find_detailed_source_location(module& mod, ecrs::entity_t subtree);
 	diagnose::source_location find_source_location(module& mod, ecrs::entity_t subtree);
 
-	void copy_components(module& mod, ecrs::entity_t out, ecrs::entity_t subtree, bool copy_block = true, std::unordered_map<ecrs::entity_t, ecrs::entity_t>* subtitutions = nullptr);
+	void copy_components(module& mod, ecrs::entity_t out, ecrs::entity_t subtree, bool copy_block = true, std::unordered_map<ecrs::entity_t, ecrs::entity_t>* substitutions = nullptr);
 	ecrs::entity_t deep_copy(module& module, ecrs::entity_t root, void(*extra_copy_instructions)(ecrs::entity_t dest, ecrs::entity_t src) = nullptr);
 
 	// Tags
@@ -38,12 +38,13 @@ namespace doir {
 
 			Export = (1 << 3),
 			Comptime = (1 << 4),
-			Constant = (1 << 5),
-			Union = (1 << 6),
-			Pure = (1 << 7),
-			Inline = (1 << 8),
-			Flatten = (1 << 9),
-			Tail = (1 << 10),
+			NoComptime = (1 << 5), // Marks an object as never being comptime... currently unexposed
+			Constant = (1 << 6),
+			Union = (1 << 7),
+			Pure = (1 << 8),
+			Inline = (1 << 9),
+			Flatten = (1 << 10),
+			Tail = (1 << 11),
 		} flags = None;
 
 		inline uint16_t& as_underlying() { return (uint16_t&)flags; }
@@ -160,7 +161,7 @@ namespace doir {
 		block_builder& clear();
 		// Both of these functions append to the existing block content...
 		//	Thus it may need to be cleared first
-		block_builder& move_exisiting(block_builder& source);
+		block_builder& move_existing(block_builder& source);
 		block_builder& copy_existing(const block_builder& source, bool skip_parameters = false);
 
 		// "type_of" spec

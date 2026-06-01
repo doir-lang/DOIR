@@ -221,7 +221,7 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, bo
 
 			e = builder.block;
 			block_builder source = {std::get<ecrs::entity_t>(*value), builder.mod};
-			builder.move_exisiting(source);
+			builder.move_existing(source);
 
 		} else if(std::holds_alternative<std::shared_ptr<struct function_type_t>>(*value)) {
 			if(type.type() != typeid(doir::lookup::type_of)) {
