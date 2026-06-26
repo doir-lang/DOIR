@@ -26,8 +26,16 @@ namespace doir {
 	diagnose::source_location::detailed find_detailed_source_location(module& mod, ecrs::entity_t subtree);
 	diagnose::source_location find_source_location(module& mod, ecrs::entity_t subtree);
 
+	// NOTE: Prefer using find_parent to find_block, it makes use of the parent component (cached result) when present
+	ecrs::entity_t find_block(const doir::module& mod, ecrs::entity_t e, ecrs::entity_t must_contain = ecrs::invalid_entity);
+	ecrs::entity_t find_parent(const doir::module& mod, ecrs::entity_t e);
+	// Returns ecrs::invalid_entity if not inside a function
+	ecrs::entity_t find_function_inside_of(const doir::module& mod, ecrs::entity_t subtree);
+
 	void copy_components(module& mod, ecrs::entity_t out, ecrs::entity_t subtree, bool copy_block = true, std::unordered_map<ecrs::entity_t, ecrs::entity_t>* substitutions = nullptr);
 	ecrs::entity_t deep_copy(module& module, ecrs::entity_t root, void(*extra_copy_instructions)(ecrs::entity_t dest, ecrs::entity_t src) = nullptr);
+
+	ecrs::entity_t resolve_type_modifications(const doir::module& mod, ecrs::entity_t type);
 
 	// Tags
 	struct flags {
@@ -63,7 +71,10 @@ namespace doir {
 
 	struct name : public interned_string {};
 
-	struct block : public ecrs::relation<> {}; // When alone (no type_of etc...) represents a quoted block
+	struct block : public ecrs::relation<> {
+		size_t offset_of(ecrs::entity_t e);
+		void inline_into(module& mod, ecrs::entity_t dest, size_t dest_offset = 0, size_t src_offset = 0, size_t count = -1);
+	}; // When alone (no type_of etc...) represents a quoted block
 	struct parent : public ecrs::relation<1> {};
 
 	struct function_return_type : public ecrs::relation<1> {};  // Also expects function_inputs and block/valueless attached
@@ -145,6 +156,9 @@ namespace doir {
 		};
 		struct type_of : public lookup {};
 		struct call : public lookup {};
+
+		ecrs::entity_t resolve(const doir::module& mod, doir::interned_string lookup, ecrs::entity_t search_start, bool strict = false);
+		ecrs::entity_t resolve(const doir::module& mod, doir::lookup::lookup& lookup, ecrs::entity_t search_start, bool strict = false);
 	}
 
 	struct function_builder;
@@ -156,7 +170,7 @@ namespace doir {
 
 		ecrs::entity_t end();
 
-		block_builder& build_global_block();
+		block_builder& build_builtin_block();
 		static const std::unordered_set<ecrs::entity_t>& get_type_modifiers(const doir::module& mod, ecrs::entity_t root);
 		block_builder& clear();
 		// Both of these functions append to the existing block content...

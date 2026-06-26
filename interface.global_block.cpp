@@ -6,7 +6,9 @@
 #include "sema/lookup.hpp"
 
 namespace doir {
-	block_builder& block_builder::build_global_block() {
+	ecrs::entity_t push_common(doir::module *mod, ecrs::entity_t block, interned_string name, bool append = true);
+
+	block_builder& block_builder::build_builtin_block() {
 		auto pointer_sized_interned = mod->interner.intern("pointer_sized");
 		auto value_interned = mod->interner.intern("value");
 		auto T_interned = mod->interner.intern("T");
@@ -15,6 +17,7 @@ namespace doir {
 		mod->get_or_add_component<doir::flags>(type).as_underlying() |= doir::flags::Comptime;
 
 		push_type(mod->interner.intern("void")).end();
+		auto early_include = push_common(mod, block, mod->interner.intern("early_include"));
 
 		auto compiler = push_namespace("compiler");
 		std::vector<doir::lookup::lookup> inputs = {pointer_sized_interned, pointer_sized_interned};
@@ -32,6 +35,11 @@ namespace doir {
 		inputs = {eight, eight};
 		auto byte = compiler.push_call(mod->interner.intern("byte"), type, base_type, inputs);
 		auto byte_pointer = compiler.push_pointer(mod->interner.intern("byte_pointer"), byte);
+
+		inputs = {byte_pointer};
+		auto early_include_t = compiler.push_function_type(mod->interner.intern("early_include_t"), inputs, pointer_sized);
+		mod->get_or_add_component<doir::flags>(early_include_t).as_underlying() |= doir::flags::Comptime;
+		attach_valueless_function(*mod, early_include, early_include_t);
 
 		inputs = {byte};
 		auto emit_t = compiler.push_function_type(mod->interner.intern("emit_t"), inputs, byte);
@@ -87,14 +95,16 @@ namespace doir {
 		assembler.push_function(mod->interner.intern("pin_register"), assembler.push_function_type(mod->interner.intern("pin_register_t"), inputs, return_register_t, names), true).end();
 
 		inputs = {};
-		assembler.push_function(mod->interner.intern("begin_register_allocation"), assembler.push_function_type(mod->interner.intern("begin_register_allocation_t"), inputs, return_register_t), true).end();
+		assembler.push_function(mod->interner.intern("begin_register_allocation"), assembler.push_function_type(mod->interner.intern("begin_register_allocation_t"), inputs, register_), true).end();
 
 		return *this;
 	}
 
 	const std::unordered_set<ecrs::entity_t>& block_builder::get_type_modifiers(const doir::module& mod, ecrs::entity_t root){
 		static std::unordered_set<ecrs::entity_t> modifiers = {
-			lookup::resolve(mod, "compiler.always_inline", root)
+			lookup::resolve(mod, "compiler.pointer", root),
+			lookup::resolve(mod, "compiler.always_inline", root),
+			lookup::resolve(mod, "compiler.always_comptime", root)
 		};
 		return modifiers;
 	}

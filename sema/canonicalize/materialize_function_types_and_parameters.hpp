@@ -18,7 +18,7 @@ namespace doir::canonicalize {
 			? doir::lookup::lookup(mod.get_component<doir::type_of>(subtree).related[0])
 			: doir::lookup::lookup(mod.get_component<doir::lookup::type_of>(subtree));
 		if(!lookup.resolved()) return true;
-		auto ft = sema::validate::resolve_type_modifications(mod, lookup.entity());
+		auto ft = doir::resolve_type_modifications(mod, lookup.entity());
 		if(ft == ecrs::invalid_entity) return true;
 		if( !(mod.has_component<doir::function_return_type>(ft) || mod.has_component<doir::lookup::function_return_type>(ft)) ) return true;
 

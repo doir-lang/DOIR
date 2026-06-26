@@ -10,34 +10,26 @@
 
 namespace doir {
 
-	diagnose::source_location find_source_location(module& mod, ecrs::entity_t subtree) {
-		if(mod.has_component<diagnose::source_location::detailed>(subtree))
-			return mod.get_component<diagnose::source_location::detailed>(subtree).to_bytes(mod.source);
-
-		if(mod.has_component<diagnose::source_location>(subtree))
-			return mod.get_component<diagnose::source_location>(subtree);
-
-		if(mod.has_component<doir::name>(subtree)) {
-			auto& name = mod.get_component<doir::name>(subtree);
-			auto start = mod.source.find(name);
-			if(start == std::string::npos) {
-				throw std::runtime_error("Failed to generate source location for entity: " + std::to_string(subtree));
-			}
-			auto end = start + name.size();
-
-			return diagnose::source_location{mod.working_file.value_or(invalid_file_name), start, end};
-		}
-
-		throw std::runtime_error("Failed to generate source location for entity: " + std::to_string(subtree));
+	size_t block::offset_of(ecrs::entity_t e){
+		for(size_t i = 0; i < related.size(); ++i)
+			if(related[i] == e) return i;
+		return ecrs::invalid_entity;
 	}
-	diagnose::source_location::detailed find_detailed_source_location(module& mod, ecrs::entity_t subtree) {
-		// This prevents us from following the expensive path which converts a detailed to byte in the other function
-		if(mod.has_component<diagnose::source_location::detailed>(subtree))
-			return mod.get_component<diagnose::source_location::detailed>(subtree);
 
-		return find_source_location(mod, subtree).to_detailed(mod.source);
+	void block::inline_into(module& mod, ecrs::entity_t destE, size_t dest_offset /*= 0*/, size_t src_offset /*= 0*/, size_t count /*= -1*/) {
+		if(!mod.has_component<doir::block>(destE))
+			throw std::runtime_error("Cannot inline into a non-block entity");
+		auto& dest = mod.get_component<doir::block>(destE);
+		if(count == -1) count = related.size() - src_offset;
+		if(dest_offset > dest.related.size())
+			throw std::runtime_error("Cannot inline into a block at an offset greater than the block's size");
+		if(src_offset + count > related.size())
+			throw std::runtime_error("Cannot inline from a block at an offset + count greater than the block's size");
+
+		dest.related.insert(dest.related.begin() + dest_offset, related.begin() + src_offset, related.begin() + src_offset + count);
+		for(size_t i = 0; i < count; ++i)
+			mod.get_or_add_component<doir::parent>(dest.related[dest_offset + i]).related[0] = destE;
 	}
-	
 
 	std::vector<ecrs::entity_t> function_inputs::associated_parameters(const module& mod, const doir::block& block) {
 		std::vector<ecrs::entity_t> parameters; parameters.reserve(related.size());
@@ -63,27 +55,6 @@ namespace doir {
 					}
 
 		return parameters;
-	}
-
-	ecrs::entity_t type_definition::base_type(const module& mod, ecrs::entity_t e) {
-		e = alias::resolve(mod, e);
-
-		if(mod.has_component<doir::pointer>(e)) 
-			return base_type(mod, mod.get_component<doir::pointer>(e).related[0]);
-
-		return e;
-	}
-
-	ecrs::entity_t alias::resolve(const module& mod, ecrs::entity_t alias) {
-		while(mod.has_component<doir::alias>(alias))
-			alias = mod.get_component<doir::alias>(alias).related[0];
-		return alias;
-	}
-
-	std::vector<ecrs::entity_t> alias::resolve(const module& mod, std::vector<ecrs::entity_t> aliases) {
-		for(auto& alias: aliases)
-			alias = resolve(mod, alias);
-		return aliases;
 	}
 
 	block_builder block_builder::create(doir::module &mod) {

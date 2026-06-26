@@ -14,6 +14,7 @@
 
 #include "sema/canonicalize/sort.hpp"
 #include "sema/canonicalize/materialize_function_types_and_parameters.hpp"
+#include "sema/canonicalize/process_early_include.hpp"
 #include "sema/lookup.hpp"
 #include "sema/strip_names.hpp"
 #include "sema/function_arity.hpp"
@@ -41,7 +42,7 @@ int main(int argc, char** argv) {
 
 	doir::module mod;
 	std::vector<doir::block_builder> builders;
-	builders.push_back(doir::block_builder::create(mod).build_global_block());
+	builders.push_back(doir::block_builder::create(mod).build_builtin_block());
 
 	auto parser = initialize_parser(builders);
 
@@ -54,16 +55,27 @@ int main(int argc, char** argv) {
 	auto root = builders.front().block;
 	doir::verify::structure(doir::diagnostics(), mod, root);
 	root = doir::canonicalize::sort(mod, root);
-	doir::system::sorted(doir::canonicalize::materialize_function_types_and_parameters, false, true)(mod);
-	// doir::print(std::cout, mod, doir::canonicalize::new_root, true, true);
-
 	using namespace std::placeholders;
+	auto canonicalize_schedule = ecrs::system::sequential(
+		doir::system::sorted(std::bind(doir::canonicalize::process_early_include, _1, _2, std::ref(parser), std::ref(builders)), false, true),
+		doir::system::sorted(doir::canonicalize::materialize_function_types_and_parameters, false, true)
+	);
+	canonicalize_schedule(mod);
+	root = doir::canonicalize::new_root;
+	// doir::print(std::cout, mod, doir::canonicalize::new_root, true, true);
+	if(doir::diagnostics().count() > 0) {
+		doir::diagnostics().print_all();
+		if(doir::diagnostics().has_errors()) return -1;
+	}
+
 	auto sema_schedule = ecrs::system::sequential(
 		doir::system::sorted(doir::sema::validate::name_reuse),
+		doir::system::print(std::cout),
 		doir::system::sorted(std::bind(doir::sema::resolve_lookups, _1, _2, true)),
+		doir::system::print(std::cout),
 		doir::system::sorted(doir::canonicalize::materialize_function_types_and_parameters, false, true),
 		doir::system::sorted(std::bind(doir::sema::resolve_lookups, _1, _2, false)), // We may have materialized some function parameters which can now be found
-		// doir::system::print(std::cout),
+		doir::system::print(std::cout),
 		doir::system::sorted(doir::sema::validate::lookups_resolved),
 		// ecrs::system::parallel(
 		// 	// doir::system::sorted(doir::sema::strip_names),
@@ -74,7 +86,7 @@ int main(int argc, char** argv) {
 			doir::system::sorted(doir::sema::validate::function_arity)
 		// )
 	);
-	auto opt_schedule = ecrs::system::sequential(
+	auto mizu_schedule = ecrs::system::sequential(
 		doir::system::sorted(doir::opt::pin_registers),
 		doir::system::sorted(doir::opt::allocate_registers, false, true),
 		doir::system::sorted(doir::opt::pin_registers),
@@ -91,7 +103,7 @@ int main(int argc, char** argv) {
 		doir::diagnostics().print_all();
 		if(doir::diagnostics().has_errors()) return -1;
 	}
-	opt_schedule(mod);
+	mizu_schedule(mod);
 	if(doir::diagnostics().count() > 0) {
 		doir::diagnostics().print_all();
 		if(doir::diagnostics().has_errors()) return -1;

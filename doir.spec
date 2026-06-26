@@ -155,7 +155,7 @@ Type <- FunctionType / Identifier
 Block <- '{'_ assignment* '}'
 function_call <- (<'flatten' | 'inline' | 'tail'>_)? Identifier _ '('_ (Identifier _ (','_ Identifier _)*)? ')'wsc
 
-Terminator <- ';' | '\n' | '\r\n' | '\r'
+Terminator <- (';' | '\n' | '\r\n' | '\r') / !. # newline, semicolon, or end of input
 Identifier <- "%" ('"' < StringChar* > '"') / !Keywords < ([%]/UnicodeIdentifierStart)([.]/UnicodeIdentifierContinue)* > 
 Keywords <- ('deduced' | 'export' | 'flatten' | 'inline' | 'language' | 'tail')_
 SourceInfo <- ('<"' < (!'"' .)* > '":' / '<' < (!':' .)* > ':') < IntegerConstant > (<'-' IntegerConstant >)? ':' < IntegerConstant > (<'-' IntegerConstant > )? '>'

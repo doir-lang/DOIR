@@ -216,8 +216,10 @@ namespace doir {
 			auto& block = mod.add_component<doir::block>(out);
 			auto& subtree_block = mod.get_component<doir::block>(subtree);
 			block.related.reserve(subtree_block.related.size());
-			for(auto& e: subtree_block.related)
-				block.related.push_back(deep_copy_build_structure(mod, e, substitutions, reverse_substitutions));
+			for(auto& e: subtree_block.related) {
+				auto& related = mod.get_component<doir::block>(out).related;
+				related.push_back(deep_copy_build_structure(mod, e, substitutions, reverse_substitutions));
+			}
 		}
 
 		return out;
@@ -252,21 +254,32 @@ namespace doir {
 	}
 
 	block_builder& block_builder::copy_existing(const block_builder& source, bool skip_parameters /*= false*/) {
-		assert(mod->has_component<doir::block>(block));
+		assert(mod->has_component<doir::block>(this->block));
 		assert(mod->has_component<doir::block>(source.block));
 
 		std::unordered_map<ecrs::entity_t, ecrs::entity_t> substitutions, reverse_substitutions;
-		auto& block = mod->get_or_add_component<doir::block>(this->block);
+		auto& block = mod->get_component<doir::block>(this->block);
 		auto& source_related = mod->get_component<doir::block>(source.block).related;
 		block.related.reserve(block.related.size() + source_related.size());
 
 		size_t start = block.related.size();
-		for(auto e: source_related) {
+		for(size_t i = 0, size = source_related.size(); i < size; ++i) {
+			auto& source_related = mod->get_component<doir::block>(source.block).related;
+			auto e = source_related[i];
 			if(skip_parameters && mod->has_component<doir::function_parameter>(e)) continue;
-			block.related.push_back(deep_copy_build_structure(*mod, e, substitutions, reverse_substitutions));
+			e = deep_copy_build_structure(*mod, e, substitutions, reverse_substitutions);
+			auto& related = mod->get_component<doir::block>(this->block).related;
+			related.push_back(e);
 		}
-		for(size_t i = start; i < block.related.size(); ++i)
-			deep_copy_copy_components(*mod, block.related[i], this->block, substitutions, reverse_substitutions, nullptr);
+
+		{
+			auto& block = mod->get_component<doir::block>(this->block);
+			for(size_t i = start, size = block.related.size(); i < size; ++i) {
+				auto& related = mod->get_component<doir::block>(this->block).related;
+				deep_copy_copy_components(*mod, related[i], this->block, substitutions, reverse_substitutions, nullptr);
+			}
+		}
+		
 
 		return *this;
 	}

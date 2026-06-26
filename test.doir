@@ -1,23 +1,23 @@
-%32 : compiler.pointer_sized = 32
-i32 : type = compiler.base_type(%32, %32)
+path : compiler.byte_pointer = "./mizu.doir" 
+_ : compiler.byte = early_include(path)
+_ : compiler.assembler.register = compiler.assembler.begin_register_allocation()
 
-add : (a: i32, b: i32) -> i32 = {
-	%0 : compiler.byte = 0x64
-	%1 : compiler.byte = compiler.emit(a)
-	%2 : alias = a
-	_ : i32 = compiler.indicate_return(i32)
-}
+u64 : alias = mizu.u64
 
-a : i32
-b : i32 <../test.doir:2:0>
-x : i32 = 5
-y : i32 = 6 <../test.doir:4:0>
-export z : i32 = 7 <../test.doir:5:0>
-
-%0 : i32 = inline add(a, b)
-
-// language "C" {
-// 	int main() {
-// 		printf("Hello World\n");
-// 	}
-// }
+a : u64 = 5
+_ : u64 = mizu.load_immediate(u64, a)
+b : u64 = 6
+_ : u64 = mizu.load_immediate(u64, b)
+c : u64 = mizu.add(a, b)
+d : u64 = 7
+_ : u64 = mizu.load_immediate(u64, d)
+e : u64 = mizu.subtract(c, d)
+f : u64 = mizu.debug_print(e)
+_ : u64 = mizu.halt()
+_ : u64 = mizu.halt()
+_ : u64 = compiler.assembler.pin_register(u64, a, mizu.x1)
+_ : u64 = compiler.assembler.pin_register(u64, b, mizu.x2)
+_ : u64 = compiler.assembler.pin_register(u64, c, mizu.x3)
+_ : u64 = compiler.assembler.pin_register(u64, d, mizu.x4)
+_ : u64 = compiler.assembler.pin_register(u64, e, mizu.x5)
+_ : u64 = compiler.assembler.pin_register(u64, f, mizu.x6)

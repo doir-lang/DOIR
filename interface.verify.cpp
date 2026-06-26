@@ -184,7 +184,7 @@ namespace doir::verify {
 				}
 				// if(!verify::structure(diagnostics, mod, t.entity(), false, builtin_end)) valid = false;
 
-				auto ft = doir::sema::validate::resolve_type_modifications(mod, t.entity());
+				auto ft = doir::resolve_type_modifications(mod, t.entity());
 				auto inputs = mod.has_component<doir::function_inputs>(ft)
 					? doir::lookup::function_inputs::to_lookup(mod.get_component<doir::function_inputs>(ft))
 					: mod.get_component<doir::lookup::function_inputs>(ft);

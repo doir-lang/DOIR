@@ -173,7 +173,7 @@ std::ostream& print_type_of(std::ostream& out, const doir::module& mod, ecrs::en
 			print_block(out, mod, mod.get_component<doir::block>(subtree), pretty, debug, true, indent);
 		} else {
 			auto ft = lookup.entity();
-			auto resolved = doir::sema::validate::resolve_type_modifications(mod, ft);
+			auto resolved = doir::resolve_type_modifications(mod, ft);
 			bool ft_is_modification = ft != resolved;
 
 			if(mod.has_component<doir::block>(subtree)) {

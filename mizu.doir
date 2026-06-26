@@ -1,9 +1,9 @@
 mizu : namespace = {
 
-	_64 : compiler.pointer_sized = 64
-	u64 : type = compiler.base_type(_64, _64)
+	%64 : compiler.pointer_sized = 64
+	u64 : type = compiler.base_type(%64, %64)
 	comptime : namespace = {
-		u64 : type = compiler.comptime_base_type(_64, _64)
+		u64 : type = compiler.comptime_base_type(%64, %64)
 	}
 
 	zero_parameters_t_no_inline : type = () -> u64
@@ -681,32 +681,13 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
+	x0 : compiler.assembler.register = 0
+	x1 : compiler.assembler.register = 1
+	x2 : compiler.assembler.register = 2
+	x3 : compiler.assembler.register = 3
+	x4 : compiler.assembler.register = 4
+	x5 : compiler.assembler.register = 5
+	x6 : compiler.assembler.register = 6
 }
 
-_ : mizu.u64 = compiler.assembler.begin_register_allocation()
-
-x0 : compiler.assembler.register = 0
-x1 : compiler.assembler.register = 1
-x2 : compiler.assembler.register = 2
-x3 : compiler.assembler.register = 3
-x4 : compiler.assembler.register = 4
-x5 : compiler.assembler.register = 5
-
-u64 : alias = mizu.u64
-
-a : u64 = 5
-_ : u64 = mizu.load_immediate(u64, a)
-b : u64 = 6
-_ : u64 = mizu.load_immediate(u64, b)
-c : u64 = mizu.add(a, b)
-d : u64 = 7
-_ : u64 = mizu.load_immediate(u64, d)
-e : u64 = mizu.subtract(c, d)
-f : u64 = mizu.debug_print(e)
-_ : u64 = mizu.halt()
-_ : u64 = compiler.assembler.pin_register(u64, a, x0)
-_ : u64 = compiler.assembler.pin_register(u64, b, x1)
-_ : u64 = compiler.assembler.pin_register(u64, c, x2)
-_ : u64 = compiler.assembler.pin_register(u64, d, x3)
-_ : u64 = compiler.assembler.pin_register(u64, e, x4)
-_ : u64 = compiler.assembler.pin_register(u64, f, x5)
+bob
