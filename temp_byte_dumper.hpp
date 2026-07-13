@@ -12,7 +12,7 @@ namespace doir {
 
 		std::vector<std::byte>& interpret_number_assign(std::vector<std::byte>& out, const doir::module& mod, ecrs::entity_t subtree) {
 			if(mod.has_component<doir::number>(subtree)) {
-				static auto byte = lookup::resolve((doir::module&)mod, *mod.interner.find("compiler.byte"), subtree);
+				static auto byte = lookup::resolve((doir::module&)mod, *mod.interner->find("compiler.byte"), 1);
 				if(mod.get_component<doir::type_of>(subtree).related[0] != byte) return out;
 
 				size_t value = mod.get_component<doir::number>(subtree).value;
@@ -23,7 +23,7 @@ namespace doir {
 			}
 
 			if(mod.has_component<doir::string>(subtree)) {
-				static auto byte_pointer = lookup::resolve((doir::module&)mod, *mod.interner.find("compiler.byte_pointer"), subtree);
+				static auto byte_pointer = lookup::resolve((doir::module&)mod, *mod.interner->find("compiler.byte_pointer"), 1);
 				if(mod.get_component<doir::type_of>(subtree).related[0] != byte_pointer) return out;
 
 				auto value = mod.get_component<doir::string>(subtree).value;
@@ -41,8 +41,8 @@ namespace doir {
 			if(!mod.has_component<doir::call>(subtree)) return out;
 			if(doir::find_function_inside_of(mod, subtree)) return out;
 
-			static auto emit = lookup::resolve((doir::module&)mod, *mod.interner.find("compiler.emit"), subtree);
-			static auto emit_bytes = lookup::resolve((doir::module&)mod, *mod.interner.find("compiler.emit_bytes"), subtree);
+			static auto emit = lookup::resolve((doir::module&)mod, *mod.interner->find("compiler.emit"), 1);
+			static auto emit_bytes = lookup::resolve((doir::module&)mod, *mod.interner->find("compiler.emit_bytes"), 1);
 
 			auto& call = mod.get_component<doir::call>(subtree);
 			auto& inputs = mod.get_component<doir::function_inputs>(subtree);

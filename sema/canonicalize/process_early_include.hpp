@@ -14,8 +14,8 @@ namespace doir::canonicalize {
 		auto& mod = (doir::module&)ctx; // TODO: Verify cast
 		if( !(mod.has_component<doir::call>(subtree) || mod.has_component<doir::lookup::call>(subtree)) ) return true;
 
-		static ecrs::entity_t include = lookup::resolve(mod, "early_include", subtree);
-		static ecrs::entity_t pointer_sized = lookup::resolve(mod, "compiler.pointer_sized", subtree);
+		static ecrs::entity_t include = lookup::resolve(mod, "early_include", 1);
+		static ecrs::entity_t pointer_sized = lookup::resolve(mod, "compiler.pointer_sized", 1);
 		
 		bool is_include = false;
 		if(mod.has_component<doir::call>(subtree))
@@ -59,7 +59,7 @@ namespace doir::canonicalize {
 		path = std::filesystem::canonical(std::filesystem::absolute(path));
 
 		builders.emplace_back(block_builder::create(mod));
-		mod.parse_file(parser, mod.interner.intern(path.string()));
+		mod.parse_file(parser, mod.interner->intern(path.string()));
 		auto blockE = builders.back().block;
 		builders.pop_back();
 		if(doir::diagnostics().has_errors()) return false;

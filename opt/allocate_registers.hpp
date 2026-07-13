@@ -20,8 +20,8 @@ namespace doir::opt {
 		}
 
 		if(allocating) {
-			static auto pin_register = doir::lookup::resolve(mod, mod.interner.intern("compiler.assembler.pin_register"), subtree);
-			static auto register_ = doir::lookup::resolve(mod, mod.interner.intern("compiler.assembler.register"), subtree);
+			static auto pin_register = doir::lookup::resolve(mod, mod.interner->intern("compiler.assembler.pin_register"), 1);
+			static auto register_ = doir::lookup::resolve(mod, mod.interner->intern("compiler.assembler.register"), 1);
 
 			if( !(mod.has_component<doir::number>(subtree) || mod.has_component<doir::string>(subtree) || mod.has_component<doir::call>(subtree)) ) return true;
 			if(mod.has_component<assigned_register>(subtree)) return true;
@@ -43,7 +43,7 @@ namespace doir::opt {
 			}
 
 		} else {
-			static auto begin_register_allocation = doir::lookup::resolve(mod, mod.interner.intern("compiler.assembler.begin_register_allocation"), subtree);
+			static auto begin_register_allocation = doir::lookup::resolve(mod, mod.interner->intern("compiler.assembler.begin_register_allocation"), 1);
 			if(!mod.has_component<doir::call>(subtree)) return true;
 
 			auto func = mod.get_component<doir::call>(subtree).related[0];

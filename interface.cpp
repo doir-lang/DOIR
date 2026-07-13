@@ -251,8 +251,8 @@ namespace doir {
 		function_builder out = {to, &mod};
 		for(size_t i = 0; i < inputs.size(); ++i)
 			if(inputs[i].resolved())
-				out.push_valueless_parameter(i, mod.interner.intern(names[i]), inputs[i].entity());
-			else out.push_valueless_parameter(i, mod.interner.intern(names[i]), inputs[i].name());
+				out.push_valueless_parameter(i, mod.interner->intern(names[i]), inputs[i].entity());
+			else out.push_valueless_parameter(i, mod.interner->intern(names[i]), inputs[i].name());
 		return out;
 	}
 	function_builder block_builder::push_function(interned_string name, ecrs::entity_t function_type, bool push_parameters /*= false*/) {
@@ -365,7 +365,7 @@ namespace doir {
 		} else {
 			names.reserve(inputs.size());
 			for(size_t i = 0; i < inputs.size(); ++i)
-				names.push_back(mod->interner.intern("a" + std::to_string(i)));
+				names.push_back(mod->interner->intern("a" + std::to_string(i)));
 		}
 
 		for(size_t i = inputs.size(); i--; )

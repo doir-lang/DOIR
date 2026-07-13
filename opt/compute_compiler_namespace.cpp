@@ -213,24 +213,16 @@ namespace doir::opt {
 	}
 
 	bool compute_register_for(doir::module& mod, ecrs::entity_t subtree, ecrs::entity_t target, ecrs::entity_t function, bool force_register_values) {
-		static ecrs::entity_t register_ = lookup::resolve(mod, "compiler.assembler.register", target);
+		static ecrs::entity_t register_ = lookup::resolve(mod, "compiler.assembler.register", 1);
 		target = doir::alias::resolve(mod, target);
-
-		// TODO: Some sort of actual register allocation logic would be nice
-		if(!mod.has_component<assigned_register>(target)) {
-			// NO_ASSOCIATED_REGISTER();
-			// diag.kind = diagnose::diagnostic::warning;
-			
-			if(force_register_values) mod.add_component<assigned_register>(target).reg = 0;
-			else return true;
-		}
-
-		// std::cout << target << " -> " << mod.get_component<assigned_register>(target).reg << std::endl;
+		if(mod.has_component<doir::function_parameter>(target)) 
+			return true;
 
 		mod.remove_component<doir::type_of>(subtree);
 		mod.add_component<doir::print_as_call>(subtree).related[0] = function;
 		mod.remove_component<doir::call>(subtree);
-		doir::block_builder::attach_number(mod, subtree, register_, mod.get_component<assigned_register>(target).reg);
+		auto r = mod.has_component<assigned_register>(target) ? mod.get_component<assigned_register>(target).reg : 0;
+		doir::block_builder::attach_number(mod, subtree, register_, r);
 		return true;
 	}
 
@@ -238,17 +230,20 @@ namespace doir::opt {
 		auto& mod = (doir::module&)ctx; // TODO: Verify cast
 		if(!mod.has_component<doir::call>(subtree)) return true;
 
-		static ecrs::entity_t pointer = lookup::resolve(mod, "compiler.pointer", subtree);
-		static ecrs::entity_t base_type = lookup::resolve(mod, "compiler.base_type", subtree);
-		static ecrs::entity_t comptime_base_type = lookup::resolve(mod, "compiler.comptime_base_type", subtree);
-		static ecrs::entity_t bitwise_and = lookup::resolve(mod, "compiler.bitwise_and", subtree);
-		static ecrs::entity_t shift_right = lookup::resolve(mod, "compiler.shift_right", subtree);
-		static ecrs::entity_t debug_print = lookup::resolve(mod, "compiler.debug_print", subtree);
-		static ecrs::entity_t always_inline = lookup::resolve(mod, "compiler.always_inline", subtree);
-		static ecrs::entity_t always_comptime = lookup::resolve(mod, "compiler.always_comptime", subtree);
-		static ecrs::entity_t assembler_register_for = lookup::resolve(mod, "compiler.assembler.register_for", subtree);
-		static ecrs::entity_t assembler_return_register = lookup::resolve(mod, "compiler.assembler.return_register", subtree);
-		static ecrs::entity_t assembler_yield_register = lookup::resolve(mod, "compiler.assembler.yield_register", subtree);
+		static ecrs::entity_t pointer = lookup::resolve(mod, "compiler.pointer", 1);
+		static ecrs::entity_t base_type = lookup::resolve(mod, "compiler.base_type", 1);
+		static ecrs::entity_t comptime_base_type = lookup::resolve(mod, "compiler.comptime_base_type", 1);
+		static ecrs::entity_t bitwise_and = lookup::resolve(mod, "compiler.bitwise_and", 1);
+		static ecrs::entity_t shift_right = lookup::resolve(mod, "compiler.shift_right", 1);
+		static ecrs::entity_t debug_print = lookup::resolve(mod, "compiler.debug_print", 1);
+		static ecrs::entity_t always_inline = lookup::resolve(mod, "compiler.always_inline", 1);
+		static ecrs::entity_t always_comptime = lookup::resolve(mod, "compiler.always_comptime", 1);
+		static ecrs::entity_t assembler_register_for = lookup::resolve(mod, "compiler.assembler.register_for", 1);
+		static ecrs::entity_t assembler_return_register = lookup::resolve(mod, "compiler.assembler.return_register", 1);
+		static ecrs::entity_t assembler_yield_register = lookup::resolve(mod, "compiler.assembler.yield_register", 1);
+
+		static ecrs::entity_t compiler_current_entity = doir::lookup::resolve(mod, "compiler.current_entity", 1, true);
+		mod.get_component<doir::number>(compiler_current_entity).value = subtree;
 
 		auto function = mod.get_component<doir::call>(subtree).related[0];
 		if(function == base_type || function == comptime_base_type)

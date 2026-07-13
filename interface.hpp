@@ -56,17 +56,7 @@ namespace doir {
 		} flags = None;
 
 		inline uint16_t& as_underlying() { return (uint16_t&)flags; }
-		inline bool valueless_set() const { return flags & Valueless; }
-		inline bool namespace_set() const { return flags & Namespace; }
-
-		inline bool export_set() const { return flags & Export; }
-		inline bool comptime_set() const { return flags & Comptime; }
-		inline bool constant_set() const { return flags & Constant; }
-		inline bool union_set() const { return flags & Union; }
-		inline bool pure_set() const { return flags & Pure; }
-		inline bool inline_set() const { return flags & Inline; }
-		inline bool flatten_set() const { return flags & Flatten; }
-		inline bool tail_set() const { return flags & Tail; }
+		inline const uint16_t& as_underlying() const { return (uint16_t&)flags; }
 	};
 
 	struct name : public interned_string {};
@@ -110,10 +100,12 @@ namespace doir {
 	struct number {
 		long double value; // TODO: should use bigint rational instead?
 	};
+	struct comptime_number: public number {};
 
 	struct string {
 		interned_string value;
 	};
+	struct comptime_string: public string {};
 
 	struct call : public ecrs::relation<1> {}; // Also expects function_inputs attached
 	struct print_as_call : public call {}; // Attached to compile time substitutions to indicate what call created them

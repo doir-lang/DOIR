@@ -84,7 +84,7 @@ namespace doir::verify {
 	bool structure(diagnose::manager& diagnostics, module& mod, ecrs::entity_t subtree, bool top_level /* = true */, ecrs::entity_t builtin_end /*= ecrs::invalid_entitt */) {
 		bool valid = false;
 		if(builtin_end == ecrs::invalid_entity) {
-			auto compiler = lookup::resolve(mod, mod.interner.intern("compiler"), subtree);
+			auto compiler = lookup::resolve(mod, mod.interner->intern("compiler"), 1);
 			if(compiler == ecrs::invalid_entity) builtin_end = 1;
 			else {
 				auto& b = mod.get_component<doir::block>(compiler);
@@ -120,7 +120,7 @@ namespace doir::verify {
 				valid = false;
 			}
 
-			bool valueless = mod.has_component<doir::flags>(subtree) && mod.get_component<doir::flags>(subtree).valueless_set();
+			bool valueless = mod.flags_set(subtree, doir::flags::Valueless);
 			bool number = mod.has_component<doir::number>(subtree);
 			bool string = mod.has_component<doir::string>(subtree);
 			bool call = mod.has_component<doir::call>(subtree);
@@ -152,16 +152,13 @@ namespace doir::verify {
 				valid = false;
 			}
 
-			auto flags = mod.has_component<doir::flags>(subtree)
-				? std::optional<doir::flags>(mod.get_component<doir::flags>(subtree))
-				: std::optional<doir::flags>{};
-			if( !(call || call_lookup || function_def || function_def_lookup) && flags) {
-				if((!block && flags->flatten_set()) || flags->inline_set() || flags->pure_set() || flags->tail_set()) {
+			if( !(call || call_lookup || function_def || function_def_lookup) && mod.has_component<doir::flags>(subtree)) {
+				if((!block && mod.flags_set(subtree, doir::flags::Flatten)) || mod.flags_set(subtree, doir::flags::Inline) || mod.flags_set(subtree, doir::flags::Pure) || mod.flags_set(subtree, doir::flags::Tail)) {
 					throw std::runtime_error("TODO: Invalid flags");
 					valid = false;
 				}
 			}
-			if(flags && flags->constant_set()) {
+			if(mod.flags_set(subtree, doir::flags::Constant)) {
 				throw std::runtime_error("TODO: Only pointer types can be marked constant");
 				valid = false;
 			}
@@ -270,7 +267,7 @@ namespace doir::verify {
 			}
 
 			if(mod.has_component<doir::pointer>(subtree)) {
-				static auto type = doir::lookup::resolve(mod, "type", subtree);
+				static auto type = doir::lookup::resolve(mod, "type", 1);
 				auto base = mod.get_component<doir::pointer>(subtree).related[0];
 				if( !(mod.has_component<doir::type_definition>(base)
 					|| (mod.has_component<doir::type_of>(base) && mod.get_component<doir::type_of>(base).related[0] == type))
@@ -280,16 +277,13 @@ namespace doir::verify {
 				}
 			}
 
-			if(mod.has_component<doir::flags>(subtree)) {
-				auto flags = mod.get_component<doir::flags>(subtree);
-				if(flags.valueless_set() || flags.namespace_set()) {
-					throw std::runtime_error("TODO: Invalid flags");
-					valid = false;
-				}
-				// TODO: What flags are valid?
+			if(mod.flags_set(subtree, doir::flags::Valueless) || mod.flags_set(subtree, doir::flags::Namespace)) {
+				throw std::runtime_error("TODO: Invalid flags");
+				valid = false;
 			}
+			// TODO: What flags are valid?
 
-		} else if(mod.has_component<doir::flags>(subtree) && mod.get_component<doir::flags>(subtree).namespace_set()) {
+		} else if(mod.flags_set(subtree, doir::flags::Namespace)) {
 			valid = true;
 
 			if(!mod.has_component<doir::block>(subtree)) {
@@ -328,14 +322,11 @@ namespace doir::verify {
 				valid = false;
 			}
 
-			if(mod.has_component<doir::flags>(subtree)) {
-				auto flags = mod.get_component<doir::flags>(subtree);
-				if(flags.valueless_set()) {
-					throw std::runtime_error("TODO: Invalid flags");
-					valid = false;
-				}
-				// TODO: What flags are valid?
+			if(mod.flags_set(subtree, doir::flags::Valueless)) {
+				throw std::runtime_error("TODO: Invalid flags");
+				valid = false;
 			}
+			// TODO: What flags are valid?
 
 		} else if(mod.has_component<alias>(subtree) || mod.has_component<doir::lookup::alias>(subtree)) {
 			if(mod.has_component<doir::pointer>(subtree)

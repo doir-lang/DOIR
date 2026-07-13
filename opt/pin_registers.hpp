@@ -15,7 +15,7 @@ namespace doir::opt {
 		auto& mod = (doir::module&)ctx; // TODO: Verify cast
 		if(!mod.has_component<doir::call>(subtree)) return true;
 		
-		static ecrs::entity_t pin_register = lookup::resolve(mod, "compiler.assembler.pin_register", subtree);
+		static ecrs::entity_t pin_register = lookup::resolve(mod, "compiler.assembler.pin_register", 1);
 		auto function = mod.get_component<doir::call>(subtree).related[0];
 		if(function != pin_register) return true;
 

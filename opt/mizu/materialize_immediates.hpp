@@ -1,13 +1,13 @@
 #pragma once
 
-#include "../module.hpp"
-#include "../interface.hpp"
-#include "../systems.hpp"
+#include "../../module.hpp"
+#include "../../interface.hpp"
+#include "../../systems.hpp"
 
-#include "../sema/lookup.hpp"
-#include "../sema/error_helper.hpp"
-#include "materialize_aliases.hpp"
-#include "compute_compiler_namespace.hpp"
+#include "../../sema/lookup.hpp"
+#include "../../sema/error_helper.hpp"
+#include "../materialize_aliases.hpp"
+#include "../compute_compiler_namespace.hpp"
 #include <string>
 #include <vector>
 
@@ -19,14 +19,14 @@ namespace doir::opt {
 			auto& mod = (doir::module&)ctx; // TODO: Verify cast
 			if(!mod.has_component<doir::call>(subtree)) return true;
 
-			static ecrs::entity_t u64 = lookup::resolve(mod, "u64", subtree);
-			static ecrs::entity_t byte = lookup::resolve(mod, "compiler.byte", subtree);
-			static ecrs::entity_t emit = lookup::resolve(mod, "compiler.emit", subtree);
-			static ecrs::entity_t indicate_yield = lookup::resolve(mod, "compiler.indicate_yield", subtree);
-			static ecrs::entity_t load_immediate = lookup::resolve(mod, "load_immediate", subtree);
-			static ecrs::entity_t load_immediate_op = lookup::resolve(mod, "load_immediate_op", subtree);
-			static ecrs::entity_t load_upper_immediate = lookup::resolve(mod, "load_upper_immediate", subtree);
-			static ecrs::entity_t load_upper_immediate_op = lookup::resolve(mod, "load_upper_immediate_op", subtree);
+			static ecrs::entity_t u64 = lookup::resolve(mod, "mizu.u64", 1);
+			static ecrs::entity_t byte = lookup::resolve(mod, "compiler.byte", 1);
+			static ecrs::entity_t emit = lookup::resolve(mod, "compiler.emit", 1);
+			static ecrs::entity_t indicate_yield = lookup::resolve(mod, "compiler.indicate_yield", 1);
+			static ecrs::entity_t load_immediate = lookup::resolve(mod, "mizu.load_immediate", 1);
+			static ecrs::entity_t load_immediate_op = lookup::resolve(mod, "mizu.load_immediate_op", 1);
+			static ecrs::entity_t load_upper_immediate = lookup::resolve(mod, "mizu.load_upper_immediate", 1);
+			static ecrs::entity_t load_upper_immediate_op = lookup::resolve(mod, "mizu.load_upper_immediate_op", 1);
 
 			auto function = mod.get_component<doir::call>(subtree).related[0];
 			if( !(function == load_immediate || function == load_upper_immediate) ) return true;
@@ -74,19 +74,19 @@ namespace doir::opt {
 				// std::cout << subtree << " -> " << r << std::endl;
 
 				uint8_t low = r & 0xFF;
-	   			inputs = {builder.push_number(mod.interner.intern("low"), byte, low)};
+	   			inputs = {builder.push_number(mod.interner->intern("low"), byte, low)};
 		  		builder.push_call("_", byte, emit, inputs);
 				uint8_t high = (r >> 8) & 0xFF;
-				inputs = {builder.push_number(mod.interner.intern("high"), byte, high)};
+				inputs = {builder.push_number(mod.interner->intern("high"), byte, high)};
 				builder.push_call("_", byte, emit, inputs);
 
 				auto bytes = fp::view<uint32_t>::from_variable(value).byte_view();
 			 	for(size_t i = 0; i < bytes.size(); ++i) {
-					inputs = {builder.push_number(mod.interner.intern("%" + std::to_string(i)), byte, (int)bytes[i])};
+					inputs = {builder.push_number(mod.interner->intern("%" + std::to_string(i)), byte, (int)bytes[i])};
 					builder.push_call("_", byte, emit, inputs);
 				}
 
-				inputs = {builder.push_number(mod.interner.intern("zero"), byte, 0)};
+				inputs = {builder.push_number(mod.interner->intern("zero"), byte, 0)};
 				for(size_t i = 0; i < 2; ++i) // Need to fill in another uint16_t
 					builder.push_call("_", byte, emit, inputs);
 

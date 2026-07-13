@@ -3,6 +3,7 @@
 #include "interface.hpp"
 #include "module.hpp"
 #include "libecrs/systems.hpp"
+#include <deque>
 #include <ranges>
 #include <algorithm>
 
@@ -10,6 +11,76 @@
 #include "sema/canonicalize/sort.hpp"
 
 namespace doir::system {
+	template<typename... Targs, std::invocable<ecrs::context&, ecrs::entity_t, Targs...> Tfunc>
+	auto depth_first(ecrs::entity_t subtree, Tfunc&& func) {
+		return [=](ecrs::context& ctx, Targs... args) -> bool {
+			auto& mod = (doir::module&)ctx; // TODO: Verify cast
+
+			struct Frame {
+				ecrs::entity_t entity;
+				std::size_t child_index;
+			};
+			std::vector<Frame> stack;
+			stack.push_back({subtree == current_canonicalize_root ? canonicalize::new_root : subtree, 0});
+
+			while(!stack.empty()) {
+				auto& frame = stack.back();
+
+				if(!mod.has_component<doir::block>(frame.entity)) {
+					if(!func(mod, frame.entity, args...)) return false;
+					stack.pop_back();
+					continue;
+				}
+
+				auto& block = mod.get_component<doir::block>(frame.entity);
+				if(frame.child_index < block.related.size()) {
+					ecrs::entity_t child = block.related[frame.child_index];
+					++frame.child_index;
+					stack.push_back({child, 0}); // may invalidate `frame`, but it isn't used again this iteration
+				} else {
+					if(!func(mod, frame.entity, args...)) return false;
+					stack.pop_back();
+				}
+			}
+
+			return true;
+		};
+	}
+
+	template<typename... Targs, std::invocable<ecrs::context&, ecrs::entity_t, Targs...> Tfunc>
+	auto depth_first(Tfunc&& func) {
+		return depth_first(doir::current_canonicalize_root, std::move(func));
+	}
+
+	template<typename... Targs, std::invocable<ecrs::context&, ecrs::entity_t, Targs...> Tfunc>
+	auto breadth_first(ecrs::entity_t subtree, Tfunc&& func) {
+		return [=](ecrs::context& ctx, Targs... args) -> bool {
+			auto& mod = (doir::module&)ctx; // TODO: Verify cast
+
+			std::deque<ecrs::entity_t> queue;
+			queue.push_back(subtree == current_canonicalize_root ? canonicalize::new_root : subtree);
+
+			while(!queue.empty()) {
+				ecrs::entity_t entity = queue.front();
+				queue.pop_front();
+
+				if(!func(mod, entity, args...)) return false;
+
+				if(!mod.has_component<doir::block>(entity)) continue;
+				auto& block = mod.get_component<doir::block>(entity);
+				for(auto e: block.related)
+					queue.push_back(e);
+			}
+
+			return true;
+		};
+	}
+
+	template<typename... Targs, std::invocable<ecrs::context&, ecrs::entity_t, Targs...> Tfunc>
+	auto breadth_first(Tfunc&& func) {
+		return breadth_first(doir::current_canonicalize_root, std::move(func));
+	}
+	
 	template<typename... Targs, std::invocable<ecrs::context&, ecrs::entity_t, Targs...> Tfunc>
 	auto sorted(ecrs::entity_t subtree, Tfunc&& func, bool independent = false, bool sort_when_finished = false) {
 		return [=](ecrs::context& ctx, Targs... args) -> bool {

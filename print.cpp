@@ -1,11 +1,11 @@
-#include "sema/lookup.hpp"
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 
 #include "module.hpp"
 #include "print.hpp"
 #include "interface.hpp"
-#include "sema/function_arity.hpp"
+
+#include "opt/compute_compiler_namespace.hpp"
 
 #include <sstream>
 
@@ -52,10 +52,7 @@ std::string print_lookup_name(const doir::module& mod, doir::lookup::lookup look
 	if(mod.has_component<doir::name>(lookup.entity())) {
 		auto out = std::string(mod.get_component<doir::name>(lookup.entity()));
 		auto parent = doir::find_parent(mod, lookup.entity());
-		while(
-			mod.has_component<doir::flags>(parent) && mod.get_component<doir::flags>(parent).namespace_set()
-			&& mod.has_component<doir::name>(parent)
-		) {
+		while(mod.flags_set(parent, doir::flags::Namespace) && mod.has_component<doir::name>(parent)) {
 			out = std::string(mod.get_component<doir::name>(parent)) + "." + out;
 			parent = doir::find_parent(mod, parent);
 		}
@@ -84,7 +81,7 @@ std::tuple<std::string, std::string, std::optional<diagnose::source_location::de
 		type = print_lookup_name(mod, mod.get_component<doir::lookup::type_of>(subtree), debug);
 	else if(mod.has_component<doir::type_definition>(subtree))
 		type = "type";
-	else if(mod.has_component<doir::flags>(subtree) && mod.get_component<doir::flags>(subtree).namespace_set())
+	else if(mod.flags_set(subtree, doir::flags::Namespace))
 		type = "namespace";
 
 	std::optional<diagnose::source_location::detailed> location = {};
@@ -93,11 +90,23 @@ std::tuple<std::string, std::string, std::optional<diagnose::source_location::de
 	else if(mod.has_component<diagnose::source_location>(subtree))
 		location = mod.get_component<diagnose::source_location>(subtree).to_detailed(mod.source);
 
-	std::string Export = "";
-	if(mod.has_component<doir::flags>(subtree))
-		Export = mod.get_component<doir::flags>(subtree).export_set() ? "export " : "";
+	std::string Export = mod.flags_set(subtree, doir::flags::Export) ? "export " : "";
 
 	return {ident, type, location, Export};
+}
+
+std::ostream& print_debug_extras(std::ostream& out, const doir::module& mod, ecrs::entity_t subtree, bool debug) {
+	if(!debug) return out;
+
+	if(mod.has_component<doir::comptime_number>(subtree))
+		 out << " [comp: " << mod.get_component<doir::comptime_number>(subtree).value << "]";
+	else if(mod.has_component<doir::comptime_string>(subtree))
+		 out << " [comp: \"" << mod.get_component<doir::comptime_string>(subtree).value << "\"]";
+	
+	if(mod.has_component<doir::opt::assigned_register>(subtree))
+		out << " [reg: " << mod.get_component<doir::opt::assigned_register>(subtree).reg << "]";
+	
+	return out;
 }
 
 std::ostream& print_block(std::ostream& out, const doir::module& mod, const doir::block& block, bool pretty, bool debug, bool skip_parameters, size_t indent) {
@@ -106,6 +115,7 @@ std::ostream& print_block(std::ostream& out, const doir::module& mod, const doir
 		if(skip_parameters && mod.has_component<doir::function_parameter>(elem))
 			continue;
 		print_impl(out, mod, elem, pretty, debug, indent + 1);
+		print_debug_extras(out, mod, elem, debug);
 		if(pretty) out << std::endl;
 		else out << ";";
 	}
@@ -115,7 +125,7 @@ std::ostream& print_block(std::ostream& out, const doir::module& mod, const doir
 
 std::ostream& print_type_of(std::ostream& out, const doir::module& mod, ecrs::entity_t subtree, bool pretty, bool debug, size_t indent) {
 	auto indent_string = pretty ? std::string(indent, '\t') : "";
-	if(mod.has_component<doir::flags>(subtree) && mod.get_component<doir::flags>(subtree).valueless_set()) {
+	if(mod.flags_set(subtree, doir::flags::Valueless)) {
 		auto [ident, type, location, Export] = get_common_assignment_elements(mod, subtree, debug);
 		out << indent_string << Export << ident << (pretty ? ": " : ":") << type;
 		if(location) out << *location;
@@ -133,11 +143,10 @@ std::ostream& print_type_of(std::ostream& out, const doir::module& mod, ecrs::en
 		std::string flags = "";
 		bool comptime = false;
 		if(mod.has_component<doir::flags>(subtree)) {
-			auto f = mod.get_component<doir::flags>(subtree);
-			if(f.inline_set()) flags += "inline ";
-			if(f.flatten_set()) flags += "flatten ";
-			if(f.tail_set()) flags += "tail ";
-			if(debug && f.comptime_set()) flags += "comptime ";
+			if(mod.flags_set(subtree, doir::flags::Inline)) flags += "inline ";
+			if(mod.flags_set(subtree, doir::flags::Flatten)) flags += "flatten ";
+			if(mod.flags_set(subtree, doir::flags::Tail)) flags += "tail ";
+			if(debug && mod.flags_set(subtree, doir::flags::Comptime)) flags += "comptime ";
 		}
 		out << indent_string << Export << ident << (pretty ? ": " : ":") << type << (pretty ? " = " : "=")
 			<< flags << print_lookup_name(mod, call, debug) << "(";
@@ -192,8 +201,10 @@ std::ostream& print_type_of(std::ostream& out, const doir::module& mod, ecrs::en
 					out << type;
 				else {
 					out << "(";
-					for(size_t i = 0; i < parameters.size(); ++i)
-						print_impl(out, mod, parameters[i], pretty, debug) << (i < parameters.size() - 1 ? (pretty ? ", " : ",") : "");
+					for(size_t i = 0; i < parameters.size(); ++i) {
+						print_impl(out, mod, parameters[i], pretty, debug);
+						print_debug_extras(out, mod, parameters[i], debug) << (i < parameters.size() - 1 ? (pretty ? ", " : ",") : "");
+					}
 					out << ")";
 
 					if(return_type)
@@ -235,7 +246,7 @@ std::ostream& print_impl(std::ostream& out, const doir::module& mod, ecrs::entit
 			else out << "type.array(" + print_lookup_name(mod, p.related[0], debug) << ", " << p.size << ")";
 		} else out << print_function_type(mod, subtree, debug);
 
-	} else if(mod.has_component<doir::flags>(subtree) && mod.get_component<doir::flags>(subtree).namespace_set()) {
+	} else if(mod.flags_set(subtree, doir::flags::Namespace)) {
 		auto [ident, type, location, Export] = get_common_assignment_elements(mod, subtree, debug);
 		out << indent_string << Export << ident << (pretty ? ": " : ":") << type << (pretty ? " = " : "=");
 		print_block(out, mod, mod.get_component<doir::block>(subtree), pretty, debug, false, indent);
@@ -260,9 +271,13 @@ std::ostream& doir::print(std::ostream& out, const doir::module& mod, ecrs::enti
 	if(mod.has_component<doir::block>(root))
 		for(auto& elem: mod.get_component<doir::block>(root).related) {
 			print_impl(out, mod, elem, pretty, debug);
+			print_debug_extras(out, mod, elem, debug);
 			if(pretty) out << std::endl;
 			else out << ";";
 		}
-	else print_impl(out, mod, root, pretty, debug);
+	else {
+		print_impl(out, mod, root, pretty, debug);
+		print_debug_extras(out, mod, root, debug);
+	}
 	return out;
 }

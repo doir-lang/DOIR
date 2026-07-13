@@ -78,7 +78,7 @@ namespace doir {
 		for(auto e: block.related)
 			if(mod.has_component<doir::name>(e)) {
 				std::string_view e_name = mod.get_component<doir::name>(e);
-				if(e_name == name && mod.has_component<doir::flags>(e) && mod.get_component<doir::flags>(e).namespace_set())
+				if(e_name == name && mod.flags_set(e, doir::flags::Namespace))
 					return e;
 			}
 		return ecrs::invalid_entity;
@@ -100,13 +100,13 @@ namespace doir {
 			return block;
 
 		auto namespaces = diagnose::split(lookup, '.');
-		auto name = mod.interner.intern(namespaces.back());
+		auto name = mod.interner->intern(namespaces.back());
 		namespaces.pop_back();
 
 		ecrs::entity_t Namespace = block;
 		if(namespaces.size()) {
 			do {
-				Namespace = find_namespace(mod, mod.get_component<doir::block>(block), mod.interner.intern(namespaces.front()));
+				Namespace = find_namespace(mod, mod.get_component<doir::block>(block), mod.interner->intern(namespaces.front()));
 
 				if(Namespace == ecrs::invalid_entity) {
 					if(mod.has_component<doir::parent>(block))
@@ -120,7 +120,7 @@ namespace doir {
 
 			namespaces.erase(namespaces.begin());
 			for(auto name: namespaces) {
-				Namespace = find_namespace(mod, mod.get_component<doir::block>(Namespace), mod.interner.intern(name));
+				Namespace = find_namespace(mod, mod.get_component<doir::block>(Namespace), mod.interner->intern(name));
 				if(Namespace == ecrs::invalid_entity)
 					return ecrs::invalid_entity;
 			}

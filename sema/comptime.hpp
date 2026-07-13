@@ -48,7 +48,7 @@ namespace doir::sema {
 
 			auto type = doir::type_definition::base_type(mod, mod.get_component<doir::type_of>(subtree).related[0]);
 
-			static ecrs::entity_t comptime_base_type = doir::lookup::resolve(mod, "compiler.comptime_base_type", subtree);
+			static ecrs::entity_t comptime_base_type = doir::lookup::resolve(mod, "compiler.comptime_base_type", 1);
 			bool always_comptime = false;
 			if(mod.has_component<doir::call>(type) && mod.get_component<doir::call>(type).related[0] == comptime_base_type)
 				always_comptime = true;
@@ -84,7 +84,7 @@ namespace doir::sema {
 			}
 
 			if(non_comptime_input != -1 && mod.flags_set(subtree, doir::flags::Comptime)) {
-				static ecrs::entity_t register_for = lookup::resolve(mod, "compiler.assembler.register_for", subtree);
+				static ecrs::entity_t register_for = lookup::resolve(mod, "compiler.assembler.register_for", 1);
 				if(mod.get_component<doir::call>(subtree).related[0] == register_for && non_comptime_input == 1) return true; // register_for is allowed to take a non comptime value for its second parameter
 
 				auto name = mod.has_component<doir::name>(subtree) ? std::string(mod.get_component<doir::name>(subtree)) : "%" + std::to_string(subtree);

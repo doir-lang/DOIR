@@ -31,7 +31,7 @@ namespace doir {
 			if(mod.has_component<doir::function_parameter>(subtree))
 				mod.add_component<doir::function_parameter>(out) = mod.get_component<doir::function_parameter>(subtree);
 
-			bool valueless = mod.has_component<doir::flags>(subtree) && mod.get_component<doir::flags>(subtree).valueless_set();
+			bool valueless = mod.flags_set(subtree, doir::flags::Valueless);
 			bool number = mod.has_component<doir::number>(subtree);
 			bool string = mod.has_component<doir::string>(subtree);
 			bool call = mod.has_component<doir::call>(subtree);
@@ -162,7 +162,7 @@ namespace doir {
 					e = substitutions->contains(e) ? (*substitutions)[e] : e;
 			}
 
-		} else if(mod.has_component<doir::flags>(subtree) && mod.get_component<doir::flags>(subtree).namespace_set()) {
+		} else if(mod.flags_set(subtree, doir::flags::Namespace)) {
 			// mod.add_component<doir::flags>(out).as_underlying() |= doir::flags::Namespace;
 		} else if(mod.has_component<alias>(subtree) || mod.has_component<doir::lookup::alias>(subtree)) {
 			// alias == backlink

@@ -24,9 +24,10 @@
 #include "opt/inline_functions.hpp"
 #include "opt/materialize_aliases.hpp"
 #include "opt/compute_compiler_namespace.hpp"
-#include "opt/mizu_materialize_immediates.hpp"
+#include "opt/mizu/materialize_immediates.hpp"
 #include "opt/pin_registers.hpp"
 #include "opt/allocate_registers.hpp"
+#include "opt/mizu/comptime_evaluate.hpp"
 
 #include "temp_byte_dumper.hpp"
 
@@ -69,41 +70,55 @@ int main(int argc, char** argv) {
 	}
 
 	auto sema_schedule = ecrs::system::sequential(
-		doir::system::sorted(doir::sema::validate::name_reuse),
-		doir::system::print(std::cout),
-		doir::system::sorted(std::bind(doir::sema::resolve_lookups, _1, _2, true)),
-		doir::system::print(std::cout),
-		doir::system::sorted(doir::canonicalize::materialize_function_types_and_parameters, false, true),
-		doir::system::sorted(std::bind(doir::sema::resolve_lookups, _1, _2, false)), // We may have materialized some function parameters which can now be found
-		doir::system::print(std::cout),
-		doir::system::sorted(doir::sema::validate::lookups_resolved),
+		// doir::system::print(std::cout),
+		doir::system::depth_first(doir::sema::validate::name_reuse),
+		// doir::system::print(std::cout),
+		doir::system::depth_first(std::bind(doir::sema::resolve_lookups, _1, _2, true)),
+		// doir::system::print(std::cout),
+		doir::system::depth_first(doir::canonicalize::materialize_function_types_and_parameters),
+		doir::system::depth_first(std::bind(doir::sema::resolve_lookups, _1, _2, false)), // We may have materialized some function parameters which can now be found
+		// doir::system::print(std::cout),
+		doir::system::depth_first(doir::sema::validate::lookups_resolved),
 		// ecrs::system::parallel(
 		// 	// doir::system::sorted(doir::sema::strip_names),
 			ecrs::system::sequential(
-				doir::system::fixed_point(doir::system::sorted(doir::sema::bubble_comptime)),
-				doir::system::sorted(doir::sema::validate::comptime)
+				doir::system::fixed_point(doir::system::depth_first(doir::sema::bubble_comptime)),
+				doir::system::depth_first(doir::sema::validate::comptime)
 			),
-			doir::system::sorted(doir::sema::validate::function_arity)
+			doir::system::depth_first(doir::sema::validate::function_arity),
 		// )
+		doir::canonicalize::system::sort()
 	);
 	auto mizu_schedule = ecrs::system::sequential(
-		doir::system::sorted(doir::opt::pin_registers),
-		doir::system::sorted(doir::opt::allocate_registers, false, true),
-		doir::system::sorted(doir::opt::pin_registers),
-		doir::system::sorted(std::bind(doir::opt::compute_compiler_namespace, _1, _2, false)),
-		doir::system::sorted(doir::opt::mizu::materialize_immediates, false, true),
 		// doir::system::print(std::cout),
-		doir::system::sorted(doir::opt::inline_functions, false, true),
-		doir::system::sorted(std::bind(doir::opt::compute_compiler_namespace, _1, _2, true))
+		doir::system::depth_first(doir::opt::pin_registers),
+		// doir::system::print(std::cout),
+		doir::system::breadth_first(doir::opt::allocate_registers),
+		// doir::system::print(std::cout),
+		doir::system::depth_first(doir::opt::pin_registers),
+		// doir::system::print(std::cout),
+		doir::system::breadth_first(std::bind(doir::opt::compute_compiler_namespace, _1, _2, false)),
+		// doir::system::print(std::cout),
+		doir::system::depth_first(doir::opt::mizu::materialize_immediates),
+		// doir::system::print(std::cout),
+		doir::system::breadth_first(doir::opt::inline_functions),
+		// doir::system::print(std::cout),
+		doir::system::breadth_first(std::bind(doir::opt::compute_compiler_namespace, _1, _2, true))
 		// doir::system::sorted(doir::system::bind_root(doir::opt::materialize_aliases))
 	);
+	auto opt_schedule = ecrs::system::sequential(
+		// doir::system::print(std::cout),
+		doir::system::depth_first(std::bind(doir::opt::mizu::comptime_evaluate, _1, _2, std::ref(mizu_schedule))),
+		mizu_schedule
+	);
+	;
 
 	sema_schedule(mod);
 	if(doir::diagnostics().count() > 0) {
 		doir::diagnostics().print_all();
 		if(doir::diagnostics().has_errors()) return -1;
 	}
-	mizu_schedule(mod);
+	opt_schedule(mod);
 	if(doir::diagnostics().count() > 0) {
 		doir::diagnostics().print_all();
 		if(doir::diagnostics().has_errors()) return -1;
@@ -115,8 +130,8 @@ int main(int argc, char** argv) {
 	doir::print(std::cout, mod, root, true, true);
 
 	{
-		mod.interner.intern("compiler.emit"); mod.interner.intern("compiler.emit_bytes");
-		auto bytes = doir::byte_dumper().interpret(mod, root);
+		mod.interner->intern("compiler.emit"); mod.interner->intern("compiler.emit_bytes");
+		auto bytes = doir::byte_dumper().interpret(mod, doir::canonicalize::new_root);
 		std::ofstream fout("res.bin", std::ios::binary);
 		fout.write((char*)bytes.data(), bytes.size());
 	}

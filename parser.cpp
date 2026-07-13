@@ -107,10 +107,10 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, bo
 	// assert(ok);
 
 	auto& mod = *blocks.back().mod;
-	auto compiler_interned = mod.interner.intern("compiler");
-	auto type_interned = mod.interner.intern("type");
-	auto namespace_interned = mod.interner.intern("namespace");
-	auto alias_interned = mod.interner.intern("alias");
+	auto compiler_interned = mod.interner->intern("compiler");
+	auto type_interned = mod.interner->intern("type");
+	auto namespace_interned = mod.interner->intern("namespace");
+	auto alias_interned = mod.interner->intern("alias");
 
 	parser["assignment"] = [&, guarantee_source_location, compiler_interned, type_interned, namespace_interned, alias_interned]
 		(const peg::SemanticValues &vs)
@@ -200,7 +200,7 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, bo
 				} else if(type_name == namespace_interned) {
 					builder = blocks.back().push_namespace(ident);
 					if(ident == compiler_interned) {
-						mod.get_component<doir::name>(builder.block) = {mod.interner.intern("compiler_ignored")};
+						mod.get_component<doir::name>(builder.block) = {mod.interner->intern("compiler_ignored")};
 						auto& diag = push_diagnostic(diagnostic_type::CompilerNamespaceReserved, get_location(mod, vs), mod.source, *mod.working_file);
 						diag.push_annotation_at_start({
 							.message = "Use of reserved "s + doir::ansi::type + "compiler" + diagnose::ansi::reset + " namespace has been ignored",
@@ -407,7 +407,7 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, bo
 	constexpr static auto escape_string = [](doir::module& mod, const peg::SemanticValues &vs) {
 		try {
 			auto unescaped = unescape_python_string(vs.token(0));
-			return mod.interner.intern(unescaped);
+			return mod.interner->intern(unescaped);
 		} catch(string_processing_error e) {
 			auto source_location = get_location(mod, vs);
 			auto& diag = push_diagnostic(diagnostic_type::StringProcessingError, source_location, mod.source, *mod.working_file);
@@ -417,7 +417,7 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, bo
 			source_location.end_byte = source_location.start_byte + 1;
 			annotation.position = source_location.to_detailed(mod.source).start;
 			diag.annotations.push_back(annotation);
-			return mod.interner.intern("<error>");
+			return mod.interner->intern("<error>");
 		}
 	};
 
@@ -426,7 +426,7 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, bo
 		break; case 0: // String
 			return escape_string(mod, vs); // TODO: Are there later identifier verifies which need to be aware that this is a special snowflake?
 		break; case 1: { // Normal
-			auto out = mod.interner.intern(vs.token(0));
+			auto out = mod.interner->intern(vs.token(0));
 			verify::identifier_structure(diagnostics(), *blocks.back().mod, out);
 			return out;
 		}

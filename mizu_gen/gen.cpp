@@ -1,7 +1,9 @@
 #define MIZU_IMPLEMENTATION
 #define FP_OSTREAM_SUPPORT
+#define ECRS_IMPLEMENTATION
 #include <mizu/serialize.hpp>
 #include <mizu/instructions.hpp>
+#include "../mizu_doir_instructions.hpp"
 
 #include <fp/string.hpp>
 
@@ -57,10 +59,13 @@ const static mizu::opcode program[] = {
 	mizu::opcode{mizu::shift_right_arithmetic},
 	mizu::opcode{mizu::bitwise_xor},
 	mizu::opcode{mizu::bitwise_and},
-	mizu::opcode{mizu::bitwise_or}
+	mizu::opcode{mizu::bitwise_or},
+
+	mizu::opcode{mizu::doir_set_module},
+	mizu::opcode{mizu::doir_attach_comptime_number_i64}
 };
 
-std::unordered_set<mizu::instruction_t> single_operand_ops = {mizu::debug_print, mizu::debug_print_binary, mizu::convert_to_u64, mizu::convert_to_u32, mizu::convert_to_u16, mizu::convert_to_u8, mizu::stack_load_u64, mizu::stack_load_u32, mizu::stack_load_u16, mizu::stack_load_u8, mizu::stack_push, mizu::stack_pop, mizu::offset_of_stack_bottom, mizu::jump_relative, mizu::jump_to};
+std::unordered_set<mizu::instruction_t> single_operand_ops = {mizu::debug_print, mizu::debug_print_binary, mizu::convert_to_u64, mizu::convert_to_u32, mizu::convert_to_u16, mizu::convert_to_u8, mizu::stack_load_u64, mizu::stack_load_u32, mizu::stack_load_u16, mizu::stack_load_u8, mizu::stack_push, mizu::stack_pop, mizu::offset_of_stack_bottom, mizu::jump_relative, mizu::jump_to, mizu::doir_set_module};
 std::unordered_set<mizu::instruction_t> immediate_ops = {mizu::stack_push_immediate, mizu::stack_pop_immediate, mizu::jump_relative_immediate};
 std::unordered_set<mizu::instruction_t> branch_immediate_ops = {mizu::branch_relative_immediate};
 

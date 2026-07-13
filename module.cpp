@@ -23,7 +23,7 @@ namespace doir {
 		return parse(parser, source, path);
 	}
 
-	bool module::flags_set(ecrs::entity_t e, decltype(doir::flags{}.as_underlying()) check) {
+	bool module::flags_set(ecrs::entity_t e, decltype(doir::flags{}.as_underlying()) check) const {
 		if(!has_component<doir::flags>(e)) return false;
 		return (get_component<doir::flags>(e).as_underlying() & check) > 0;
 	}

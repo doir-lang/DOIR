@@ -30,7 +30,6 @@ mizu : namespace = {
 		_ : compiler.assembler.register = compiler.indicate_return(compiler.assembler.register)
 	}
 
-
 	load_immediate : (T : type, v : T) -> T = {}
 	load_upper_immediate : (T : type, v : T) -> T = {}
 	label : () -> compiler.assembler.register = {}
@@ -681,6 +680,32 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
+	doir_set_module : one_parameters_t = {
+		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
+		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
+		%91 : compiler.byte_pointer = "\x75\x00\x00\x00\x00\x00\x00\x00"
+		_ : compiler.byte = compiler.emit_bytes(%91)
+		_ : compiler.assembler.register = inline emit_register(regret)
+		_ : compiler.assembler.register = inline emit_register(rega)
+		%92 : compiler.byte_pointer = "\x00\x00\x00\x00"
+		_ : compiler.byte = compiler.emit_bytes(%92)
+		_ : u64 = compiler.indicate_return(u64)
+	}
+
+	doir_attach_comptime_number : two_parameters_t = {
+		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
+		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
+		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
+		%93 : compiler.byte_pointer = "\x76\x00\x00\x00\x00\x00\x00\x00"
+		_ : compiler.byte = compiler.emit_bytes(%93)
+		_ : compiler.assembler.register = inline emit_register(regret)
+		_ : compiler.assembler.register = inline emit_register(rega)
+		_ : compiler.assembler.register = inline emit_register(regb)
+		%94 : compiler.byte_pointer = "\x00\x00"
+		_ : compiler.byte = compiler.emit_bytes(%94)
+		_ : u64 = compiler.indicate_return(u64)
+	}
+
 	x0 : compiler.assembler.register = 0
 	x1 : compiler.assembler.register = 1
 	x2 : compiler.assembler.register = 2
@@ -689,5 +714,3 @@ mizu : namespace = {
 	x5 : compiler.assembler.register = 5
 	x6 : compiler.assembler.register = 6
 }
-
-bob

@@ -31,17 +31,17 @@ namespace doir::opt {
 		for(size_t i = 0; i < inputs.related.size(); ++i) {
 			auto name = mod.has_component<doir::name>(params[i])
 				? mod.get_component<doir::name>(params[i])
-				: mod.interner.intern("a" + std::to_string(i));
+				: mod.interner->intern("a" + std::to_string(i));
 			param_replacements[params[i]] = block.push_alias(name, inputs.related[i]);
 		}
 
 		block.copy_existing({function_def, &mod}, true);
 		mod.substitute_entities(subtree, param_replacements);
 
-		auto indicate_return = lookup::resolve(mod, mod.interner.intern("compiler.indicate_return"), subtree);
-		auto indicate_yield = lookup::resolve(mod, mod.interner.intern("compiler.indicate_yield"), subtree);
-		auto return_register = lookup::resolve(mod, mod.interner.intern("compiler.assembler.return_register"), subtree);
-		auto yield_register = lookup::resolve(mod, mod.interner.intern("compiler.assembler.yield_register"), subtree);
+		auto indicate_return = lookup::resolve(mod, mod.interner->intern("compiler.indicate_return"), 1);
+		auto indicate_yield = lookup::resolve(mod, mod.interner->intern("compiler.indicate_yield"), 1);
+		auto return_register = lookup::resolve(mod, mod.interner->intern("compiler.assembler.return_register"), 1);
+		auto yield_register = lookup::resolve(mod, mod.interner->intern("compiler.assembler.yield_register"), 1);
 		mod.substitute_entities(subtree, {{indicate_return, indicate_yield}, {return_register, yield_register}}, 1); // TODO: Does this fix recursive issues?
 		// TODO: Calls to return should become calls to yield
 

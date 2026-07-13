@@ -5,8 +5,9 @@
 #include "../systems.hpp"
 
 namespace doir::sema {
-	inline bool strip_names(ecrs::context& mod, ecrs::entity_t subtree) {
-		if(mod.has_component<doir::flags>(subtree) && mod.get_component<doir::flags>(subtree).export_set()) return true;
+	inline bool strip_names(ecrs::context& ctx, ecrs::entity_t subtree) {
+		auto& mod = (doir::module&)ctx; // TODO: Verify cast
+		if(mod.flags_set(subtree, doir::flags::Export)) return true;
 
 		if(mod.has_component<doir::name>(subtree))
 			mod.remove_component<doir::name>(subtree);

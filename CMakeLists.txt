@@ -13,9 +13,10 @@ add_library(doir
 	diagnostics.cpp interface.cpp interface.copy.cpp interface.global_block.cpp interface.resolve.cpp interface.verify.cpp
 	module.cpp systems.cpp print.cpp parser.cpp
 	sema/canonicalize/sort.cpp sema/lookup.cpp
-	opt/inline_functions.cpp opt/compute_compiler_namespace.cpp
+	opt/inline_functions.cpp opt/compute_compiler_namespace.cpp 
+	opt/mizu/comptime_evaluate.cpp
 )
-target_link_libraries(doir PUBLIC libecrs diagnose peglib)
+target_link_libraries(doir PUBLIC libecrs diagnose peglib mizu::vm)
 target_include_directories(doir PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 if(MSVC)
 	target_compile_options(doir PUBLIC /std:c++latest)
