@@ -20,10 +20,10 @@ namespace doir {
 	struct interned_string: public std::string_view {
 		using std::string_view::string_view;
 		using std::string_view::operator=;
-		interned_string() = default;
-		explicit interned_string(std::string_view sv) : std::string_view(sv) {}
-		interned_string(const interned_string&) = default;
-		interned_string(interned_string&&) = default;
+		constexpr interned_string() = default;
+		constexpr explicit interned_string(std::string_view sv) : std::string_view(sv) {}
+		constexpr interned_string(const interned_string&) = default;
+		constexpr interned_string(interned_string&&) = default;
 		interned_string& operator=(const interned_string&) = default;
 		interned_string& operator=(interned_string&&) = default;
 
@@ -33,7 +33,10 @@ namespace doir {
 		bool operator!=(const interned_string& o) {
 			return data() != o.data();
 		}
+
+		const static interned_string wildcard;
 	};
+	inline const interned_string interned_string::wildcard = interned_string("_");
 
 	struct string_interner {
 		explicit string_interner(size_t block_size = 4096) : block_size(block_size), offset(0) {

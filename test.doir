@@ -4,6 +4,16 @@ _ : compiler.assembler.register = compiler.assembler.begin_register_allocation()
 
 u64 : alias = mizu.u64
 
+blk : block = {
+	a : u64 = 1234
+	_ : u64 = mizu.load_immediate(u64, a)
+	_ : u64 = compiler.assembler.pin_register(u64, a, mizu.x1)
+	_ : u64 = mizu.debug_print(a)
+}
+false : u64 = 0
+true : u64 = 1
+_ : u64 = mizu.doir_execute_if(blk, true)
+
 a : u64 = 5
 _ : u64 = mizu.load_immediate(u64, a)
 b : u64 = 6

@@ -352,7 +352,7 @@ namespace doir::verify {
 
 			if(mod.has_component<doir::flags>(subtree)) {
 				auto flags = mod.get_component<doir::flags>(subtree).flags;
-				if( !(flags == doir::flags::None || flags == doir::flags::Export) ) {
+				if( !(flags == doir::flags::None || flags == doir::flags::Export || flags == doir::flags::Comptime) ) {
 					throw std::runtime_error("Invalid flags");
 					valid = false;
 				}

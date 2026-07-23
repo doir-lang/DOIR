@@ -99,9 +99,11 @@ std::ostream& print_debug_extras(std::ostream& out, const doir::module& mod, ecr
 	if(!debug) return out;
 
 	if(mod.has_component<doir::comptime_number>(subtree))
-		 out << " [comp: " << mod.get_component<doir::comptime_number>(subtree).value << "]";
+		out << " [comp: " << mod.get_component<doir::comptime_number>(subtree).value << "]";
 	else if(mod.has_component<doir::comptime_string>(subtree))
-		 out << " [comp: \"" << mod.get_component<doir::comptime_string>(subtree).value << "\"]";
+		out << " [comp: \"" << mod.get_component<doir::comptime_string>(subtree).value << "\"]";
+	else if(mod.flags_set(subtree, doir::flags::Comptime))
+		out << " [comp]";
 	
 	if(mod.has_component<doir::opt::assigned_register>(subtree))
 		out << " [reg: " << mod.get_component<doir::opt::assigned_register>(subtree).reg << "]";
@@ -136,7 +138,7 @@ std::ostream& print_type_of(std::ostream& out, const doir::module& mod, ecrs::en
 			? doir::lookup::lookup(mod.get_component<doir::call>(subtree).related[0])
 			: mod.has_component<doir::print_as_call>(subtree)
 				? doir::lookup::lookup(mod.get_component<doir::print_as_call>(subtree).related[0])
-			 	: doir::lookup::lookup(mod.get_component<doir::lookup::call>(subtree));
+				: doir::lookup::lookup(mod.get_component<doir::lookup::call>(subtree));
 		auto inputs = mod.has_component<doir::function_inputs>(subtree)
 			? doir::lookup::function_inputs::to_lookup(mod.get_component<doir::function_inputs>(subtree))
 			: mod.get_component<doir::lookup::function_inputs>(subtree);
@@ -181,7 +183,7 @@ std::ostream& print_type_of(std::ostream& out, const doir::module& mod, ecrs::en
 			out << type << (pretty ? " = " : "=");
 			print_block(out, mod, mod.get_component<doir::block>(subtree), pretty, debug, true, indent);
 		} else {
-			auto ft = lookup.entity();
+			auto ft = doir::alias::resolve(mod, lookup.entity());
 			auto resolved = doir::resolve_type_modifications(mod, ft);
 			bool ft_is_modification = ft != resolved;
 

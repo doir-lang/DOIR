@@ -13,11 +13,13 @@ namespace doir {
 		auto value_interned = mod->interner->intern("value");
 		auto T_interned = mod->interner->intern("T");
 		auto type = push_type(mod->interner->intern("type")).end();
-		mod->get_component<doir::type_definition>(type).always_comptime = true;
-		mod->get_or_add_component<doir::flags>(type).as_underlying() |= doir::flags::Comptime;
+		mod->get_or_add_component<doir::flags>(type).as_underlying() |= doir::flags::Comptime | doir::flags::AlwaysComptime;
+
+		auto blk = push_type(mod->interner->intern("block")).end();
+		mod->get_or_add_component<doir::flags>(blk).as_underlying() |= doir::flags::Comptime | doir::flags::AlwaysComptime;
 
 		push_type(mod->interner->intern("void")).end();
-		auto early_include = push_common(mod, block, mod->interner->intern("early_include"));
+		auto early_include = push_common(mod, this->block, mod->interner->intern("early_include"));
 
 		auto compiler = push_namespace("compiler");
 		std::vector<doir::lookup::lookup> inputs = {pointer_sized_interned, pointer_sized_interned};

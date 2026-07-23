@@ -32,10 +32,12 @@ namespace doir {
 	// Returns ecrs::invalid_entity if not inside a function
 	ecrs::entity_t find_function_inside_of(const doir::module& mod, ecrs::entity_t subtree);
 
+	ecrs::entity_t resolve_type_modifications(const doir::module& mod, ecrs::entity_t type);
+
 	void copy_components(module& mod, ecrs::entity_t out, ecrs::entity_t subtree, bool copy_block = true, std::unordered_map<ecrs::entity_t, ecrs::entity_t>* substitutions = nullptr);
 	ecrs::entity_t deep_copy(module& module, ecrs::entity_t root, void(*extra_copy_instructions)(ecrs::entity_t dest, ecrs::entity_t src) = nullptr);
 
-	ecrs::entity_t resolve_type_modifications(const doir::module& mod, ecrs::entity_t type);
+	void strip_value(module& mod, ecrs::entity_t root, bool strip_constants = true, bool strip_calls = true, bool strip_blocks = true);
 
 	// Tags
 	struct flags {
@@ -46,12 +48,13 @@ namespace doir {
 
 			Export = (1 << 3),
 			Comptime = (1 << 4),
-			NoComptime = (1 << 5), // Marks an object as never being comptime... currently unexposed
-			Constant = (1 << 6),
-			Union = (1 << 7),
-			Pure = (1 << 8),
-			Inline = (1 << 9),
-			Flatten = (1 << 10),
+			AlwaysComptime = (1 << 5),
+			NoComptime = (1 << 6), // Marks an object as never being comptime... currently unexposed
+			Constant = (1 << 7),
+			Union = (1 << 8),
+			Pure = (1 << 9),
+			Inline = (1 << 10),
+			Flatten = (1 << 11),
 			Tail = (1 << 11),
 		} flags = None;
 
@@ -64,6 +67,8 @@ namespace doir {
 	struct block : public ecrs::relation<> {
 		size_t offset_of(ecrs::entity_t e);
 		void inline_into(module& mod, ecrs::entity_t dest, size_t dest_offset = 0, size_t src_offset = 0, size_t count = -1);
+		bool is_freestanding(module& mod, ecrs::entity_t block) const; // A freestanding block is one that is not attached to a type, function, or alias. It is just a block of code that can be executed.
+		void prepend_to_names(module& mod, std::string_view prefix);
 	}; // When alone (no type_of etc...) represents a quoted block
 	struct parent : public ecrs::relation<1> {};
 
@@ -78,15 +83,14 @@ namespace doir {
 
 	struct type_definition { // Also expects block attached
 		size_t size, align, unique = 0;
-		bool always_comptime = false;
 
 		static ecrs::entity_t base_type(const module& mod, ecrs::entity_t e);
 	};
 
-	struct pointer : public ecrs::relation<1> { 
+	struct pointer : public ecrs::relation<1> {
 		size_t size = 0; // Size == 0 implies no bounds information
 		static ecrs::entity_t base_type(const module& mod, ecrs::entity_t e) { return type_definition::base_type(mod, e); }
-	}; 
+	};
 
 	struct alias : public ecrs::relation<1> {
 		std::optional<std::string_view> file = {}; // Aliases can reference other files

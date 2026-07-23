@@ -24,9 +24,10 @@
 #include "opt/inline_functions.hpp"
 #include "opt/materialize_aliases.hpp"
 #include "opt/compute_compiler_namespace.hpp"
-#include "opt/mizu/materialize_immediates.hpp"
 #include "opt/pin_registers.hpp"
 #include "opt/allocate_registers.hpp"
+#include "opt/strip_freestanding_blocks.hpp"
+#include "opt/mizu/materialize_immediates.hpp"
 #include "opt/mizu/comptime_evaluate.hpp"
 
 #include "temp_byte_dumper.hpp"
@@ -55,14 +56,14 @@ int main(int argc, char** argv) {
 
 	auto root = builders.front().block;
 	doir::verify::structure(doir::diagnostics(), mod, root);
-	root = doir::canonicalize::sort(mod, root);
 	using namespace std::placeholders;
 	auto canonicalize_schedule = ecrs::system::sequential(
+		doir::canonicalize::system::sort(root),
 		doir::system::sorted(std::bind(doir::canonicalize::process_early_include, _1, _2, std::ref(parser), std::ref(builders)), false, true),
 		doir::system::sorted(doir::canonicalize::materialize_function_types_and_parameters, false, true)
 	);
 	canonicalize_schedule(mod);
-	root = doir::canonicalize::new_root;
+	// root = doir::canonicalize::new_root;
 	// doir::print(std::cout, mod, doir::canonicalize::new_root, true, true);
 	if(doir::diagnostics().count() > 0) {
 		doir::diagnostics().print_all();
@@ -108,7 +109,11 @@ int main(int argc, char** argv) {
 	);
 	auto opt_schedule = ecrs::system::sequential(
 		// doir::system::print(std::cout),
-		doir::system::depth_first(std::bind(doir::opt::mizu::comptime_evaluate, _1, _2, std::ref(mizu_schedule))),
+		doir::system::fixed_point(
+			doir::system::depth_first(std::bind(doir::opt::mizu::comptime_evaluate, _1, _2, std::ref(mizu_schedule)))
+		),
+		// doir::system::print(std::cout),
+		doir::system::breadth_first(doir::opt::strip_freestanding_blocks),
 		mizu_schedule
 	);
 	;

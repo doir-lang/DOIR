@@ -107,10 +107,11 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, bo
 	// assert(ok);
 
 	auto& mod = *blocks.back().mod;
-	auto compiler_interned = mod.interner->intern("compiler");
-	auto type_interned = mod.interner->intern("type");
-	auto namespace_interned = mod.interner->intern("namespace");
-	auto alias_interned = mod.interner->intern("alias");
+	const auto compiler_interned = mod.interner->intern("compiler");
+	const auto type_interned = mod.interner->intern("type");
+	const auto block_interned = mod.interner->intern("block");
+	const auto namespace_interned = mod.interner->intern("namespace");
+	const auto alias_interned = mod.interner->intern("alias");
 
 	parser["assignment"] = [&, guarantee_source_location, compiler_interned, type_interned, namespace_interned, alias_interned]
 		(const peg::SemanticValues &vs)
@@ -211,8 +212,11 @@ peg::parser doir::initialize_parser(std::vector<doir::block_builder>& blocks, bo
 				} else if(type_name == alias_interned) {
 					auto& diag = push_diagnostic(diagnostic_type::AliasNotAllowed, get_location(mod, vs), mod.source, *mod.working_file);
 					diag.additional_note = "Aliases aren't allowed to reference blocks";
-				} else
+				} else {
 					builder = blocks.back().push_subblock(ident, interned_string(type_name));
+					if(std::string_view(type_name) == /*block_interned*/"block") // TODO: Why does block interned keep becoming a path?
+						mod.get_or_add_component<doir::flags>(builder.block).as_underlying() |= doir::flags::Comptime;
+				}
 
 			} else {
 				auto ft = std::any_cast<function_type_t>(type);

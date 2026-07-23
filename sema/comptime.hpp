@@ -53,7 +53,7 @@ namespace doir::sema {
 			if(mod.has_component<doir::call>(type) && mod.get_component<doir::call>(type).related[0] == comptime_base_type)
 				always_comptime = true;
 			else if(!mod.has_component<doir::type_definition>(type)) return true;
-			else always_comptime = mod.get_component<doir::type_definition>(type).always_comptime;
+			else always_comptime = mod.flags_set(type, doir::flags::AlwaysComptime);
 
 			bool is_comptime = mod.flags_set(subtree, doir::flags::Comptime);
 			if(!is_comptime && always_comptime) {

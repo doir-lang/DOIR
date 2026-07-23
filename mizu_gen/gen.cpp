@@ -62,7 +62,9 @@ const static mizu::opcode program[] = {
 	mizu::opcode{mizu::bitwise_or},
 
 	mizu::opcode{mizu::doir_set_module},
-	mizu::opcode{mizu::doir_attach_comptime_number_i64}
+	mizu::opcode{mizu::doir_attach_comptime_number_i64},
+	mizu::opcode{mizu::doir_execute},
+	mizu::opcode{mizu::doir_execute_if},
 };
 
 std::unordered_set<mizu::instruction_t> single_operand_ops = {mizu::debug_print, mizu::debug_print_binary, mizu::convert_to_u64, mizu::convert_to_u32, mizu::convert_to_u16, mizu::convert_to_u8, mizu::stack_load_u64, mizu::stack_load_u32, mizu::stack_load_u16, mizu::stack_load_u8, mizu::stack_push, mizu::stack_pop, mizu::offset_of_stack_bottom, mizu::jump_relative, mizu::jump_to, mizu::doir_set_module};
@@ -100,25 +102,30 @@ int main() {
 
 	std::cout << "mizu : namespace = {\n"
 		<< "\n"
-		<< "_64 : compiler.pointer_sized = 64\n"
-		<< "u64 : type = compiler.base_type(_64, _64)\n"
+		<< "%64 : compiler.pointer_sized = 64\n"
+		<< "u64 : type = compiler.base_type(%64, %64)\n"
 		<< "comptime : namespace = {\n"
-		<< "\tu64 : type = compiler.comptime_base_type(_64, _64)\n"
+		<< "\tu64 : type = compiler.comptime_base_type(%64, %64)\n"
 		<< "}\n"
 		<< "\n"
-		<< "zero_parameters_t_no_inline : type = () -> u64\n"
-		<< "zero_parameters_t : type = compiler.always_inline(zero_parameters_t_no_inline)\n"
-		<< "one_parameters_t_no_inline : type = (a : u64) -> u64\n"
-		<< "one_parameters_t : type = compiler.always_inline(one_parameters_t_no_inline)\n"
-		<< "two_parameters_t_no_inline : type = (a : u64, b : u64) -> u64\n"
-		<< "two_parameters_t : type = compiler.always_inline(two_parameters_t_no_inline)\n"
-		<< "immediate_t_no_inline : type = (immediate: comptime.u64) -> u64\n"
-		<< "immediate_t : type = compiler.always_inline(immediate_t_no_inline)\n"
-		<< "branch_immediate_t_no_inline : type = (a: u64, immediate: comptime.u64) -> u64\n"
-		<< "branch_immediate_t : type = compiler.always_inline(branch_immediate_t_no_inline)\n"
+		<< "zero_parameters_t : type = () -> u64\n"
+		<< "_ : type = compiler.always_inline(zero_parameters_t)\n"
+		<< "one_parameters_t : type = (a : u64) -> u64\n"
+		<< "_ : type = compiler.always_inline(one_parameters_t)\n"
+		<< "two_parameters_t : type = (a : u64, b : u64) -> u64\n"
+		<< "_ : type = compiler.always_inline(two_parameters_t)\n"
+		<< "immediate_t : type = (immediate: comptime.u64) -> u64\n"
+		<< "_ : type = compiler.always_inline(immediate_t)\n"
+		<< "branch_immediate_t : type = (a: u64, immediate: comptime.u64) -> u64\n"
+		<< "_ : type = compiler.always_inline(branch_immediate_t)\n"
 		<< "\n"
-		<< "emit_register_t_no_inline : type = (r : compiler.assembler.register) -> compiler.assembler.register\n"
-		<< "emit_register_t : type = compiler.always_inline(emit_register_t_no_inline)\n"
+		<< "execute_t : type = (blk: block) -> u64\n"
+		<< "_ : type = compiler.always_inline(execute_t)\n"
+		<< "execute_if_t : type = (blk: block, condition: u64) -> u64\n"
+		<< "_ : type = compiler.always_inline(execute_if_t)\n"
+		<< "\n"
+		<< "emit_register_t : type = (r : compiler.assembler.register) -> compiler.assembler.register\n"
+		<< "_ : type = compiler.always_inline(emit_register_t)\n"
 		<< "emit_register : emit_register_t = {\n"
 		<< "\t%8 : compiler.pointer_sized = 8\n"
 		<< "\tmask : compiler.pointer_sized = 0xFF\n"
@@ -153,8 +160,8 @@ int main() {
 		auto name = *mizu::lookup_name(op.op);
 
 		if(program[i].op == mizu::find_label) {
-			std::cout << name.data << "_t_no_inline : type = (label: compiler.assembler.register) -> u64\n"
-				<< name.data << "_t : type = compiler.always_inline(" << name.data << "_t_no_inline)\n"
+			std::cout << name.data << "_t : type = (label: compiler.assembler.register) -> u64\n"
+				<< "_ : type = compiler.always_inline(" << name.data << "_t)\n"
 			 	<< name.data << " : " << name.data << "_t = {\n"
 				<< "\tregret : compiler.assembler.register = compiler.assembler.return_register(u64)\n";
 			emit(std::cout, op.op);
@@ -174,6 +181,30 @@ int main() {
 				<< "\tshift_24 : compiler.pointer_sized = compiler.shift_right(label, %24)\n"
 				<< "\thighest : compiler.byte = compiler.bitwise_and(shift_24, mask)\n"
 				<< "\t_ : compiler.byte = compiler.emit(highest)\n";
+			emit<uint16_t>(std::cout, 0);
+			std::cout << "\t_ : u64 = compiler.indicate_return(u64)\n"
+				<< "}\n" << std::endl;
+
+		} else if(program[i].op == mizu::doir_execute) {
+			std::cout << name.data << " : execute_t = {\n"
+				<< "\trega : compiler.assembler.register = compiler.assembler.register_for(block, blk)\n"
+				<< "\tregret : compiler.assembler.register = compiler.assembler.return_register(u64)\n";
+			emit(std::cout, op.op);
+			std::cout << "\t_ : compiler.assembler.register = inline emit_register(regret)\n"
+				<< "\t_ : compiler.assembler.register = inline emit_register(rega)\n";
+			emit<uint32_t>(std::cout, 0);
+			std::cout << "\t_ : u64 = compiler.indicate_return(u64)\n"
+				<< "}\n" << std::endl;
+
+		} else if(program[i].op == mizu::doir_execute_if) {
+			std::cout << name.data << " : execute_if_t = {\n"
+				<< "\trega : compiler.assembler.register = compiler.assembler.register_for(block, blk)\n"
+				<< "\tregb : compiler.assembler.register = compiler.assembler.register_for(u64, condition)\n"
+				<< "\tregret : compiler.assembler.register = compiler.assembler.return_register(u64)\n";
+			emit(std::cout, op.op);
+			std::cout << "\t_ : compiler.assembler.register = inline emit_register(regret)\n"
+				<< "\t_ : compiler.assembler.register = inline emit_register(rega)\n"
+				<< "\t_ : compiler.assembler.register = inline emit_register(regb)\n";
 			emit<uint16_t>(std::cout, 0);
 			std::cout << "\t_ : u64 = compiler.indicate_return(u64)\n"
 				<< "}\n" << std::endl;
@@ -252,6 +283,11 @@ int main() {
 		}
 
 	}
+
+	std::cout << "\n";
+	for(size_t i = 0; i <= 256; ++i)
+		std::cout << "\tx" << i << " : compiler.assembler.register = " << i << "\n";
+
 	std::cout << "}\n"
 		<< "\n_ : mizu.u64 = compiler.assembler.begin_register_allocation()\n" << std::endl;
 }

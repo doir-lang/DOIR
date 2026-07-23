@@ -10,6 +10,31 @@
 
 namespace doir {
 
+	void strip_value(module& mod, ecrs::entity_t root, bool strip_constants /*= true*/, bool strip_calls /*= true*/, bool strip_blocks /*= true*/) {
+		if(strip_constants && mod.has_component<doir::number>(root)) {
+			mod.remove_component<doir::number>(root);
+			mod.remove_component<doir::type_of>(root);
+		}
+		if(strip_constants && mod.has_component<doir::string>(root)) {
+			mod.remove_component<doir::string>(root);
+			mod.remove_component<doir::type_of>(root);
+		}
+		if(strip_constants && mod.flags_set(root, doir::flags::Valueless)) {
+			mod.get_component<doir::flags>(root).as_underlying() &= ~doir::flags::Valueless;
+			mod.remove_component<doir::type_of>(root);
+		}
+		if(strip_calls && mod.has_component<doir::call>(root)) {
+			mod.remove_component<doir::call>(root);
+			if(mod.has_component<doir::function_inputs>(root)) 
+				mod.remove_component<doir::function_inputs>(root);
+			mod.remove_component<doir::type_of>(root);
+		}
+		if(strip_blocks && mod.has_component<doir::block>(root)) {
+			mod.remove_component<doir::block>(root);
+			mod.remove_component<doir::type_of>(root);
+		}
+	}
+
 	size_t block::offset_of(ecrs::entity_t e){
 		for(size_t i = 0; i < related.size(); ++i)
 			if(related[i] == e) return i;
@@ -29,6 +54,27 @@ namespace doir {
 		dest.related.insert(dest.related.begin() + dest_offset, related.begin() + src_offset, related.begin() + src_offset + count);
 		for(size_t i = 0; i < count; ++i)
 			mod.get_or_add_component<doir::parent>(dest.related[dest_offset + i]).related[0] = destE;
+	}
+
+	bool block::is_freestanding(module& mod, ecrs::entity_t block) const {
+		if(!mod.has_component<doir::block>(block)) return false;
+		if(!mod.has_component<doir::type_of>(block)) return false;
+
+		static auto block_type = doir::lookup::resolve(mod, mod.interner->intern("block"), 1, true);
+		if(mod.get_component<doir::type_of>(block).related[0] != block_type) return false;
+		
+		return true;
+	}
+
+	void block::prepend_to_names(module& mod, std::string_view prefix) {
+		for(auto e: related) {
+			if(mod.has_component<doir::name>(e)) {
+				auto& name = mod.get_component<doir::name>(e);
+				name = {mod.interner->intern(std::string{prefix} + std::string{name})};
+			}
+			if(mod.has_component<doir::block>(e))
+				mod.get_component<doir::block>(e).prepend_to_names(mod, prefix);
+		}
 	}
 
 	std::vector<ecrs::entity_t> function_inputs::associated_parameters(const module& mod, const doir::block& block) {

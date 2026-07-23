@@ -34,7 +34,7 @@ namespace doir::opt {
 		auto target = inputs[1];
 		size_t r = mod.get_component<doir::number>(inputs[2]).value;
 
-		mod.get_or_add_component<doir::opt::assigned_register>(target).reg = r;
+		mod.get_or_add_component<assigned_register>(target).reg = r;
 		// std::cout << target << " -> " << r << std::endl;
 
 		return true;

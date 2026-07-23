@@ -13,7 +13,7 @@ namespace doir::opt {
 		if(!mod.has_component<doir::call>(subtree)) return true;
 
 		auto call = mod.get_component<doir::call>(subtree);
-		auto function_def = call.related[0]; // TODO: Resolve aliases
+		auto function_def = doir::alias::resolve(mod, call.related[0]); // TODO: Resolve aliases
 		auto ft = mod.get_component<doir::type_of>(function_def).related[0];
 		if( !(mod.flags_set(ft, doir::flags::Inline) || mod.flags_set(subtree, doir::flags::Inline)) )
 			return true;

@@ -168,16 +168,16 @@ namespace doir {
 			if(!inputs[0].resolved()) return type;
 			type = inputs[0].entity();
 		}
-		return type;
+		return doir::alias::resolve(mod, type);
 	}
 
 	ecrs::entity_t type_definition::base_type(const module& mod, ecrs::entity_t e) {
-		e = alias::resolve(mod, e);
+		e = doir::alias::resolve(mod, e);
 
 		if(mod.has_component<doir::pointer>(e)) 
 			return base_type(mod, mod.get_component<doir::pointer>(e).related[0]);
 
-		return e;
+		return doir::alias::resolve(mod, e);
 	}
 
 	ecrs::entity_t alias::resolve(const module& mod, ecrs::entity_t alias) {

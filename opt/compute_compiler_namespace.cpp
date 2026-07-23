@@ -58,7 +58,8 @@ namespace doir::opt {
 		type.size = size_bits;
 		type.align = align_bits;
 		type.unique = unique;
-		type.always_comptime = function == comptime_base_type;
+		if(function == comptime_base_type)
+			mod.get_or_add_component<doir::flags>(subtree).as_underlying() |= doir::flags::AlwaysComptime;
 
 		return true;
 	}
@@ -105,15 +106,14 @@ namespace doir::opt {
 		}
 
 		auto type = inputs[0];
+		mod.get_or_add_component<doir::flags>(type).as_underlying() |= doir::flags::Inline;
 
 		mod.remove_component<doir::type_of>(subtree);
 		mod.add_component<doir::print_as_call>(subtree).related[0] = function;
 		mod.remove_component<doir::call>(subtree);
 		mod.remove_component<doir::function_inputs>(subtree);
 
-		copy_components(mod, subtree, type);
-		mod.get_or_add_component<doir::flags>(subtree).as_underlying() |= doir::flags::Inline;
-
+		doir::block_builder::attach_alias(mod, subtree, type);
 		return true;
 	}
 
@@ -134,15 +134,14 @@ namespace doir::opt {
 		}
 
 		auto type = inputs[0];
+		mod.get_or_add_component<doir::flags>(type).as_underlying() |= doir::flags::AlwaysComptime;
 
 		mod.remove_component<doir::type_of>(subtree);
 		mod.add_component<doir::print_as_call>(subtree).related[0] = function;
 		mod.remove_component<doir::call>(subtree);
 		mod.remove_component<doir::function_inputs>(subtree);
 
-		copy_components(mod, subtree, type);
-		mod.get_component<type_definition>(subtree).always_comptime = true;
-
+		doir::block_builder::attach_alias(mod, subtree, type);
 		return true;
 	}
 
