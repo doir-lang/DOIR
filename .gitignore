@@ -1,0 +1,14 @@
+.vs*
+.cache
+.zed
+build*
+out
+gen
+res.bin
+
+# D / dub
+/bin/
+/.dub/
+/doir
+/*.a
+/dub.selections.json
