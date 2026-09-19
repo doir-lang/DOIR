@@ -20,6 +20,7 @@ import doir.string_helpers : InternedString;
 @nogc nothrow:
 
 
+
 // ---------------------------------------------------------------------------
 // Components
 // ---------------------------------------------------------------------------
@@ -120,21 +121,28 @@ struct FunctionInputs {
 struct FunctionParameterNames {
 	InternedString* names = null;
 
-	@nogc nothrow:
-
-	static void finalize(ref FunctionParameterNames self) {
+	/// The `ecrs.storage` teardown hook, which has to be a static member for
+	/// the library to find it by name.
+	static void finalize(ref FunctionParameterNames self) @nogc nothrow {
 		if (self.names !is null) daFree(self.names);
 	}
+}
 
-	size_t length() const @trusted { return daLength(cast(InternedString*) names); }
-	inout(InternedString)[] slice() inout @trusted {
-		return names is null ? null : (cast(inout(InternedString)*) names)[0 .. length()];
-	}
-	void push(InternedString v) @trusted { fp.dynarray.pushBack(names, v); }
-	void assign(const(InternedString)[] src) @trusted {
-		if (names !is null) { daFree(names); names = null; }
-		foreach (v; src) fp.dynarray.pushBack(names, cast(InternedString) v);
-	}
+size_t length(ref const FunctionParameterNames p) @trusted {
+	return daLength(cast(InternedString*) p.names);
+}
+
+inout(InternedString)[] slice(ref inout FunctionParameterNames p) @trusted {
+	return p.names is null ? null : (cast(inout(InternedString)*) p.names)[0 .. length(p)];
+}
+
+void push(ref FunctionParameterNames p, InternedString v) @trusted {
+	fp.dynarray.pushBack(p.names, v);
+}
+
+void assign(ref FunctionParameterNames p, const(InternedString)[] src) @trusted {
+	if (p.names !is null) { daFree(p.names); p.names = null; }
+	foreach (v; src) fp.dynarray.pushBack(p.names, cast(InternedString) v);
 }
 
 /// Marks an entity as parameter number `index` of the function it lives in.
@@ -206,28 +214,32 @@ struct PrintAsCall {
 /// The C++ version was a `std::variant<entity_t, interned_string>`; without
 /// exceptions a plain tagged struct is both simpler and cheaper.
 struct Lookup {
-	private bool resolvedFlag = false;
-	private EntityId entityValue = invalidEntity;
-	private InternedString nameValue;
+	bool resolvedFlag = false;
+	EntityId entityValue = invalidEntity;
+	InternedString nameValue;
 
 	@nogc nothrow:
 
 	this(EntityId e) { resolvedFlag = true; entityValue = e; }
 	this(InternedString n) { resolvedFlag = false; nameValue = n; }
 
-	bool resolved() const { return resolvedFlag; }
-	EntityId entity() const in(resolvedFlag) { return entityValue; }
-	InternedString name() const in(!resolvedFlag) { return nameValue; }
-
 	void opAssign(EntityId e) { resolvedFlag = true; entityValue = e; }
 	void opAssign(InternedString n) { resolvedFlag = false; nameValue = n; }
 
-	static void swapEntities(ref Lookup self, EntityId a, EntityId b) {
+	/// The entity-swap hook the `LookupBody` components forward to. Static so
+	/// it reads the same way as the `ecrs.storage` hooks it is called from.
+	static void swapEntities(ref Lookup self, EntityId a, EntityId b) @nogc nothrow {
 		if (!self.resolvedFlag) return;
 		if (self.entityValue == a) self.entityValue = b;
 		else if (self.entityValue == b) self.entityValue = a;
 	}
 }
+
+/// Taken by value: a `Lookup` is three words, and by-value lets the
+/// `alias lookup this` components below reach these through UFCS too.
+bool resolved(Lookup l) { return l.resolvedFlag; }
+EntityId entity(Lookup l) in(l.resolvedFlag) { return l.entityValue; }
+InternedString name(Lookup l) in(!l.resolvedFlag) { return l.nameValue; }
 
 /// Boilerplate shared by every single-`Lookup` component.
 mixin template LookupBody() {
@@ -272,8 +284,10 @@ struct LookupFunctionInputs {
 
 	@nogc nothrow:
 
+	/// The two `ecrs.storage` hooks, which have to be static members for the
+	/// library to find them by name.
 	static void swapEntities(ref LookupFunctionInputs self, ref EntityComponentIndices indices, EntityId a, EntityId b) @trusted {
-		foreach (i; 0 .. self.length)
+		foreach (i; 0 .. length(self))
 			Lookup.swapEntities(self.lookups[i], a, b);
 	}
 
@@ -281,13 +295,23 @@ struct LookupFunctionInputs {
 		if (self.lookups !is null) daFree(self.lookups);
 	}
 
-	size_t length() const @trusted { return daLength(cast(Lookup*) lookups); }
-	inout(Lookup)[] slice() inout @trusted {
-		return lookups is null ? null : (cast(inout(Lookup)*) lookups)[0 .. length()];
-	}
 	ref inout(Lookup) opIndex(size_t i) inout @trusted { return (cast(inout(Lookup)*) lookups)[i]; }
-	void push(Lookup l) @trusted { fp.dynarray.pushBack(lookups, l); }
-	void clear() @trusted { if (lookups !is null) { daFree(lookups); lookups = null; } }
+}
+
+size_t length(ref const LookupFunctionInputs l) @trusted {
+	return daLength(cast(Lookup*) l.lookups);
+}
+
+inout(Lookup)[] slice(ref inout LookupFunctionInputs l) @trusted {
+	return l.lookups is null ? null : (cast(inout(Lookup)*) l.lookups)[0 .. length(l)];
+}
+
+void push(ref LookupFunctionInputs l, Lookup v) @trusted {
+	fp.dynarray.pushBack(l.lookups, v);
+}
+
+void clear(ref LookupFunctionInputs l) @trusted {
+	if (l.lookups !is null) { daFree(l.lookups); l.lookups = null; }
 }
 
 
@@ -307,20 +331,30 @@ struct AssignedRegister {
 // ---------------------------------------------------------------------------
 
 /// An owning list of `Lookup`s, standing in for the C++
-/// `doir::lookup::function_inputs` values passed around by value. Free it
-/// with `.free()` when done.
+/// `doir::lookup::function_inputs` values passed around by value. Plain data:
+/// `length`, `push`, `slice` and `free` below are free functions over it, so
+/// `push(list, l)` and `list.push(l)` are the same call. Free it when done.
 struct LookupList {
 	Lookup* data = null;
 
 	@nogc nothrow:
-
-	void free() @trusted { if (data !is null) { fp.dynarray.free(data); data = null; } }
-	size_t length() const @trusted { return daLength(cast(Lookup*) data); }
 	ref inout(Lookup) opIndex(size_t i) inout @trusted { return (cast(inout(Lookup)*) data)[i]; }
-	void push(Lookup l) @trusted { fp.dynarray.pushBack(data, l); }
-	inout(Lookup)[] slice() inout @trusted {
-		return data is null ? null : (cast(inout(Lookup)*) data)[0 .. length()];
-	}
+}
+
+void free(ref LookupList l) @trusted {
+	if (l.data !is null) { fp.dynarray.free(l.data); l.data = null; }
+}
+
+size_t length(ref const LookupList l) @trusted {
+	return daLength(cast(Lookup*) l.data);
+}
+
+void push(ref LookupList l, Lookup v) @trusted {
+	fp.dynarray.pushBack(l.data, v);
+}
+
+inout(Lookup)[] slice(ref inout LookupList l) @trusted {
+	return l.data is null ? null : (cast(inout(Lookup)*) l.data)[0 .. length(l)];
 }
 
 /// An owning list of entities.
@@ -328,14 +362,23 @@ struct EntityList {
 	EntityId* data = null;
 
 	@nogc nothrow:
-
-	void free() @trusted { if (data !is null) { fp.dynarray.free(data); data = null; } }
-	size_t length() const @trusted { return daLength(cast(EntityId*) data); }
 	ref inout(EntityId) opIndex(size_t i) inout @trusted { return (cast(inout(EntityId)*) data)[i]; }
-	void push(EntityId e) @trusted { fp.dynarray.pushBack(data, e); }
-	inout(EntityId)[] slice() inout @trusted {
-		return data is null ? null : (cast(inout(EntityId)*) data)[0 .. length()];
-	}
+}
+
+void free(ref EntityList l) @trusted {
+	if (l.data !is null) { fp.dynarray.free(l.data); l.data = null; }
+}
+
+size_t length(ref const EntityList l) @trusted {
+	return daLength(cast(EntityId*) l.data);
+}
+
+void push(ref EntityList l, EntityId e) @trusted {
+	fp.dynarray.pushBack(l.data, e);
+}
+
+inout(EntityId)[] slice(ref inout EntityList l) @trusted {
+	return l.data is null ? null : (cast(inout(EntityId)*) l.data)[0 .. length(l)];
 }
 
 /// Widens a resolved `FunctionInputs` into a list of `Lookup`s
@@ -357,8 +400,8 @@ LookupList inputsOf(ref Module mod, EntityId e) @trusted {
 
 	LookupList out_;
 	auto lookups = &getComponent!LookupFunctionInputs(mod, e);
-	foreach (i; 0 .. lookups.length)
-		out_.push((*lookups)[i]);
+	foreach (i; 0 .. length(*lookups))
+		push(out_, (*lookups)[i]);
 	return out_;
 }
 
@@ -531,22 +574,18 @@ EntityId pushCommon(ref Module mod, EntityId blockEntity, InternedString name, b
 struct BlockBuilder {
 	EntityId block = 0;
 	Module* mod = null;
+}
 
-	@nogc nothrow:
+/// Hands back the block the builder was building. Takes the builder by
+/// value: it is a plain cursor, and every call site is finished with it.
+EntityId end(BlockBuilder b) {
+	return b.block;
+}
 
-	/// Detaches the builder and hands back the block it was building.
-	EntityId end() {
-		mod = null;
-		immutable out_ = block;
-		block = invalidEntity;
-		return out_;
-	}
-
-	ref BlockBuilder clear() @trusted {
-		auto related = &getComponent!Block(*mod, block).related;
-		fp.dynarray.clear(*related);
-		return this;
-	}
+/// Drops everything pushed into the block so far.
+void clear(ref BlockBuilder b) @trusted {
+	auto related = &getComponent!Block(*b.mod, b.block).related;
+	fp.dynarray.clear(*related);
 }
 
 /// A `BlockBuilder` that also knows how to declare parameters.
@@ -641,7 +680,7 @@ private void attachInputs(ref Module mod, EntityId to, const(EntityId)[] argumen
 }
 private void attachInputs(ref Module mod, EntityId to, const(Lookup)[] arguments) @trusted {
 	auto inputs = &addComponent!LookupFunctionInputs(mod, to);
-	foreach (a; arguments) inputs.push(cast(Lookup) a);
+	foreach (a; arguments) push(*inputs, cast(Lookup) a);
 }
 
 private void attachCallee(ref Module mod, EntityId to, EntityId function_) {
@@ -926,7 +965,7 @@ SourceLocation findSourceLocation(ref Module mod, EntityId subtree) @trusted {
 		immutable start = findSlices(mod.source, name.view, 0);
 		if (start == size_t.max)
 			panic("Failed to generate source location for entity");
-		return SourceLocation(workingFileOr(mod, invalidFileName), start, start + name.length);
+		return SourceLocation(workingFileOr(mod, invalidFileName), start, start + name.view.length);
 	}
 
 	panic("Failed to generate source location for entity");
@@ -1133,7 +1172,7 @@ EntityId resolveTypeModifications(ref Module mod, EntityId type) @trusted {
 			type = inputs.related[0];
 		} else {
 			auto inputs = &getComponent!LookupFunctionInputs(mod, type);
-			if (inputs.length == 0 || !(*inputs)[0].resolved()) return type;
+			if (length(*inputs) == 0 || !(*inputs)[0].resolved()) return type;
 			type = (*inputs)[0].entity();
 		}
 	}
@@ -1189,7 +1228,7 @@ void resolveAliases(ref Module mod, EntityId[] aliases, size_t maxDepth = 128) {
 // ===========================================================================
 
 private EntityId applySub(EntityMap* subs, EntityId e) {
-	return subs is null ? e : subs.get(e);
+	return subs is null ? e : get(*subs, e);
 }
 
 /// Copies a fixed-arity relation, substituting each slot.
@@ -1204,7 +1243,7 @@ private void copyFixedRelation(T)(ref Module mod, EntityId to, EntityId from, En
 	}
 	if (subs !is null)
 		foreach (ref e; destination.related)
-			e = subs.get(e);
+			e = get(*subs, e);
 }
 
 /// Copies a dynamic relation, cloning its storage and substituting each slot.
@@ -1218,7 +1257,7 @@ private void copyDynamicRelation(T)(ref Module mod, EntityId to, EntityId from, 
 	if (subs !is null) {
 		auto dest = &getComponent!T(mod, to);
 		foreach (i; 0 .. daLength(dest.related))
-			dest.related[i] = subs.get(dest.related[i]);
+			dest.related[i] = get(*subs, dest.related[i]);
 	}
 }
 
@@ -1230,8 +1269,8 @@ private void copyLookup(T)(ref Module mod, EntityId to, EntityId from, EntityMap
 	auto lookup = getComponent!T(mod, from);
 	auto destination = &addComponent!T(mod, to);
 	if (subs !is null) {
-		if (lookup.lookup.resolved() && subs.contains(lookup.lookup.entity()))
-			destination.lookup = subs.get(lookup.lookup.entity());
+		if (lookup.lookup.resolved() && contains(*subs, lookup.lookup.entity()))
+			destination.lookup = get(*subs, lookup.lookup.entity());
 		else
 			destination.lookup = lookup.lookup;
 		static if (__traits(hasMember, T, "file")) {
@@ -1249,10 +1288,10 @@ private void copyLookupInputs(ref Module mod, EntityId to, EntityId from, Entity
 	if (subs is null) return; // see copyLookup's note
 	foreach (i; 0 .. source.length) {
 		auto l = source[i];
-		if (l.resolved() && subs.contains(l.entity()))
-			destination.push(Lookup(subs.get(l.entity())));
+		if (l.resolved() && contains(*subs, l.entity()))
+			push(*destination, Lookup(get(*subs, l.entity())));
 		else
-			destination.push(l);
+			push(*destination, l);
 	}
 }
 
@@ -1415,7 +1454,7 @@ private EntityId deepCopyBuildStructure(ref Module mod, EntityId subtree,
 /// parented to `subtree`'s own parent block.
 EntityId deepCopy(ref Module mod, EntityId subtree, ExtraCopyInstructions extra = null) {
 	EntityMap substitutions, reverseSubstitutions;
-	scope(exit) { substitutions.free(); reverseSubstitutions.free(); }
+	scope(exit) { doir.module_.free(substitutions); doir.module_.free(reverseSubstitutions); }
 
 	immutable blockEntity = getComponent!Parent(mod, subtree).related[0];
 	immutable out_ = deepCopyBuildStructure(mod, subtree, substitutions, reverseSubstitutions);
@@ -1457,7 +1496,7 @@ ref BlockBuilder copyExisting(return ref BlockBuilder self, ref const BlockBuild
 	assert(hasComponent!Block(*mod, source.block));
 
 	EntityMap substitutions, reverseSubstitutions;
-	scope(exit) { substitutions.free(); reverseSubstitutions.free(); }
+	scope(exit) { doir.module_.free(substitutions); doir.module_.free(reverseSubstitutions); }
 
 	immutable start = daLength(getComponent!Block(*mod, self.block).related);
 	immutable sourceCount = daLength(getComponent!Block(*mod, source.block).related);
@@ -1632,7 +1671,7 @@ version (unittest) {
 
 unittest { // pushNumber attaches TypeOf, Number and marks the entity comptime
 	auto f = makeModuleWithBuiltins();
-	scope(exit) free(f.mod);
+	scope(exit) freeModule(f.mod);
 	immutable type = resolveName(f, "compiler.byte");
 	assert(type != invalidEntity);
 
@@ -1648,7 +1687,7 @@ unittest { // pushNumber attaches TypeOf, Number and marks the entity comptime
 
 unittest { // pushString attaches TypeOf, DString and marks the entity comptime
 	auto f = makeModuleWithBuiltins();
-	scope(exit) free(f.mod);
+	scope(exit) freeModule(f.mod);
 	immutable type = resolveName(f, "compiler.byte_pointer");
 	assert(type != invalidEntity);
 
@@ -1663,7 +1702,7 @@ unittest { // pushString attaches TypeOf, DString and marks the entity comptime
 
 unittest { // pushValueless attaches TypeOf and the Valueless flag, no number/string
 	auto f = makeModuleWithBuiltins();
-	scope(exit) free(f.mod);
+	scope(exit) freeModule(f.mod);
 	immutable type = resolveName(f, "compiler.byte");
 
 	auto builder = createBlockBuilder(f.mod);
@@ -1676,7 +1715,7 @@ unittest { // pushValueless attaches TypeOf and the Valueless flag, no number/st
 
 unittest { // pushCommon skips the name component for the discard identifier "_"
 	auto f = makeModuleWithBuiltins();
-	scope(exit) free(f.mod);
+	scope(exit) freeModule(f.mod);
 	immutable type = resolveName(f, "compiler.byte");
 
 	auto builder = createBlockBuilder(f.mod);
@@ -1687,7 +1726,7 @@ unittest { // pushCommon skips the name component for the discard identifier "_"
 
 unittest { // pushNumber attaches a parent pointing back at the containing block
 	auto f = makeModuleWithBuiltins();
-	scope(exit) free(f.mod);
+	scope(exit) freeModule(f.mod);
 	immutable type = resolveName(f, "compiler.byte");
 
 	auto builder = createBlockBuilder(f.mod);
@@ -1701,7 +1740,7 @@ unittest { // pushNumber attaches a parent pointing back at the containing block
 
 unittest { // pushSubblock creates a nested block whose entities are only visible inside it
 	auto f = makeModuleWithBuiltins();
-	scope(exit) free(f.mod);
+	scope(exit) freeModule(f.mod);
 	immutable type = resolveName(f, "compiler.byte");
 
 	auto builder = createBlockBuilder(f.mod);
@@ -1716,7 +1755,7 @@ unittest { // pushSubblock creates a nested block whose entities are only visibl
 
 unittest { // pushAlias attaches a resolved alias relation
 	auto f = makeModuleWithBuiltins();
-	scope(exit) free(f.mod);
+	scope(exit) freeModule(f.mod);
 	immutable type = resolveName(f, "compiler.byte");
 
 	auto builder = createBlockBuilder(f.mod);
@@ -1729,7 +1768,7 @@ unittest { // pushAlias attaches a resolved alias relation
 
 unittest { // pushNamespace marks the entity as a Namespace with an (initially empty) block
 	auto f = makeModuleWithBuiltins();
-	scope(exit) free(f.mod);
+	scope(exit) freeModule(f.mod);
 	auto builder = createBlockBuilder(f.mod);
 	auto ns = pushNamespace(builder, internIn(f.mod, "ns"));
 	immutable nsEntity = ns.end();
@@ -1741,7 +1780,7 @@ unittest { // pushNamespace marks the entity as a Namespace with an (initially e
 
 unittest { // pushPointer preserves the requested bounds size
 	auto f = makeModuleWithBuiltins();
-	scope(exit) free(f.mod);
+	scope(exit) freeModule(f.mod);
 	immutable byteType = resolveName(f, "compiler.byte");
 	assert(byteType != invalidEntity);
 
@@ -1755,7 +1794,7 @@ unittest { // pushPointer preserves the requested bounds size
 
 unittest { // pushPointer still defaults to an unbounded (size 0) pointer
 	auto f = makeModuleWithBuiltins();
-	scope(exit) free(f.mod);
+	scope(exit) freeModule(f.mod);
 	immutable byteType = resolveName(f, "compiler.byte");
 
 	auto builder = createBlockBuilder(f.mod);
@@ -1766,32 +1805,32 @@ unittest { // pushPointer still defaults to an unbounded (size 0) pointer
 
 unittest { // resolves a dotted path into the compiler namespace
 	auto f = makeModuleWithBuiltins();
-	scope(exit) free(f.mod);
+	scope(exit) freeModule(f.mod);
 	assert(resolveLookupName(f.mod, internIn(f.mod, "compiler.debug_print"), f.root) != invalidEntity);
 }
 
 unittest { // resolves nested namespaces (compiler.assembler.*)
 	auto f = makeModuleWithBuiltins();
-	scope(exit) free(f.mod);
+	scope(exit) freeModule(f.mod);
 	assert(resolveLookupName(f.mod, internIn(f.mod, "compiler.assembler.pin_register"), f.root) != invalidEntity);
 }
 
 unittest { // resolving an unknown name returns invalidEntity rather than failing
 	auto f = makeModuleWithBuiltins();
-	scope(exit) free(f.mod);
+	scope(exit) freeModule(f.mod);
 	assert(resolveLookupName(f.mod, internIn(f.mod, "this.does.not.exist"), f.root) == invalidEntity);
 }
 
 unittest { // resolving a Lookup leaves already-resolved entries untouched
 	auto f = makeModuleWithBuiltins();
-	scope(exit) free(f.mod);
+	scope(exit) freeModule(f.mod);
 	auto alreadyResolved = Lookup(EntityId(123));
 	assert(resolveLookup(f.mod, alreadyResolved, f.root) == 123);
 }
 
 unittest { // `type` is resolvable and is flagged AlwaysComptime
 	auto f = makeModuleWithBuiltins();
-	scope(exit) free(f.mod);
+	scope(exit) freeModule(f.mod);
 	immutable type = resolveLookupName(f.mod, internIn(f.mod, "type"), f.root);
 	assert(type != invalidEntity);
 	assert(flagsSet(f.mod, type, Flags.AlwaysComptime));
@@ -1803,7 +1842,7 @@ unittest {
 	// without resolving through an alias first - so `ns2 : alias = ns` could not
 	// be used as a namespace segment in `ns2.val` at all.
 	auto f = makeModuleWithBuiltins();
-	scope(exit) free(f.mod);
+	scope(exit) freeModule(f.mod);
 	auto builder = createBlockBuilder(f.mod);
 
 	auto ns = pushNamespace(builder, internIn(f.mod, "ns"));
@@ -1816,7 +1855,7 @@ unittest {
 
 unittest { // typeModifiers contains pointer, always_inline and always_comptime
 	auto f = makeModuleWithBuiltins();
-	scope(exit) free(f.mod);
+	scope(exit) freeModule(f.mod);
 	auto modifiers = typeModifiers(f.mod, f.root);
 
 	immutable pointer = resolveLookupName(f.mod, internIn(f.mod, "compiler.pointer"), f.root);
@@ -1842,7 +1881,7 @@ unittest { // typeModifiers contains pointer, always_inline and always_comptime
 
 unittest { // an alias can be the type of a constant assignment
 	auto r = compile("t : alias = compiler.byte\n%1 : t = 0x41\n%2 : t = compiler.emit(%1)\n");
-	scope(exit) free(r.mod);
+	scope(exit) freeModule(r.mod);
 	assert(r.ok);
 	static immutable ubyte[1] expected = [0x41];
 	assert(emits(r, expected[]));
@@ -1850,7 +1889,7 @@ unittest { // an alias can be the type of a constant assignment
 
 unittest { // an alias can be the type of an undefined assignment
 	auto r = compile("t : alias = compiler.byte\nx : t\n");
-	scope(exit) free(r.mod);
+	scope(exit) freeModule(r.mod);
 	assert(r.ok);
 
 	immutable x = find(r.mod, r.root, "x");
@@ -1862,7 +1901,7 @@ unittest { // a multi-hop alias chain resolves fully
 	auto r = compile(
 		"a : alias = compiler.byte\nb : alias = a\nc : alias = b\n"
 		~ "%1 : c = 0x42\n%2 : c = compiler.emit(%1)\n");
-	scope(exit) free(r.mod);
+	scope(exit) freeModule(r.mod);
 	assert(r.ok);
 	static immutable ubyte[1] expected = [0x42];
 	assert(emits(r, expected[]));
@@ -1881,7 +1920,7 @@ unittest {
 		"math : namespace = {\n\tval : compiler.byte = 0x43\n}\n"
 		~ "m : alias = math\n"
 		~ "%1 : compiler.byte = compiler.emit(m.val)\n");
-	scope(exit) free(r.mod);
+	scope(exit) freeModule(r.mod);
 	assert(r.ok);
 	static immutable ubyte[1] expected = [0x43];
 	assert(emits(r, expected[]));
@@ -1889,7 +1928,7 @@ unittest {
 
 unittest { // copies name, flags, type_of and number onto the destination entity
 	auto f = makeModuleWithBuiltins();
-	scope(exit) free(f.mod);
+	scope(exit) freeModule(f.mod);
 	immutable byteType = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.root);
 
 	auto builder = createBlockBuilder(f.mod);
@@ -1908,7 +1947,7 @@ unittest { // copies name, flags, type_of and number onto the destination entity
 
 unittest { // remaps relation targets through the substitutions map when provided
 	auto f = makeModuleWithBuiltins();
-	scope(exit) free(f.mod);
+	scope(exit) freeModule(f.mod);
 	immutable byteType = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.root);
 
 	auto builder = createBlockBuilder(f.mod);
@@ -1918,7 +1957,7 @@ unittest { // remaps relation targets through the substitutions map when provide
 	immutable dest = addEntity(f.mod);
 
 	EntityMap substitutions;
-	scope(exit) substitutions.free();
+	scope(exit) doir.module_.free(substitutions);
 	substitutions.set(otherType, remappedType);
 	copyComponents(f.mod, dest, src, true, &substitutions);
 
@@ -1933,7 +1972,7 @@ unittest {
 	// null-check every other branch uses - a guaranteed null dereference for the
 	// default argument.)
 	auto f = makeModuleWithBuiltins();
-	scope(exit) free(f.mod);
+	scope(exit) freeModule(f.mod);
 
 	immutable src = addEntity(f.mod);
 	addComponent!LookupAlias(f.mod, src).lookup = internIn(f.mod, "some.unresolved.name");

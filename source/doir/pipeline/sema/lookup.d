@@ -45,7 +45,7 @@ bool resolveLookups(ref Module mod, EntityId e, bool typesOnly) @trusted {
 
 		if (shouldResolve) {
 			auto lookups = &getComponent!LookupFunctionInputs(mod, e);
-			foreach (i; 0 .. lookups.length)
+			foreach (i; 0 .. length(*lookups))
 				resolveLookup(mod, (*lookups)[i], e); // Not strict so that parameters can find their neighbors
 		}
 	}
@@ -96,7 +96,7 @@ bool lookupsResolved(ref Module mod, EntityId e) @trusted {
 	if (hasComponent!LookupFunctionInputs(mod, e)) {
 		{
 			auto lookups = &getComponent!LookupFunctionInputs(mod, e);
-			foreach (i; 0 .. lookups.length)
+			foreach (i; 0 .. length(*lookups))
 				if (!(*lookups)[i].resolved()) {
 					unresolvedDiagnostic(mod, e, "Function argument ", (*lookups)[i].name().view);
 					valid = false;
@@ -105,7 +105,7 @@ bool lookupsResolved(ref Module mod, EntityId e) @trusted {
 
 		if (valid) {
 			auto old = &getComponent!LookupFunctionInputs(mod, e);
-			immutable count = old.length;
+			immutable count = length(*old);
 			EntityId* resolved = null;
 			scope(exit) if (resolved !is null) fp.dynarray.free(resolved);
 			foreach (i; 0 .. count)

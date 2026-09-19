@@ -36,6 +36,7 @@ import doir.verify : identifierStructure;
 @nogc nothrow:
 
 
+
 // ---------------------------------------------------------------------------
 // Parsed value shapes (the C++ `assignment_value_t` variant and friends)
 // ---------------------------------------------------------------------------
@@ -54,10 +55,9 @@ struct CallInfo {
 	bool flatten, inline_, tail;
 	InternedString function_;
 	LookupList inputs;
-
-	@nogc nothrow:
-	void free() { inputs.free(); }
 }
+
+void free(ref CallInfo c) { doir.interface_.free(c.inputs); }
 
 /// One declared parameter of a function type.
 struct FunctionTypeParam {
@@ -73,10 +73,14 @@ struct FunctionTypeT {
 	FunctionTypeParam* params = null; // fp dynarray
 	bool hasReturnType = false;
 	Lookup returnType;
+}
 
-	@nogc nothrow:
-	void free() @trusted { if (params !is null) { fp.dynarray.free(params); params = null; } }
-	size_t length() const @trusted { return daLength(cast(FunctionTypeParam*) params); }
+void free(ref FunctionTypeT t) @trusted {
+	if (t.params !is null) { fp.dynarray.free(t.params); t.params = null; }
+}
+
+size_t length(ref const FunctionTypeT t) @trusted {
+	return daLength(cast(FunctionTypeParam*) t.params);
 }
 
 /// Either a resolved-by-name type (`lookup::type_of`) or a function type.
@@ -84,10 +88,9 @@ struct ParsedType {
 	bool isFunctionType = false;
 	InternedString name;     // when !isFunctionType
 	FunctionTypeT functionType;
-
-	@nogc nothrow:
-	void free() { functionType.free(); }
 }
+
+void free(ref ParsedType t) { free(t.functionType); }
 
 /// The right-hand side of an assignment.
 struct ParsedValue {
@@ -97,10 +100,9 @@ struct ParsedValue {
 	CallInfo call;
 	EntityId block;
 	FunctionTypeT functionType;
-
-	@nogc nothrow:
-	void free() { call.free(); functionType.free(); }
 }
+
+void free(ref ParsedValue v) { free(v.call); free(v.functionType); }
 
 
 // ---------------------------------------------------------------------------
@@ -939,7 +941,7 @@ private bool block(ref Parser p, ref BlockBuilder* blocks, out EntityId result) 
 	}
 	advance(p);
 
-	result = daBack(blocks).end();
+	result = end(*daBack(blocks));
 	fp.dynarray.popBack(blocks);
 	return true;
 }
@@ -1366,7 +1368,7 @@ version (unittest) {
 unittest { // a minimal single assignment parses and passes verify.structure
 	diagnostics().clear();
 	auto mod = createModule();
-	scope(exit) free(mod);
+	scope(exit) freeModule(mod);
 
 	BlockBuilder* builders;
 	scope(exit) fp.dynarray.free(builders);
@@ -1386,7 +1388,7 @@ unittest { // a minimal single assignment parses and passes verify.structure
 unittest { // a syntactically invalid source produces a parse failure, not a crash
 	diagnostics().clear();
 	auto mod = createModule();
-	scope(exit) free(mod);
+	scope(exit) freeModule(mod);
 
 	BlockBuilder* builders;
 	scope(exit) fp.dynarray.free(builders);
@@ -1414,7 +1416,7 @@ unittest { // a syntactically invalid source produces a parse failure, not a cra
 
 unittest { // #1 constant assignment: name : type = value
 	auto r = compile("%1 : compiler.byte = 5\n");
-	scope(exit) free(r.mod);
+	scope(exit) freeModule(r.mod);
 	assert(r.ok);
 
 	immutable e = find(r.mod, r.root, "%1");
@@ -1428,7 +1430,7 @@ unittest { // #2 block assignment: name : block = { ... }
 	// an un-exported, never-referenced block is genuinely dead code once the
 	// block itself isn't consumed by anything.
 	auto r = compile("export blk : block = {\n\t%1 : compiler.byte = 6\n}\n");
-	scope(exit) free(r.mod);
+	scope(exit) freeModule(r.mod);
 	assert(r.ok);
 
 	immutable blk = find(r.mod, r.root, "blk");
@@ -1439,7 +1441,7 @@ unittest { // #2 block assignment: name : block = { ... }
 
 unittest { // #3 function execution: _ : type = function(args...)
 	auto r = compile("%0 : compiler.byte = 0x41\n%1 : compiler.byte = compiler.emit(%0)\n");
-	scope(exit) free(r.mod);
+	scope(exit) freeModule(r.mod);
 	assert(r.ok);
 	static immutable ubyte[1] expected = [0x41];
 	assert(emits(r, expected[]));
@@ -1447,7 +1449,7 @@ unittest { // #3 function execution: _ : type = function(args...)
 
 unittest { // #4 alias assignment: name : alias = target
 	auto r = compile("%1 : compiler.byte = 5\n%2 : alias = %1\n");
-	scope(exit) free(r.mod);
+	scope(exit) freeModule(r.mod);
 	assert(r.ok);
 
 	immutable target = find(r.mod, r.root, "%1");
@@ -1459,7 +1461,7 @@ unittest { // #4 alias assignment: name : alias = target
 
 unittest { // #5 namespace assignment, with dotted member access
 	auto r = compile("math : namespace = {\n\tval : compiler.byte = 7\n}\n");
-	scope(exit) free(r.mod);
+	scope(exit) freeModule(r.mod);
 	assert(r.ok);
 
 	immutable math = find(r.mod, r.root, "math");
@@ -1474,7 +1476,7 @@ unittest { // #5 namespace assignment, with dotted member access
 
 unittest { // #6 type assignment: name : type = { field declarations... }
 	auto r = compile("vec2 : type = {\n\tx : compiler.byte\n\ty : compiler.byte\n}\n");
-	scope(exit) free(r.mod);
+	scope(exit) freeModule(r.mod);
 	assert(r.ok);
 
 	immutable vec2 = find(r.mod, r.root, "vec2");
@@ -1486,7 +1488,7 @@ unittest { // #6 type assignment: name : type = { field declarations... }
 
 unittest { // #7 undefined assignment: name : type (no value)
 	auto r = compile("x : compiler.byte\n");
-	scope(exit) free(r.mod);
+	scope(exit) freeModule(r.mod);
 	assert(r.ok);
 
 	immutable x = find(r.mod, r.root, "x");

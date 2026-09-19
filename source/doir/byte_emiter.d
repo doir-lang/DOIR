@@ -1,7 +1,7 @@
-/// The temporary byte-emitting interpreter: walks a finished block and
+/// The temporary byte emiter: walks a finished block and
 /// concatenates whatever its `compiler.emit`/`compiler.emit_bytes` calls
 /// name, producing the Mizu binary. Ported from temp_byte_dumper.hpp.
-module doir.byte_dumper;
+module doir.byte_emiter;
 
 import ecrs.storage : EntityId;
 
@@ -17,55 +17,64 @@ import doir.module_;
 /// One entity's emitted bytes.
 private struct ByteBuffer {
 	ubyte* data = null;
+}
 
-	@nogc nothrow:
-	size_t length() const @trusted { return daLength(cast(ubyte*) data); }
-	void free() @trusted { if (data !is null) { fp.dynarray.free(data); data = null; } }
+private size_t length(ref const ByteBuffer b) @trusted {
+	return daLength(cast(ubyte*) b.data);
+}
+
+private void free(ref ByteBuffer b) @trusted {
+	if (b.data !is null) { fp.dynarray.free(b.data); b.data = null; }
 }
 
 /// An owning byte string.
 struct ByteArray {
 	ubyte* data = null;
+}
 
-	@nogc nothrow:
-	size_t length() const @trusted { return daLength(cast(ubyte*) data); }
-	inout(ubyte)[] slice() inout @trusted {
-		return data is null ? null : (cast(inout(ubyte)*) data)[0 .. length()];
-	}
-	void push(ubyte b) @trusted { fp.dynarray.pushBack(data, b); }
-	void free() @trusted { if (data !is null) { fp.dynarray.free(data); data = null; } }
+size_t length(ref const ByteArray a) @trusted {
+	return daLength(cast(ubyte*) a.data);
+}
+
+inout(ubyte)[] slice(ref inout ByteArray a) @trusted {
+	return a.data is null ? null : (cast(inout(ubyte)*) a.data)[0 .. length(a)];
+}
+
+void push(ref ByteArray a, ubyte b) @trusted {
+	fp.dynarray.pushBack(a.data, b);
+}
+
+void free(ref ByteArray a) @trusted {
+	if (a.data !is null) { fp.dynarray.free(a.data); a.data = null; }
 }
 
 /// Holds the per-entity byte values while walking a block.
-struct ByteDumper {
-	private ByteBuffer* values = null;
-
-	@nogc nothrow:
-
-	void free() @trusted {
-		if (values is null) return;
-		foreach (i; 0 .. daLength(values))
-			values[i].free();
-		fp.dynarray.free(values);
-		values = null;
-	}
-
-	private void ensureSlot(EntityId e) @trusted {
-		immutable want = cast(size_t) e * 2;
-		while (daLength(values) <= e)
-			fp.dynarray.pushBack(values, ByteBuffer.init);
-		cast(void) want;
-	}
+struct ByteEmiter {
+	ByteBuffer* values = null; // fp dynarray, indexed by entity
 }
 
-private void interpretNumberAssign(ref ByteDumper self, ref ByteArray out_, ref Module mod, EntityId subtree) @trusted {
+void free(ref ByteEmiter self) @trusted {
+	if (self.values is null) return;
+	foreach (i; 0 .. daLength(self.values))
+		free(self.values[i]);
+	fp.dynarray.free(self.values);
+	self.values = null;
+}
+
+/// Makes sure `self.values` has a slot for entity `e`.
+private void ensureSlot(ref ByteEmiter self, EntityId e) @trusted {
+	while (daLength(self.values) <= e)
+		fp.dynarray.pushBack(self.values, ByteBuffer.init);
+}
+
+private void emitNumberAssign(ref ByteEmiter self, ref ByteArray out_, ref Module mod, EntityId subtree) @trusted {
 	if (hasComponent!Number(mod, subtree)) {
 		immutable byteType = resolveLookupName(mod, internIn(mod, "compiler.byte"), 1);
 		if (resolveAlias(mod, getComponent!TypeOf(mod, subtree).related[0]) != byteType) return;
 
 		immutable value = cast(size_t) getComponent!Number(mod, subtree).value;
-		self.ensureSlot(subtree);
-		self.values[subtree].free();
+		ensureSlot(self, subtree);
+		free(self.values[subtree]);
 		fp.dynarray.pushBack(self.values[subtree].data, cast(ubyte) value);
 		return;
 	}
@@ -75,15 +84,15 @@ private void interpretNumberAssign(ref ByteDumper self, ref ByteArray out_, ref 
 		if (resolveAlias(mod, getComponent!TypeOf(mod, subtree).related[0]) != bytePointer) return;
 
 		auto value = getComponent!DString(mod, subtree).value;
-		self.ensureSlot(subtree);
-		self.values[subtree].free();
+		ensureSlot(self, subtree);
+		free(self.values[subtree]);
 		foreach (c; value.view)
 			fp.dynarray.pushBack(self.values[subtree].data, cast(ubyte) c);
 		return;
 	}
 }
 
-private void interpretCall(ref ByteDumper self, ref ByteArray out_, ref Module mod, EntityId subtree) @trusted {
+private void emitCall(ref ByteEmiter self, ref ByteArray out_, ref Module mod, EntityId subtree) @trusted {
 	if (!hasComponent!Call(mod, subtree)) return;
 	if (findFunctionInsideOf(mod, subtree)) return;
 
@@ -96,34 +105,34 @@ private void interpretCall(ref ByteDumper self, ref ByteArray out_, ref Module m
 	if (function_ == emit) {
 		immutable source = resolveAlias(mod, inputs.related[0]);
 		assert(source < daLength(self.values));
-		assert(self.values[source].length > 0);
-		out_.push(self.values[source].data[0]);
+		assert(length(self.values[source]) > 0);
+		push(out_, self.values[source].data[0]);
 	} else if (function_ == emitBytes) {
 		immutable source = resolveAlias(mod, inputs.related[0]);
 		assert(source < daLength(self.values));
-		foreach (i; 0 .. self.values[source].length)
-			out_.push(self.values[source].data[i]);
+		foreach (i; 0 .. length(self.values[source]))
+			push(out_, self.values[source].data[i]);
 	}
 }
 
-private void interpretBlock(ref ByteDumper self, ref ByteArray out_, ref Module mod, EntityId subtree) @trusted {
+private void emitBlock(ref ByteEmiter self, ref ByteArray out_, ref Module mod, EntityId subtree) @trusted {
 	assert(hasComponent!Block(mod, subtree));
 
 	for (size_t i = 0; i < daLength(getComponent!Block(mod, subtree).related); ++i) {
 		immutable e = getComponent!Block(mod, subtree).related[i];
 		if (hasComponent!Block(mod, e))
-			interpretBlock(self, out_, mod, e);
+			emitBlock(self, out_, mod, e);
 		else {
-			interpretNumberAssign(self, out_, mod, e);
-			interpretCall(self, out_, mod, e);
+			emitNumberAssign(self, out_, mod, e);
+			emitCall(self, out_, mod, e);
 		}
 	}
 }
 
 /// Walks `root`, returning the bytes it emits. The caller frees the result.
-ByteArray interpret(ref ByteDumper self, ref Module mod, EntityId root) {
+ByteArray emitAll(ref ByteEmiter self, ref Module mod, EntityId root) {
 	ByteArray out_;
-	interpretBlock(self, out_, mod, root);
+	emitBlock(self, out_, mod, root);
 	return out_;
 }
 
@@ -187,7 +196,7 @@ unittest {
 
 	diagnostics().clear();
 	auto mod = createModule();
-	scope(exit) free(mod);
+	scope(exit) freeModule(mod);
 
 	BlockBuilder* builders;
 	scope(exit) fp.dynarray.free(builders);
@@ -203,9 +212,9 @@ unittest {
 	internIn(mod, "compiler.emit");
 	internIn(mod, "compiler.emit_bytes");
 
-	ByteDumper dumper;
-	scope(exit) dumper.free();
-	auto bytes = interpret(dumper, mod, newRoot);
+	ByteEmiter emiter;
+	scope(exit) emiter.free();
+	auto bytes = emitAll(emiter, mod, newRoot);
 	scope(exit) bytes.free();
 
 	assert(bytes.slice == cast(const(ubyte)[]) "Hello World");
@@ -217,7 +226,7 @@ unittest { // calling compiler.emit through an alias still emits
 		"emit_alias : alias = compiler.emit\n"
 		~ "%0 : compiler.byte = 0x44\n"
 		~ "%1 : compiler.byte = emit_alias(%0)\n");
-	scope(exit) free(r.mod);
+	scope(exit) freeModule(r.mod);
 	assert(r.ok);
 	static immutable ubyte[1] expected = [0x44];
 	assert(emits(r, expected[]));

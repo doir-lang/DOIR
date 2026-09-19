@@ -58,13 +58,11 @@ struct InternedString {
 			&& (view.length == 0 || memcmpWrapper(view.ptr, o.ptr, view.length) == 0);
 	}
 
-	size_t length() const { return view.length; }
-	bool empty() const { return view.length == 0; }
 	char opIndex(size_t i) const { return view[i]; }
-
-	/// The `_` name, which `push_common` treats as "don't attach a name".
-	static InternedString wildcard() { return InternedString("_"); }
 }
+
+/// The `_` name, which `pushCommon` treats as "don't attach a name".
+InternedString wildcardName() { return InternedString("_"); }
 
 private int memcmpWrapper(const(char)* a, const(char)* b, size_t n) @trusted {
 	import core.stdc.string : memcmp;
@@ -585,12 +583,12 @@ unittest { // interning the empty string does not crash and round trips
 	auto interner = createInterner();
 	scope(exit) free(interner);
 	auto empty = intern(interner, "");
-	assert(empty.length == 0);
+	assert(empty.view.length == 0);
 
 	bool found;
 	auto looked = findInterned(interner, "", found);
 	assert(found);
-	assert(looked.length == 0);
+	assert(looked.view.length == 0);
 }
 
 unittest { // find reports nothing for strings that were never interned
@@ -637,8 +635,8 @@ unittest {
 	auto interner = createInterner();
 	scope(exit) free(interner);
 	auto underscore = intern(interner, "_");
-	assert(underscore.view == InternedString.wildcard.view);
-	assert(underscore != InternedString.wildcard);
+	assert(underscore.view == wildcardName().view);
+	assert(underscore != wildcardName());
 }
 
 unittest { // an interned string compares to a plain slice by content

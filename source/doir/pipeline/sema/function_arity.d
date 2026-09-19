@@ -63,7 +63,7 @@ unittest {
 	auto r = compile(
 		"begin_alloc_alias : alias = compiler.assembler.begin_register_allocation\n"
 		~ "%1 : compiler.assembler.register = begin_alloc_alias()\n");
-	scope(exit) free(r.mod);
+	scope(exit) freeModule(r.mod);
 	assert(r.ok);
 	assert(find(r.mod, r.root, "%1") != invalidEntity);
 }

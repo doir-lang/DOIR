@@ -10,7 +10,7 @@ import ecrs.storage : EntityId, invalidEntity;
 
 static import fp.dynarray;
 
-import doir.byte_dumper;
+import doir.byte_emiter;
 import doir.diagnostics;
 import doir.interface_;
 import doir.module_;
@@ -61,9 +61,9 @@ extern(C) int main(int argc, char** argv) @trusted {
 		internIn(mod, "compiler.emit");
 		internIn(mod, "compiler.emit_bytes");
 
-		ByteDumper dumper;
-		scope(exit) dumper.free();
-		auto bytes = interpret(dumper, mod, newRoot);
+		ByteEmiter emiter;
+		scope(exit) emiter.free();
+		auto bytes = emitAll(emiter, mod, newRoot);
 		scope(exit) bytes.free();
 
 		FILE* fout = fopen("res.bin", "wb");

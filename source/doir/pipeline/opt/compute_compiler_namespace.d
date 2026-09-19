@@ -316,7 +316,7 @@ unittest {
 		"n : compiler.pointer_sized = 8\n"
 		~ "my_base_type : alias = compiler.base_type\n"
 		~ "weird : type = my_base_type(n, n)\n");
-	scope(exit) free(r.mod);
+	scope(exit) freeModule(r.mod);
 	assert(r.ok);
 
 	immutable weird = find(r.mod, r.root, "weird");

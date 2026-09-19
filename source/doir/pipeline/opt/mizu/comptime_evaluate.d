@@ -12,14 +12,14 @@ import fp.dynarray : daLength = length;
 
 import mizu.opcode : setupEnvironment, startFromEnvironment;
 
-import doir.byte_dumper;
+import doir.byte_emiter;
 import doir.interface_;
 import mizu.doir_instructions : doirLookup;
 import mizu.portable_format : fromPortable;
 import doir.module_;
 import doir.diagnostics : panic;
 import doir.pipeline.sema.sort : newRoot;
-import doir.string_helpers : InternedString;
+import doir.string_helpers : InternedString, wildcardName;
 import doir.systems : SystemFunction, fixedPointChanged;
 
 @nogc nothrow:
@@ -180,7 +180,7 @@ bool comptimeEvaluate(ref Module mod, EntityId subtree, SystemFunction mizuSched
 	immutable typeOfSubtree = resolveAlias(mod, getComponent!TypeOf(mod, subtree).related[0]);
 	auto name = hasComponent!Name(mod, subtree)
 		? getComponent!Name(mod, subtree).value
-		: InternedString.wildcard;
+		: wildcardName();
 	auto ret = pushCall(comptimeBlock, name, typeOfSubtree, calledFunction, arguments.slice);
 	r = pushNumber(comptimeBlock, InternedString("_"), assemblerRegister, rValue++);
 	{
@@ -206,9 +206,9 @@ bool comptimeEvaluate(ref Module mod, EntityId subtree, SystemFunction mizuSched
 	mizuSchedule(mod.ctx);
 	newRoot = backup;
 
-	ByteDumper dumper;
-	scope(exit) dumper.free();
-	auto bytes = interpret(dumper, mod, comptimeBlock.block);
+	ByteEmiter emiter;
+	scope(exit) emiter.free();
+	auto bytes = emitAll(emiter, mod, comptimeBlock.block);
 	scope(exit) bytes.free();
 
 	{

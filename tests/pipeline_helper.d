@@ -88,17 +88,17 @@ EntityId find(ref Module mod, EntityId root, const(char)[] name) {
 	return resolveLookupName(mod, internIn(mod, name), root);
 }
 
-/// Runs the byte dumper over a finished compile and compares what it emits.
+/// Runs the byte emiter over a finished compile and compares what it emits.
 bool emits(ref PipelineResult r, const(ubyte)[] expected) {
-	import doir.byte_dumper : ByteDumper, interpret;
+	import doir.byte_emiter;
 	import doir.pipeline.sema.sort : newRoot;
 
 	internIn(r.mod, "compiler.emit");
 	internIn(r.mod, "compiler.emit_bytes");
 
-	ByteDumper dumper;
-	scope(exit) dumper.free();
-	auto out_ = interpret(dumper, r.mod, newRoot);
+	ByteEmiter emiter;
+	scope(exit) emiter.free();
+	auto out_ = emitAll(emiter, r.mod, newRoot);
 	scope(exit) out_.free();
 	return out_.slice == expected;
 }

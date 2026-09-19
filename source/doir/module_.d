@@ -8,6 +8,13 @@
 /// inheritance, so the context is a field and the component accessors below
 /// forward to it. They keep the C++ spellings (`hasComponent!T(mod, e)` and
 /// friends) so the ported passes read the way the originals did.
+///
+/// Like the rest of the compiler (and like libfp underneath it) the types
+/// here are plain data and everything that operates on them is a free
+/// function taking the data first, so `set(map, k, v)` and `map.set(k, v)`
+/// are the same call. The one concession is `freeModule`: a module's teardown
+/// is spelled out in full because plain `free` is hidden inside any module
+/// that declares a `free` overload of its own.
 module doir.module_;
 
 static import ecrs.context;
@@ -67,115 +74,124 @@ struct EntityPair {
 /// them as the index. Keeping the rows out of the table is what makes
 /// iteration possible: libfp's own `HashtableIterator` does not compile
 /// against a `const` table, so there is no usable way to walk one directly.
+///
+/// Plain data; the operations below are free functions, so `set(map, k, v)`
+/// and `map.set(k, v)` are the same call.
 struct EntityMap {
-	private IndexEntry* table = null;
-	private EntityPair* pairs = null;
+	IndexEntry* table = null;
+	EntityPair* pairs = null;
+}
 
-	@nogc nothrow:
+private void ensure(ref EntityMap m) @trusted {
+	if (m.table is null)
+		m.table = fp.hashtable.create!IndexEntry(Config(&mapHash, &mapEqual));
+}
 
-	private void ensure() @trusted {
-		if (table is null)
-			table = fp.hashtable.create!IndexEntry(Config(&mapHash, &mapEqual));
+void free(ref EntityMap m) @trusted {
+	if (m.table !is null) { fp.hashtable.free(m.table); m.table = null; }
+	if (m.pairs !is null) { daFree(m.pairs); m.pairs = null; }
+}
+
+size_t length(ref const EntityMap m) @trusted {
+	return daLength(cast(EntityPair*) m.pairs);
+}
+
+inout(EntityPair)[] rows(ref inout EntityMap m) @trusted {
+	return m.pairs is null ? null : (cast(inout(EntityPair)*) m.pairs)[0 .. length(m)];
+}
+
+/// The index row for `key`, or null when it has none.
+private IndexEntry* findRow(ref EntityMap m, EntityId key) @trusted {
+	if (m.table is null) return null;
+	return fp.hashtable.find(m.table, IndexEntry(key, 0));
+}
+
+bool contains(ref EntityMap m, EntityId key) @trusted {
+	return findRow(m, key) !is null;
+}
+
+/// Returns the mapped value, or `key` itself when absent - the pattern
+/// every C++ call site spells as `m.contains(e) ? m[e] : e`.
+EntityId get(ref EntityMap m, EntityId key) @trusted {
+	if (auto hit = findRow(m, key)) return m.pairs[hit.index].value;
+	return key;
+}
+
+/// Returns the mapped value, or `fallback` when absent.
+EntityId get(ref EntityMap m, EntityId key, EntityId fallback) @trusted {
+	if (auto hit = findRow(m, key)) return m.pairs[hit.index].value;
+	return fallback;
+}
+
+void set(ref EntityMap m, EntityId key, EntityId value) @trusted {
+	ensure(m);
+	if (auto hit = findRow(m, key)) {
+		m.pairs[hit.index].value = value;
+		return;
 	}
-
-	void free() @trusted {
-		if (table !is null) { fp.hashtable.free(table); table = null; }
-		if (pairs !is null) { daFree(pairs); pairs = null; }
-	}
-
-	size_t length() const @trusted { return daLength(cast(EntityPair*) pairs); }
-	inout(EntityPair)[] rows() inout @trusted {
-		return pairs is null ? null : (cast(inout(EntityPair)*) pairs)[0 .. length()];
-	}
-
-	private IndexEntry* lookup(EntityId key) @trusted {
-		if (table is null) return null;
-		return fp.hashtable.find(table, IndexEntry(key, 0));
-	}
-
-	bool contains(EntityId key) @trusted { return lookup(key) !is null; }
-
-	/// Returns the mapped value, or `key` itself when absent - the pattern
-	/// every C++ call site spells as `m.contains(e) ? m[e] : e`.
-	EntityId get(EntityId key) @trusted {
-		if (auto hit = lookup(key)) return pairs[hit.index].value;
-		return key;
-	}
-
-	/// Returns the mapped value, or `fallback` when absent.
-	EntityId get(EntityId key, EntityId fallback) @trusted {
-		if (auto hit = lookup(key)) return pairs[hit.index].value;
-		return fallback;
-	}
-
-	void set(EntityId key, EntityId value) @trusted {
-		ensure();
-		if (auto hit = lookup(key)) {
-			pairs[hit.index].value = value;
-			return;
-		}
-		immutable index = length();
-		fp.dynarray.pushBack(pairs, EntityPair(key, value));
-		fp.hashtable.insertAssumeUnique(table, IndexEntry(key, index));
-	}
+	immutable index = length(m);
+	fp.dynarray.pushBack(m.pairs, EntityPair(key, value));
+	fp.hashtable.insertAssumeUnique(m.table, IndexEntry(key, index));
 }
 
 
 /// An unordered set of entities.
 struct EntitySet {
-	private EntityMap map;
-
-	@nogc nothrow:
-
-	void free() { map.free(); }
-	bool contains(EntityId e) { return map.contains(e); }
-	void insert(EntityId e) { map.set(e, e); }
+	EntityMap map;
 }
+
+void free(ref EntitySet s) { free(s.map); }
+bool contains(ref EntitySet s, EntityId e) { return contains(s.map, e); }
+void insert(ref EntitySet s, EntityId e) { set(s.map, e, e); }
 
 
 /// A *sorted*, duplicate-free array of entities, standing in for the
 /// `std::set<entity_t>` canonicalize::sort builds and set-differences.
 struct SortedEntitySet {
 	EntityId* data = null; // fp dynarray, kept sorted ascending
+}
 
-	@nogc nothrow:
+void free(ref SortedEntitySet s) @trusted {
+	if (s.data !is null) { daFree(s.data); s.data = null; }
+}
 
-	void free() @trusted { if (data !is null) { daFree(data); data = null; } }
-	size_t length() const @trusted { return daLength(cast(EntityId*) data); }
-	inout(EntityId)[] slice() inout @trusted {
-		return data is null ? null : (cast(inout(EntityId)*) data)[0 .. length()];
+size_t length(ref const SortedEntitySet s) @trusted {
+	return daLength(cast(EntityId*) s.data);
+}
+
+inout(EntityId)[] slice(ref inout SortedEntitySet s) @trusted {
+	return s.data is null ? null : (cast(inout(EntityId)*) s.data)[0 .. length(s)];
+}
+
+/// Index of the first element >= `e` (a plain binary search).
+private size_t lowerBound(ref const SortedEntitySet s, EntityId e) @trusted {
+	size_t lo = 0, hi = length(s);
+	while (lo < hi) {
+		immutable mid = lo + (hi - lo) / 2;
+		if ((cast(const(EntityId)*) s.data)[mid] < e) lo = mid + 1;
+		else hi = mid;
 	}
+	return lo;
+}
 
-	/// Index of the first element >= `e` (a plain binary search).
-	private size_t lowerBound(EntityId e) const @trusted {
-		size_t lo = 0, hi = length();
-		while (lo < hi) {
-			immutable mid = lo + (hi - lo) / 2;
-			if ((cast(const(EntityId)*) data)[mid] < e) lo = mid + 1;
-			else hi = mid;
-		}
-		return lo;
-	}
+bool contains(ref const SortedEntitySet s, EntityId e) @trusted {
+	immutable i = lowerBound(s, e);
+	return i < length(s) && (cast(const(EntityId)*) s.data)[i] == e;
+}
 
-	bool contains(EntityId e) const @trusted {
-		immutable i = lowerBound(e);
-		return i < length() && (cast(const(EntityId)*) data)[i] == e;
-	}
+/// Inserts `e` if it isn't present; returns true if it was inserted.
+bool insert(ref SortedEntitySet s, EntityId e) @trusted {
+	immutable i = lowerBound(s, e);
+	if (i < length(s) && s.data[i] == e) return false;
+	fp.dynarray.insert(s.data, i, e);
+	return true;
+}
 
-	/// Inserts `e` if it isn't present; returns true if it was inserted.
-	bool insert(EntityId e) @trusted {
-		immutable i = lowerBound(e);
-		if (i < length() && data[i] == e) return false;
-		fp.dynarray.insert(data, i, e);
-		return true;
-	}
-
-	/// Removes `e` if present.
-	void remove(EntityId e) @trusted {
-		immutable i = lowerBound(e);
-		if (i < length() && data[i] == e)
-			fp.dynarray.removeAt(data, i);
-	}
+/// Removes `e` if present.
+void remove(ref SortedEntitySet s, EntityId e) @trusted {
+	immutable i = lowerBound(s, e);
+	if (i < length(s) && s.data[i] == e)
+		fp.dynarray.removeAt(s.data, i);
 }
 
 
@@ -213,7 +229,7 @@ Module createModule() @trusted {
 	return m;
 }
 
-void free(ref Module m) @trusted {
+void freeModule(ref Module m) @trusted {
 	import doir.string_helpers : freeInterner = free;
 	import fp.pointer : allocFunction;
 
@@ -379,7 +395,7 @@ private void substituteEntitiesImpl(ref Module m, EntityId subtree, ref EntityMa
 
 		if (hasComponent!LookupFunctionInputs(m, subtree)) {
 			auto lookups = &getComponent!LookupFunctionInputs(m, subtree);
-			foreach (i; 0 .. lookups.length)
+			foreach (i; 0 .. doir.interface_.length(*lookups))
 				if ((*lookups)[i].resolved() && (*lookups)[i].entity() == toFind)
 					(*lookups)[i] = toReplace;
 		}
@@ -438,9 +454,9 @@ version (unittest) {
 
 unittest { // two independent modules each resolve to their own correct entity
 	auto a = makeModuleWithBuiltins();
-	scope(exit) free(a.mod);
+	scope(exit) freeModule(a.mod);
 	auto b = makeModuleWithBuiltins();
-	scope(exit) free(b.mod);
+	scope(exit) freeModule(b.mod);
 
 	// Prime b's cache *before* a's, and interleave a couple of different paths,
 	// to make sure the cache can't end up keyed by process-wide call order.
@@ -459,9 +475,9 @@ unittest { // two independent modules each resolve to their own correct entity
 
 unittest { // a failed lookup in one module is not memoized onto another
 	auto a = makeModuleWithBuiltins();
-	scope(exit) free(a.mod);
+	scope(exit) freeModule(a.mod);
 	auto b = makeModuleWithBuiltins();
-	scope(exit) free(b.mod);
+	scope(exit) freeModule(b.mod);
 
 	assert(resolveCached(a.mod, "this.does.not.exist", a.root) == invalidEntity);
 	assert(resolveCached(b.mod, "compiler.pointer", b.root) != invalidEntity);
@@ -469,7 +485,7 @@ unittest { // a failed lookup in one module is not memoized onto another
 
 unittest { // a cached result is reused within one module
 	auto f = makeModuleWithBuiltins();
-	scope(exit) free(f.mod);
+	scope(exit) freeModule(f.mod);
 	immutable first = resolveCached(f.mod, "compiler.debug_print", f.root);
 	immutable second = resolveCached(f.mod, "compiler.debug_print", f.root);
 	assert(first == second);
@@ -478,7 +494,7 @@ unittest { // a cached result is reused within one module
 
 unittest { // canonicalize.sort invalidates previously cached resolutions
 	auto f = makeModuleWithBuiltins();
-	scope(exit) free(f.mod);
+	scope(exit) freeModule(f.mod);
 
 	// Prime the cache with pre-sort entity ids.
 	immutable before = resolveCached(f.mod, "compiler.pointer", f.root);

@@ -21,6 +21,7 @@ import doir.string_helpers : escapePythonString;
 @nogc nothrow:
 
 
+
 private void appendIndent(ref char* out_, bool pretty, size_t indent) {
 	if (!pretty) return;
 	foreach (_; 0 .. indent) concatenateSlice(out_, "\t");
@@ -41,7 +42,7 @@ char* printFunctionType(ref Module mod, EntityId type, bool debug_) @trusted {
 	import core.stdc.stdio : snprintf;
 
 	auto inputs = inputsOf(mod, type);
-	scope(exit) inputs.free();
+	scope(exit) doir.interface_.free(inputs);
 
 	bool hasReturn;
 	auto returnType = returnTypeOf(mod, type, hasReturn);
@@ -133,10 +134,9 @@ private struct CommonElements {
 	Detailed location;
 	bool hasLocation;
 	const(char)[] export_;
-
-	@nogc nothrow:
-	void free() { strFree(ident); strFree(type); }
 }
+
+private void free(ref CommonElements c) { strFree(c.ident); strFree(c.type); }
 
 private CommonElements commonAssignmentElements(ref Module mod, EntityId subtree, bool debug_) @trusted {
 	CommonElements out_;
@@ -235,7 +235,7 @@ private void printTypeOf(ref char* out_, ref Module mod, EntityId subtree, bool 
 				: getComponent!LookupCall(mod, subtree).lookup;
 
 		auto inputs = inputsOf(mod, subtree);
-		scope(exit) inputs.free();
+		scope(exit) doir.interface_.free(inputs);
 
 		char* flags = null;
 		scope(exit) strFree(flags);
@@ -298,13 +298,13 @@ private void printTypeOf(ref char* out_, ref Module mod, EntityId subtree, bool 
 
 			if (hasComponent!Block(mod, subtree)) {
 				auto inputs = inputsOf(mod, ft);
-				scope(exit) inputs.free();
+				scope(exit) doir.interface_.free(inputs);
 
 				bool hasReturn;
 				auto returnType = returnTypeOf(mod, ft, hasReturn);
 
 				auto parameters = associatedParameters(mod, inputs.length, subtree);
-				scope(exit) parameters.free();
+				scope(exit) doir.interface_.free(parameters);
 
 				if (ftIsModification)
 					concatenateSlice(out_, strSlice(c.type));

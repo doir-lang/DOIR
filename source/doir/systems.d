@@ -388,7 +388,7 @@ version (unittest) {
 
 unittest { // each walker visits the whole subtree, in its own order
 	auto t = makeTree();
-	scope(exit) free(t.mod);
+	scope(exit) freeModule(t.mod);
 
 	EntityId[5] postOrder = [t.leafA, t.leafB, t.inner, t.leafC, t.root];
 	EntityId[5] levelOrder = [t.root, t.inner, t.leafC, t.leafA, t.leafB];
@@ -409,7 +409,7 @@ unittest { // each walker visits the whole subtree, in its own order
 
 unittest { // the bound form is a system: libECRS's own combinator can run it
 	auto t = makeTree();
-	scope(exit) free(t.mod);
+	scope(exit) freeModule(t.mod);
 
 	// `ecrs.system.sequential(Systems...)` only knows how to call something
 	// with the context, which is exactly what `Bound` accepts.
@@ -442,7 +442,7 @@ unittest { // the bound form is a system: libECRS's own combinator can run it
 
 unittest { // `visitor` lets libECRS's per-entity walkers drive a DOIR pass
 	auto t = makeTree();
-	scope(exit) free(t.mod);
+	scope(exit) freeModule(t.mod);
 
 	// Every *live* entity, tree or not - including the reserved invalid one.
 	assert(ecrs.system.sequential!(visitor!record)(t.mod.ctx));
@@ -452,7 +452,7 @@ unittest { // `visitor` lets libECRS's per-entity walkers drive a DOIR pass
 
 unittest { // sequential stops at the first failing system
 	auto t = makeTree();
-	scope(exit) free(t.mod);
+	scope(exit) freeModule(t.mod);
 
 	// The second walk never runs, so the log stops at the three entities the
 	// first one got through.
@@ -472,7 +472,7 @@ unittest { // sequential stops at the first failing system
 
 unittest { // fixedPoint re-runs a system while it reports changes, and is one
 	auto t = makeTree();
-	scope(exit) free(t.mod);
+	scope(exit) freeModule(t.mod);
 
 	assert(fixedPoint(t.mod, &moduleSystem!bumpUntilFour));
 	assert(visitCount == 4);

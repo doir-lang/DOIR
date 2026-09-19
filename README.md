@@ -1,5 +1,30 @@
 # DOIR3
 
+## Style
+
+Types are plain data; everything that operates on them is a module-level free
+function taking the data as its first parameter, the way
+[libfp](https://github.com/doir-lang/libfp/tree/D) does it. UFCS means both
+spellings work — `length(list)` and `list.length` are the same call — so the
+call sites read like methods without the types carrying any.
+
+What stays a member: operator overloads and constructors (`Lookup(e)`,
+`InternedString`'s `opEquals`, `opIndex` on the owning lists), the
+`static swapEntities`/`static finalize` hooks libECRS looks up by name on a
+component type, and the `opCall`s that make a walker's `Bound` or a
+`FixedPoint` callable as a libECRS system.
+
+Two things to know when adding one of these:
+
+- UFCS does not reach through a pointer. Components move, so passes hold them
+  as `auto c = &getComponent!T(mod, e)` — call those as `length(*c)`, not
+  `c.length`.
+- A free function declared in a module *hides* every imported one of that
+  name rather than overloading against it, and aliasing the import back in
+  re-exports it and makes it ambiguous downstream. So a module that declares
+  its own `free` names another module's as `doir.module_.free(map)`. Module
+  teardown is `freeModule` for that reason — it is called from everywhere.
+
 ## Building (`-betterC` D)
 
 The compiler is a [dub](https://dub.pm) package depending on the D branches of

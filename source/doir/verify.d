@@ -61,13 +61,13 @@ bool identifierStructure(ref Manager diags, ref Module mod, InternedString ident
 	scope(exit) { import fp.string : strFree = free; strFree(invalidMessage); }
 	size_t invalidOffset = 0;
 
-	if (!ident.empty && ident[0] == '%') {
-		if (ident.length == 1) {
+	if (ident.view.length > 0 && ident[0] == '%') {
+		if (ident.view.length == 1) {
 			invalidMessage = text("A ", DoirAnsi.info, "%", Ansi.reset,
 				" in an identifier must by followed by a number");
 			invalidOffset = 0;
 		}
-		foreach (i; 1 .. ident.length)
+		foreach (i; 1 .. ident.view.length)
 			if (!(ident[i] >= '0' && ident[i] <= '9')) {
 				if (invalidMessage !is null) { import fp.string : strFree = free; strFree(invalidMessage); }
 				invalidMessage = text("Only numbers can follow a ", DoirAnsi.info, "%",
@@ -420,7 +420,7 @@ unittest {
 	// shrinks for every removed entity, instead of the allocated id range, so a
 	// still-live high-numbered entity would wrongly fail the check.)
 	auto mod = createModule();
-	scope(exit) free(mod);
+	scope(exit) freeModule(mod);
 
 	EntityId[6] ids;
 	foreach (i; 0 .. 6) ids[i] = addEntity(mod);
@@ -435,7 +435,7 @@ unittest {
 
 unittest { // identifierStructure accepts a well formed %N ssa identifier
 	auto f = makeModuleWithBuiltins();
-	scope(exit) free(f.mod);
+	scope(exit) freeModule(f.mod);
 	Manager diags;
 	scope(exit) freeManager(diags);
 	assert(identifierStructure(diags, f.mod, internIn(f.mod, "%0")));
@@ -444,7 +444,7 @@ unittest { // identifierStructure accepts a well formed %N ssa identifier
 
 unittest { // identifierStructure rejects a %-identifier with non-digit characters
 	auto f = makeModuleWithBuiltins();
-	scope(exit) free(f.mod);
+	scope(exit) freeModule(f.mod);
 	Manager diags;
 	scope(exit) freeManager(diags);
 	assert(!identifierStructure(diags, f.mod, internIn(f.mod, "%abc")));
@@ -454,7 +454,7 @@ unittest { // identifierStructure rejects a %-identifier with non-digit characte
 
 unittest { // identifierStructure rejects a lone %
 	auto f = makeModuleWithBuiltins();
-	scope(exit) free(f.mod);
+	scope(exit) freeModule(f.mod);
 	Manager diags;
 	scope(exit) freeManager(diags);
 	assert(!identifierStructure(diags, f.mod, internIn(f.mod, "%")));
@@ -462,7 +462,7 @@ unittest { // identifierStructure rejects a lone %
 
 unittest { // identifierStructure rejects builtin names only when allowBuiltins is false
 	auto f = makeModuleWithBuiltins();
-	scope(exit) free(f.mod);
+	scope(exit) freeModule(f.mod);
 	Manager diags;
 	scope(exit) freeManager(diags);
 	assert(identifierStructure(diags, f.mod, internIn(f.mod, "type"), true));
@@ -471,7 +471,7 @@ unittest { // identifierStructure rejects builtin names only when allowBuiltins 
 
 unittest { // identifierStructure does not crash on an empty identifier
 	auto f = makeModuleWithBuiltins();
-	scope(exit) free(f.mod);
+	scope(exit) freeModule(f.mod);
 	Manager diags;
 	scope(exit) freeManager(diags);
 	assert(identifierStructure(diags, f.mod, InternedString.init));
@@ -479,7 +479,7 @@ unittest { // identifierStructure does not crash on an empty identifier
 
 unittest { // a freshly built builtin block passes verify.structure
 	auto f = makeModuleWithBuiltins();
-	scope(exit) free(f.mod);
+	scope(exit) freeModule(f.mod);
 	Manager diags;
 	scope(exit) freeManager(diags);
 	assert(structure(diags, f.mod, f.root));
