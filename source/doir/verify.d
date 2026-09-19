@@ -32,11 +32,16 @@ import doir.string_helpers : InternedString, containsView;
 /// out-of-range location rather than merely a wrong one, so the subtraction is
 /// written in the intended direction.
 private SourceLocation getLocation(ref Module mod, const(char)[] s) @trusted {
+	// The working file's text, not `mod.source`: the location below is named
+	// after the working file, so an offset into anything else would be
+	// resolved against text it does not index into.
+	const source = workingSource(mod);
+
 	size_t start;
-	if (containsView(mod.source, s))
-		start = cast(size_t)(s.ptr - mod.source.ptr);
+	if (containsView(source, s))
+		start = cast(size_t)(s.ptr - source.ptr);
 	else
-		start = findSlices(mod.source, s, 0);
+		start = findSlices(source, s, 0);
 
 	if (start == size_t.max)
 		return SourceLocation(workingFileOr(mod, invalidFileName), 0, 0);
@@ -90,7 +95,8 @@ bool identifierStructure(ref Manager diags, ref Module mod, InternedString ident
 
 	if (invalidMessage !is null) {
 		auto diag = &diags.push(generateDiagnostic(DiagnosticType.InvalidIdentifier,
-			getLocation(mod, ident.view), mod.source, workingFileOr(mod, invalidFileName)));
+			getLocation(mod, ident.view), workingSource(mod),
+			workingFileOr(mod, invalidFileName)));
 		Diagnostic.Annotation annotation;
 		annotation.position = Pair(
 			diag.location.start.line, diag.location.start.column + invalidOffset);

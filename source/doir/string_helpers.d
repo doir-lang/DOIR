@@ -27,8 +27,15 @@ private void strAppend(ref char* s, char c) @trusted @nogc nothrow {
 
 
 /// True if `small` points into `big`'s buffer (the C++ `doir::contains`).
+///
+/// Both ends have to be checked: callers subtract the two pointers to turn a
+/// hit into an offset, so a `small` lying *below* `big` must not report true -
+/// the subtraction would underflow into a nonsense offset (see
+/// `doir.verify.getLocation`). Interned strings live in the interner's arena,
+/// which is a separate allocation that routinely sits below a mapped source
+/// buffer, so this is the common case rather than a corner one.
 bool containsView(const(char)[] big, const(char)[] small) @trusted {
-	return small.ptr < big.ptr + big.length && small.ptr + small.length <= big.ptr + big.length;
+	return small.ptr >= big.ptr && small.ptr + small.length <= big.ptr + big.length;
 }
 
 /// A string that lives in a `StringInterner`'s arena. Two interned strings
@@ -250,29 +257,39 @@ private void appendUnicodeEscape(ref char* outStr, uint cp) @trusted {
 	}
 }
 
-/// Minimal UTF-8 decoder (assumes valid UTF-8 input).
+/// Minimal UTF-8 decoder.
+///
+/// The continuation bytes a lead byte promises are checked against the end of
+/// `s` before they are read: `escapePythonString` runs over whatever bytes the
+/// program being compiled put in a string literal, and `"\\xE2"` is a lead byte
+/// with nothing behind it. A truncated (or otherwise malformed) sequence
+/// decodes as the lead byte itself, consuming one byte, so the caller always
+/// makes progress and never reads past the slice.
 private uint decodeUtf8(const(char)[] s, ref size_t i) @trusted {
 	immutable c = cast(ubyte) s[i];
 
 	if (c < 0x80) {
 		return cast(uint) s[i++];
-	} else if ((c >> 5) == 0x6) {
+	} else if ((c >> 5) == 0x6 && i + 1 < s.length) {
 		immutable cp = ((c & 0x1F) << 6) | (cast(ubyte) s[i + 1] & 0x3F);
 		i += 2;
 		return cp;
-	} else if ((c >> 4) == 0xE) {
+	} else if ((c >> 4) == 0xE && i + 2 < s.length) {
 		immutable cp = ((c & 0x0F) << 12)
 			| ((cast(ubyte) s[i + 1] & 0x3F) << 6)
 			| (cast(ubyte) s[i + 2] & 0x3F);
 		i += 3;
 		return cp;
-	} else {
+	} else if ((c >> 3) == 0x1E && i + 3 < s.length) {
 		immutable cp = ((c & 0x07) << 18)
 			| ((cast(ubyte) s[i + 1] & 0x3F) << 12)
 			| ((cast(ubyte) s[i + 2] & 0x3F) << 6)
 			| (cast(ubyte) s[i + 3] & 0x3F);
 		i += 4;
 		return cp;
+	} else {
+		++i;
+		return c;
 	}
 }
 
@@ -527,7 +544,15 @@ char* escapeCppString(const(char)[] input) @trusted {
 			}
 		} else {
 			switch (c) {
-				case '\0': strAppend(outStr, '\\'); strAppend(outStr, '0'); break;
+				// `\0` is an octal escape, so a digit right behind it would be
+				// absorbed into it the same way a hex digit is absorbed into
+				// `\xhh`; splice the literal there too. (Every octal digit is
+				// also a hex digit, so the `isHexDigit` test below covers it.)
+				case '\0':
+					strAppend(outStr, '\\');
+					strAppend(outStr, '0');
+					needsSplice = true;
+					break;
 				case '\a': strAppend(outStr, '\\'); strAppend(outStr, 'a'); break;
 				case '\b': strAppend(outStr, '\\'); strAppend(outStr, 'b'); break;
 				case '\f': strAppend(outStr, '\\'); strAppend(outStr, 'f'); break;
@@ -644,6 +669,66 @@ unittest { // an interned string compares to a plain slice by content
 	scope(exit) free(interner);
 	auto interned = intern(interner, "hello");
 	assert(interned == "hello");
+}
+
+unittest {
+	// `containsView` has to reject a slice that lies *below* `big`, not just
+	// one that runs off the end. Callers turn a hit into an offset by
+	// subtracting the two pointers, so a false positive here underflows into a
+	// nonsense offset - `doir.verify.getLocation` built an out-of-range
+	// SourceLocation out of it and tripped an assertion inside libdiagnose.
+	static immutable char[8] buffer = "abcdefgh";
+	auto whole = buffer[0 .. $];
+
+	assert(containsView(whole, buffer[0 .. 8]));  // the whole thing
+	assert(containsView(whole, buffer[2 .. 5]));  // strictly inside
+	assert(!containsView(whole, buffer[0 .. 8].ptr[0 .. 9])); // runs off the end
+
+	// One byte short of `whole`'s start: not contained, either end.
+	auto below = buffer[0 .. 8].ptr[0 .. 4];
+	assert(containsView(below, below));
+	assert(!containsView(buffer[4 .. 8], below));
+}
+
+unittest {
+	// A string literal can hold a truncated UTF-8 sequence (`"\\xE2"` decodes
+	// to one lead byte with no continuation bytes behind it), and `print`
+	// re-escapes every string it emits. The decoder must not read the
+	// continuation bytes the lead byte promises without checking they exist.
+	static immutable char[1] truncated = [cast(char) 0xE2];
+	auto escaped = escapePythonString(truncated[0 .. 1]);
+	scope(exit) strFree(escaped);
+	assert(escaped !is null);
+	assert(strSlice(escaped) == "\\u00e2");
+}
+
+unittest { // a well-formed multi-byte codepoint still round trips
+	StringProcessingError err;
+	auto decoded = unescapePythonString("\\u00e9", err); // e-acute
+	scope(exit) strFree(decoded);
+	assert(!err.failed);
+	assert(strSlice(decoded) == "\xc3\xa9");
+
+	auto reescaped = escapePythonString(strSlice(decoded));
+	scope(exit) strFree(reescaped);
+	assert(strSlice(reescaped) == "\\u00e9");
+}
+
+unittest {
+	// `\0` is an octal escape, so a digit directly behind it would be absorbed
+	// into it: emitting `\0` then `1` as `"\01"` says octal 1, not NUL followed
+	// by '1'. `escapeCppString` has to splice the literal there, exactly as it
+	// already did after a `\xhh`.
+	static immutable char[2] nulThenDigit = [cast(char) 0, '1'];
+	auto escaped = escapeCppString(nulThenDigit[0 .. 2]);
+	scope(exit) strFree(escaped);
+	assert(strSlice(escaped) == "\\0\" \"1");
+
+	// A NUL followed by a non-digit needs no splice.
+	static immutable char[2] nulThenLetter = [cast(char) 0, 'z'];
+	auto plain = escapeCppString(nulThenLetter[0 .. 2]);
+	scope(exit) strFree(plain);
+	assert(strSlice(plain) == "\\0z");
 }
 
 // NOTE: the C++ suite also asserted `string_interner(0)` throws

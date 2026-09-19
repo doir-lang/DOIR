@@ -19,6 +19,7 @@ private enum modules = [
 	"doir.parser",
 	"doir.byte_emiter",
 	"doir.pipeline.sema.function_arity",
+	"doir.pipeline.opt.inline_functions",
 	"doir.pipeline.opt.compute_compiler_namespace",
 ];
 

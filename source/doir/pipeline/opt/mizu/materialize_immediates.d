@@ -5,7 +5,7 @@ module doir.pipeline.opt.mizu.materialize_immediates;
 
 import core.stdc.stdio : snprintf;
 
-import ecrs.storage : EntityId;
+import ecrs.storage : EntityId, invalidEntity;
 
 import fp.dynarray : daLength = length;
 
@@ -30,6 +30,14 @@ bool materializeImmediates(ref Module mod, EntityId subtree) @trusted {
 	immutable loadUpperImmediateOp = resolveCached(mod, "mizu.load_upper_immediate_op", 1);
 
 	immutable function_ = resolveAlias(mod, getComponent!Call(mod, subtree).related[0]);
+	// `invalidEntity` is 0, and it is what both an unresolved callee and an
+	// unresolvable `resolveCached` name come back as - so "neither resolved"
+	// compared *equal* here. A module that never included mizu.doir (so every
+	// `mizu.*` above is 0) and holds a call whose target is 0 was therefore
+	// treated as a `load_immediate`, and reported "load_immediate expects two
+	// inputs" against a synthesised entity, which aborts in
+	// `findSourceLocation`. An unresolved callee is not any of these.
+	if (function_ == invalidEntity) return true;
 	if (!(function_ == loadImmediate || function_ == loadUpperImmediate)) return true;
 
 	if (!hasComponent!FunctionInputs(mod, subtree)) {

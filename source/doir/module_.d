@@ -201,11 +201,23 @@ private struct ResolveCacheEntry {
 	EntityId entity;
 }
 
+/// One parsed file's text. Both halves are non-owning views: the name comes
+/// from the interner (or the command line) and the text from
+/// `doir.file_manager`, which keeps every file it loads alive - and at a fixed
+/// address - for the rest of the run.
+private struct SourceFileText {
+	const(char)[] file;
+	const(char)[] source;
+}
+
 /// The compiler's unit of work: an entity/component database plus everything
 /// needed to talk about where its entities came from.
 struct Module {
 	Context ctx;
 
+	/// The text of the file parsed most recently. A location that names a
+	/// file resolves against `sourceOf` instead; this is the fallback for the
+	/// synthesised ones that do not.
 	const(char)[] source;
 	const(char)[] workingFile;
 	bool hasWorkingFile = false;
@@ -215,6 +227,11 @@ struct Module {
 	StringInterner* interner = null;
 
 	private ResolveCacheEntry* resolvedCache = null;
+
+	/// Every file parsed into this module, so a byte offset can be turned
+	/// back into a line and column against the file it was cut from. See
+	/// `sourceOf`.
+	private SourceFileText* sourceFiles = null;
 }
 
 /// Builds an empty module with a fresh interner and the reserved invalid
@@ -235,6 +252,7 @@ void freeModule(ref Module m) @trusted {
 
 	clearResolveCache(m);
 	if (m.resolvedCache !is null) { fp.dynarray.free(m.resolvedCache); m.resolvedCache = null; }
+	if (m.sourceFiles !is null) { fp.dynarray.free(m.sourceFiles); m.sourceFiles = null; } // views; nothing to release
 	ecrs.context.free(m.ctx);
 	if (m.interner !is null) {
 		freeInterner(*m.interner);
@@ -246,6 +264,51 @@ void freeModule(ref Module m) @trusted {
 /// The module's working file, or `<unknown>` when it has none.
 const(char)[] workingFileOr(ref Module m, const(char)[] fallback) {
 	return m.hasWorkingFile ? m.workingFile : fallback;
+}
+
+/// Records the text `file` was parsed from. Called once per parsed file (both
+/// halves are non-owning, so the text has to outlive the module - everything
+/// `doir.file_manager` hands out does).
+void registerSource(ref Module m, const(char)[] file, const(char)[] source) @trusted {
+	foreach (i; 0 .. daLength(m.sourceFiles))
+		if (m.sourceFiles[i].file == file) {
+			m.sourceFiles[i].source = source;
+			return;
+		}
+	fp.dynarray.pushBack(m.sourceFiles, SourceFileText(file, source));
+}
+
+/// The text `file`'s byte offsets index into.
+///
+/// A location's offsets are only meaningful against the file they were cut
+/// from, and `m.source` is whichever file was parsed *last* - so an
+/// `early_include` leaves it pointing at the included file while the entities
+/// around the call still carry offsets into the includer. Resolving those
+/// against `m.source` reads the wrong lines, and (once the included file is
+/// the shorter of the two) walks off the end of it.
+///
+/// Locations that name no file at all - the synthesised ones - still have
+/// nothing better than `m.source` to resolve against, so that stays the
+/// fallback.
+const(char)[] sourceOf(ref Module m, const(char)[] file) @trusted {
+	foreach (i; 0 .. daLength(m.sourceFiles))
+		if (m.sourceFiles[i].file == file)
+			return m.sourceFiles[i].source;
+	return m.source;
+}
+
+/// Ditto, for the file a location names.
+const(char)[] sourceOf(Location)(ref Module m, const Location location)
+if (is(typeof(location.file) : const(char)[]))
+{
+	return sourceOf(m, location.file);
+}
+
+/// The text the module's working file was parsed from - what a location
+/// built by searching `m.source` has to be resolved against to stay in step
+/// with the file name such a location is given.
+const(char)[] workingSource(ref Module m) {
+	return m.hasWorkingFile ? sourceOf(m, m.workingFile) : m.source;
 }
 
 /// Interns `s` in this module's interner.

@@ -954,21 +954,38 @@ EntityId pushValuelessParameter(TType)(ref FunctionBuilder fb, size_t index, Int
 /// location components it carries - or, failing that, by finding its name in
 /// the module's source text.
 SourceLocation findSourceLocation(ref Module mod, EntityId subtree) @trusted {
-	if (hasComponent!Detailed(mod, subtree))
-		return getComponent!Detailed(mod, subtree).toBytes(mod.source);
+	// Synthesized entities (an anonymous function type, anything a later pass
+	// builds) can carry none of the three, so the walk climbs to the nearest
+	// located ancestor rather than aborting: a diagnostic pointing at the
+	// enclosing declaration beats killing the compiler while reporting one.
+	for (auto e = subtree;;) {
+		if (hasComponent!Detailed(mod, e)) {
+			auto detailed = getComponent!Detailed(mod, e);
+			return detailed.toBytes(sourceOf(mod, detailed));
+		}
 
-	if (hasComponent!SourceLocation(mod, subtree))
-		return getComponent!SourceLocation(mod, subtree);
+		if (hasComponent!SourceLocation(mod, e))
+			return getComponent!SourceLocation(mod, e);
 
-	if (hasComponent!Name(mod, subtree)) {
-		auto name = getComponent!Name(mod, subtree).value;
-		immutable start = findSlices(mod.source, name.view, 0);
-		if (start == size_t.max)
-			panic("Failed to generate source location for entity");
-		return SourceLocation(workingFileOr(mod, invalidFileName), start, start + name.view.length);
+		if (hasComponent!Name(mod, e)) {
+			// The offset this finds is one into the working file, so the
+			// location has to be named after that file for `sourceOf` to hand
+			// the same text back when it is resolved.
+			auto name = getComponent!Name(mod, e).value;
+			immutable start = findSlices(workingSource(mod), name.view, 0);
+			if (start != size_t.max)
+				return SourceLocation(workingFileOr(mod, invalidFileName), start, start + name.view.length);
+		}
+
+		if (!hasComponent!Parent(mod, e)) break;
+		immutable parent = getComponent!Parent(mod, e).related[0];
+		if (parent == e || parent == invalidEntity) break;
+		e = parent;
 	}
 
-	panic("Failed to generate source location for entity");
+	// Nothing in the chain was locatable. Point at the top of the working
+	// file; the diagnostic's message still says what went wrong.
+	return SourceLocation(workingFileOr(mod, invalidFileName), 0, 0);
 }
 
 /// Ditto, as line/column pairs.
@@ -978,7 +995,8 @@ Detailed findDetailedSourceLocation(ref Module mod, EntityId subtree) {
 	if (hasComponent!Detailed(mod, subtree))
 		return getComponent!Detailed(mod, subtree);
 
-	return findSourceLocation(mod, subtree).toDetailed(mod.source);
+	auto location = findSourceLocation(mod, subtree);
+	return location.toDetailed(sourceOf(mod, location));
 }
 
 

@@ -168,7 +168,8 @@ private CommonElements commonAssignmentElements(ref Module mod, EntityId subtree
 		out_.location = getComponent!Detailed(mod, subtree);
 		out_.hasLocation = true;
 	} else if (hasComponent!SourceLocation(mod, subtree)) {
-		out_.location = getComponent!SourceLocation(mod, subtree).toDetailed(mod.source);
+		auto location = getComponent!SourceLocation(mod, subtree);
+		out_.location = location.toDetailed(sourceOf(mod, location));
 		out_.hasLocation = true;
 	}
 

@@ -17,13 +17,18 @@ import doir.module_;
 
 private void annotateAt(ref Module mod, ref Diagnostic diag, EntityId entity, const(char)[] name, const(char)[] message) @trusted {
 	auto location = findSourceLocation(mod, entity);
+	auto source = sourceOf(mod, location);
 
 	Diagnostic.Annotation annotation;
 	annotation.message = text(DoirAnsi.info, name, Ansi.reset, message);
-	immutable start = findSlices(mod.source[location.startByte .. location.endByte], name, 0);
+	immutable start = findSlices(spanOf(source, location), name, 0);
 	if (start != size_t.max)
 		location.startByte += start;
-	annotation.position = location.start(mod.source);
+	annotation.position = location.start(source);
+	// The two declarations can sit in different files once one of them came in
+	// through an `early_include`; the printer pulls the annotated line out of
+	// `file` when it names one (answering the TODO below).
+	if (location.file != diag.location.file) annotation.file = location.file;
 	pushAnnotation(diag, annotation);
 }
 
@@ -66,14 +71,14 @@ bool nameReuse(ref Module mod, EntityId subtree) @trusted {
 		}
 		if (reuseCount == 0) continue;
 
+		auto location = findSourceLocation(mod, e);
 		auto diag = &pushDiagnostic(DiagnosticType.FailedToResolveLookup,
-			findSourceLocation(mod, e), mod.source, workingFileOr(mod, invalidFileName));
+			location, sourceOf(mod, location), location.file);
 		annotateAt(mod, *diag, e, name.view, " appears to have been redefined");
 
 		// NOTE: the C++ loop body reads `entities[1]` rather than
 		// `entities[i]`, so every "also defined here" annotation points at the
 		// *first* reuse regardless of how many there are. Kept as-is.
-		// TODO: What happens if the uses are in different files?
 		foreach (_; 0 .. reuseCount)
 			annotateAt(mod, *diag, firstReuse, name.view, " also defined here");
 

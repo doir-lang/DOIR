@@ -73,6 +73,11 @@ struct FunctionTypeT {
 	FunctionTypeParam* params = null; // fp dynarray
 	bool hasReturnType = false;
 	Lookup returnType;
+	// The span the rule consumed. An anonymous function-type entity is not
+	// named and is not the entity the enclosing assignment attaches its own
+	// location to, so this is the only location it can ever be given - and it
+	// carries the lookups a failed parameter type reports against.
+	size_t start = 0, end = 0;
 }
 
 void free(ref FunctionTypeT t) @trusted {
@@ -116,6 +121,30 @@ struct Parser {
 	size_t pos;
 	bool guaranteeSourceLocation = true;
 	size_t furthest; // deepest byte offset reached, for the syntax-error report
+	size_t depth;    // open nesting levels, for the recursion guard below
+	bool depthExceeded; // sticky: some rule bottomed out on `maxNestingDepth`
+}
+
+/// How deep `{`, `(a: T) -> U` and a `language` block's braces may nest.
+///
+/// The rules below are recursive descent, so nesting is stack depth: a block
+/// costs an `assignment`/`assignmentValue`/`block` trio, a function type a
+/// `type`/`functionType`/`parameter`/`deducibleType` one, a few hundred bytes
+/// a level either way. Source nested about ten thousand deep overflowed the
+/// stack outright, so the cap turns that into a diagnostic - well above
+/// anything real (the deepest `.doir` in the repo nests three) and well below
+/// what a default stack holds.
+private enum maxNestingDepth = 512;
+
+/// Claims a nesting level, or fails the rule when there are none left. Every
+/// caller pairs this with `scope(exit) --p.depth;`.
+private bool enterNesting(ref Parser p) {
+	if (p.depth >= maxNestingDepth) {
+		p.depthExceeded = true;
+		return false;
+	}
+	++p.depth;
+	return true;
 }
 
 private bool eof(ref Parser p) { return p.pos >= p.source.length; }
@@ -442,11 +471,32 @@ exponent:
 	return true;
 }
 
-/// `Keywords <- ('deduced' | 'export' | 'flatten' | 'inline' | 'language' | 'tail')_`
+/// Matches `text_` only when it stands as a whole keyword token - that is,
+/// when the character behind it cannot continue an identifier.
+///
+/// The grammar spells every keyword as bare text followed by `_`, and `_`
+/// matches the empty string, so `'export'` also matches the front of
+/// `exported`. That is a silent misparse rather than a rejection:
+/// `exported : compiler.byte = 1` consumed `export` as the modifier and
+/// declared something called `ed`. It also made `inlined`, `flattened`,
+/// `tailcall` and friends unusable as names. A keyword is a token, so it is
+/// matched as one here (and `grammar.peg` says so now too).
+private bool lookingAtKeyword(ref Parser p, const(char)[] text_) @trusted {
+	if (!lookingAt(p, text_)) return false;
+
+	immutable at = p.pos + text_.length;
+	if (at >= p.source.length) return true;
+	if (p.source[at] == '.') return false; // a dotted path continues the name
+
+	size_t width;
+	return !identifierContinueAt(p, at, width);
+}
+
+/// `Keywords <- ('deduced' | 'export' | 'flatten' | 'inline' | 'language' | 'tail') !UnicodeIdentifierContinue`
 private bool atKeyword(ref Parser p) {
 	static immutable string[6] keywords = ["deduced", "export", "flatten", "inline", "language", "tail"];
 	foreach (k; keywords)
-		if (lookingAt(p, k)) return true;
+		if (lookingAtKeyword(p, k)) return true;
 	return false;
 }
 
@@ -721,7 +771,7 @@ private bool deducibleType(ref Parser p, ref BlockBuilder* blocks, ref ParsedTyp
 	auto mod = p.mod;
 
 	bool deduced = false;
-	if (lookingAt(p, "deduced")) {
+	if (lookingAtKeyword(p, "deduced")) {
 		advance(p, "deduced".length);
 		skipWhitespace(p);
 		deduced = true;
@@ -783,6 +833,8 @@ private bool functionType(ref Parser p, ref BlockBuilder* blocks, ref FunctionTy
 	immutable save = p.pos;
 
 	if (peek(p) != '(') return false;
+	if (!enterNesting(p)) return false;
+	scope(exit) --p.depth;
 	advance(p);
 	skipWhitespace(p);
 
@@ -810,6 +862,8 @@ private bool functionType(ref Parser p, ref BlockBuilder* blocks, ref FunctionTy
 	if (!type(p, blocks, returnType)) { result.free(); p.pos = save; return false; }
 
 	result.hasReturnType = true;
+	result.start = save;
+	result.end = p.pos;
 	if (returnType.isFunctionType) {
 		// NOTE: the C++ `any_cast<ecrs::entity_t>` here would throw on a
 		// function-type return type (the value it holds is a `function_type_t`).
@@ -839,7 +893,17 @@ private EntityId pushFunctionTypeEntity(ref Parser p, ref BlockBuilder* blocks, 
 
 	auto inputSlice = inputs is null ? null : inputs[0 .. ft.length];
 	auto nameSlice = names is null ? null : names[0 .. ft.length];
-	return pushFunctionType(*daBack(blocks), ident, inputSlice, ft.returnType, ft.hasReturnType, nameSlice);
+	immutable out_ = pushFunctionType(*daBack(blocks), ident, inputSlice, ft.returnType, ft.hasReturnType, nameSlice);
+
+	// An anonymous function type gets no `Name` out of `pushCommon` and is not
+	// the entity `buildAssignment` hangs its span on, so without this it has no
+	// location at all - and `lookupsResolved`, reporting an unresolved
+	// parameter or return type against it, panicked in `findSourceLocation`
+	// rather than printing the error.
+	if (ident.view == "_" && p.guaranteeSourceLocation && ft.end > ft.start)
+		getOrAddComponent!SourceLocation(*p.mod, out_) = spanLocation(p, ft.start, ft.end);
+
+	return out_;
 }
 
 /// The C++ `function_type_t::push_function`.
@@ -883,9 +947,13 @@ private EntityId pushValuelessFunctionFromType(ref Parser p, ref BlockBuilder* b
 private bool functionCall(ref Parser p, ref CallInfo result) @trusted {
 	immutable save = p.pos;
 
-	if (lookingAt(p, "flatten")) { advance(p, 7); skipWhitespace(p); result.flatten = true; }
-	else if (lookingAt(p, "inline")) { advance(p, 6); skipWhitespace(p); result.inline_ = true; }
-	else if (lookingAt(p, "tail")) { advance(p, 4); skipWhitespace(p); result.tail = true; }
+	if (lookingAtKeyword(p, "flatten")) {
+		advance(p, "flatten".length); skipWhitespace(p); result.flatten = true;
+	} else if (lookingAtKeyword(p, "inline")) {
+		advance(p, "inline".length); skipWhitespace(p); result.inline_ = true;
+	} else if (lookingAtKeyword(p, "tail")) {
+		advance(p, "tail".length); skipWhitespace(p); result.tail = true;
+	}
 
 	if (!identifier(p, result.function_)) { p.pos = save; return false; }
 	skipWhitespace(p);
@@ -921,6 +989,8 @@ private bool block(ref Parser p, ref BlockBuilder* blocks, out EntityId result) 
 	auto mod = p.mod;
 
 	if (peek(p) != '{') return false;
+	if (!enterNesting(p)) return false;
+	scope(exit) --p.depth;
 	advance(p);
 	skipWhitespace(p);
 
@@ -1015,6 +1085,8 @@ private bool assignmentValue(ref Parser p, ref BlockBuilder* blocks, ref ParsedV
 private bool matchingBraces(ref Parser p) {
 	immutable save = p.pos;
 	if (peek(p) != '{') return false;
+	if (!enterNesting(p)) return false;
+	scope(exit) --p.depth;
 	advance(p);
 	for (;;) {
 		if (eof(p)) { p.pos = save; return false; }
@@ -1030,7 +1102,8 @@ private bool matchingBraces(ref Parser p) {
 /// `change_language <- 'language'_ '"' < StringChar* > '"'_ matching_braces _`
 private bool changeLanguage(ref Parser p) {
 	immutable save = p.pos;
-	if (!literal(p, "language")) return false;
+	if (!lookingAtKeyword(p, "language")) return false;
+	advance(p, "language".length);
 	skipWhitespace(p);
 	if (peek(p) != '"') { p.pos = save; return false; }
 	advance(p);
@@ -1078,8 +1151,8 @@ private bool assignment(ref Parser p, ref BlockBuilder* blocks, out EntityId res
 	}
 
 	bool export_ = false;
-	if (lookingAt(p, "export")) {
-		advance(p, 6);
+	if (lookingAtKeyword(p, "export")) {
+		advance(p, "export".length);
 		skipWhitespace(p);
 		export_ = true;
 	}
@@ -1172,9 +1245,23 @@ private EntityId buildAssignment(ref Parser p, ref BlockBuilder* blocks, size_t 
 		case ValueKind.call: {
 			auto call = &value.call;
 			if (!declaredType.isFunctionType) {
-				if (declaredType.name == aliasInterned && call.function_ == aliasInterned)
+				if (declaredType.name == aliasInterned && call.function_ == aliasInterned) {
+					// `alias` names exactly one thing. Without this check
+					// `x : alias = alias()` indexed an empty argument list and
+					// dereferenced null.
+					if (doir.interface_.length((*call).inputs) != 1) {
+						auto diag = &pushDiagnostic(DiagnosticType.InvalidFunctionCall,
+							spanLocation(p, start, p.pos), mod.source, p.path);
+						Diagnostic.Annotation annotation;
+						annotation.message = text(DoirAnsi.func, "alias", Ansi.reset,
+							" takes exactly one argument, but was given ",
+							doir.interface_.length((*call).inputs));
+						annotation.position = diag.location.start;
+						pushAnnotation(*diag, annotation);
+						return invalidEntity;
+					}
 					e = pushAlias(*daBack(blocks), ident, (*call).inputs[0].name());
-				else if (call.function_ == aliasInterned) {
+				} else if (call.function_ == aliasInterned) {
 					auto diag = &pushDiagnostic(DiagnosticType.CantCopyRegisters,
 						spanLocation(p, start, p.pos), mod.source, p.path);
 					Diagnostic.Annotation annotation;
@@ -1279,8 +1366,13 @@ private EntityId buildAssignment(ref Parser p, ref BlockBuilder* blocks, size_t 
 		&& !(hasComponent!SourceLocation(*mod, e) || hasComponent!Detailed(*mod, e)))
 		getOrAddComponent!SourceLocation(*mod, e) = spanLocation(p, start, p.pos);
 
+	// OR rather than assign: the value handled above may already have set
+	// flags on `e` (Inline/Flatten/Tail from a call, Comptime from a `block`,
+	// Namespace from `pushNamespace`), and clobbering those produced IR that
+	// `doir.verify` rejects outright - `export x : namespace = { }` lost its
+	// Namespace bit and panicked with "Invalid flags".
 	if (export_)
-		getOrAddComponent!Flags(*mod, e).flags = Flags.Export;
+		getOrAddComponent!Flags(*mod, e).flags |= Flags.Export;
 
 	return e;
 }
@@ -1299,7 +1391,12 @@ private void reportSyntaxError(ref Parser p) @trusted {
 
 	Diagnostic diag;
 	diag.kind = Kind.error;
-	diag.message = text("Syntax error");
+	// A rule that ran out of nesting levels fails like any other, so the parse
+	// stops with the cursor at the deepest `{` or `(` - saying "syntax error"
+	// there would point at source that is perfectly well formed.
+	diag.message = p.depthExceeded
+		? text("Nesting too deep (the limit is ", maxNestingDepth, " levels)")
+		: text("Syntax error");
 	diag.location = location.toDetailed(p.source);
 	diagnostics().push(diag);
 }
@@ -1316,6 +1413,7 @@ bool parseSource(ref Module mod, ref BlockBuilder* blocks, const(char)[] source,
 	mod.workingFile = path;
 	mod.hasWorkingFile = true;
 	mod.source = source;
+	registerSource(mod, path, source);
 
 	Parser p;
 	p.mod = &mod;
@@ -1336,19 +1434,35 @@ bool parseSource(ref Module mod, ref BlockBuilder* blocks, const(char)[] source,
 	mod.hasWorkingFile = backupHasWorkingFile;
 	// NOTE: `mod.source` is deliberately *not* restored, matching the C++
 	// `module::parse`, which only restores `working_file`. Diagnostics raised
-	// after a parse point into the file just parsed.
+	// after a parse point into the file just parsed - which is why a location
+	// that names a file is resolved against `sourceOf(mod, file)` rather than
+	// against `mod.source`.
 	cast(void) backupSource;
 
 	return ok;
 }
 
 /// Loads `path` and parses it.
+///
+/// A file that cannot be opened raises `FileDoesNotExist` rather than only
+/// returning false: every caller reports through `diagnostics()` and treats an
+/// empty diagnostic set as success, so a silent false made the driver compile
+/// an empty module and exit 0 for a path that does not exist.
 bool parseFile(ref Module mod, ref BlockBuilder* blocks, const(char)[] path,
 	bool guaranteeSourceLocation = true) @trusted
 {
 	bool ok;
 	auto source = getFileString(path, ok);
-	if (!ok) return false;
+	if (!ok) {
+		auto diag = &pushDiagnostic(DiagnosticType.FileDoesNotExist,
+			SourceLocation(path, 0, 0), "", path);
+		Diagnostic.Annotation annotation;
+		annotation.message = text("Could not open ", DoirAnsi.file, "`", path, "`", Ansi.reset);
+		annotation.color = DoirAnsi.file;
+		annotation.position = diag.location.start;
+		pushAnnotation(*diag, annotation);
+		return false;
+	}
 	diagnostics().registerSource(path, source);
 	return parseSource(mod, blocks, source, path, guaranteeSourceLocation);
 }
@@ -1385,6 +1499,41 @@ unittest { // a minimal single assignment parses and passes verify.structure
 	diagnostics().clear();
 }
 
+unittest {
+	// Every file parsed into a module leaves `mod.source` pointing at itself,
+	// so after an `early_include` it names the *included* file while the
+	// entities around the call still carry offsets into the includer. Those
+	// have to keep resolving against the includer's text: against the wrong
+	// file they report the wrong lines, and - once the included file is the
+	// shorter of the two - walk off the end of it, which aborted the compiler
+	// inside `SourceLocation.findPair`.
+	diagnostics().clear();
+	auto mod = createModule();
+	scope(exit) freeModule(mod);
+
+	BlockBuilder* builders;
+	scope(exit) fp.dynarray.free(builders);
+	auto builtin = createBlockBuilder(mod);
+	buildBuiltinBlock(builtin);
+	fp.dynarray.pushBack(builders, builtin);
+
+	assert(parseSource(mod, builders,
+		"outerA : compiler.byte = 1\nouterB : compiler.byte = 2\n", "outer.doir"));
+	// Shorter than the text above, the way an included file usually is.
+	assert(parseSource(mod, builders, "inner : compiler.byte = 3\n", "inner.doir"));
+	assert(!diagnostics().hasErrors());
+
+	immutable root = builders[0].block;
+	auto outer = findDetailedSourceLocation(mod, find(mod, root, "outerB"));
+	assert(outer.file == "outer.doir");
+	assert(outer.start.line == 2);
+
+	auto inner = findDetailedSourceLocation(mod, find(mod, root, "inner"));
+	assert(inner.file == "inner.doir");
+	assert(inner.start.line == 1);
+	diagnostics().clear();
+}
+
 unittest { // a syntactically invalid source produces a parse failure, not a crash
 	diagnostics().clear();
 	auto mod = createModule();
@@ -1397,6 +1546,67 @@ unittest { // a syntactically invalid source produces a parse failure, not a cra
 	fp.dynarray.pushBack(builders, builtin);
 
 	assert(!parseSource(mod, builders, "this is not : : valid doir syntax !!!\n", "invalid.doir"));
+	diagnostics().clear();
+}
+
+unittest {
+	// An anonymous function type is pushed as its own entity named `_`, which
+	// `pushCommon` gives no `Name` and which no assignment hangs a span on. It
+	// is also what carries the parameter and return-type lookups, so reporting
+	// an unresolvable one against it sent `findSourceLocation` looking for a
+	// location that did not exist - and it panicked rather than printing the
+	// error. Each of these reaches that entity by a different route.
+	static foreach (source; [
+		"f : (x: nope) -> nope\n",              // valueless function
+		"f : (x: nope = 3) -> nope\n",          // ...with a default parameter
+		"f : (x: (y: nope) -> nope) -> u64\n",  // function type *as* a parameter
+	]) {{
+		auto r = compile(source);
+		scope(exit) freeModule(r.mod);
+		assert(!r.ok);
+		assert(diagnostics().hasErrors());
+	}}
+	diagnostics().clear();
+}
+
+unittest {
+	// Nesting is stack depth in a recursive-descent parser, so source nested
+	// deeply enough used to overflow the stack instead of failing. Each of the
+	// three recursive rules is capped; what matters is that all three come
+	// back rather than dying, whatever the diagnostic ends up saying.
+	enum levels = maxNestingDepth + 16;
+
+	static bool rejects(const(char)[] open, const(char)[] close) {
+		char[levels * 16] buffer = void;
+		size_t n = 0;
+		foreach (_; 0 .. levels) { buffer[n .. n + open.length] = open[]; n += open.length; }
+		foreach (_; 0 .. levels) { buffer[n .. n + close.length] = close[]; n += close.length; }
+
+		auto r = compile(buffer[0 .. n]);
+		scope(exit) freeModule(r.mod);
+		return !r.ok && diagnostics().hasErrors();
+	}
+
+	assert(rejects("b : block = {\n", "}\n"));  // block
+	assert(rejects("(x: ", ") -> u64"));        // functionType
+	diagnostics().clear();
+
+	// `language`'s braces recurse through `matchingBraces`, which has no
+	// per-level suffix to pair off, so it is spelled out rather than shaped to
+	// the helper above.
+	{
+		char[levels * 2 + 32] buffer = void;
+		size_t n = 0;
+		buffer[n .. n + 13] = `language "x" `; n += 13;
+		foreach (_; 0 .. levels) buffer[n++] = '{';
+		foreach (_; 0 .. levels) buffer[n++] = '}';
+		buffer[n++] = '\n';
+
+		auto r = compile(buffer[0 .. n]);
+		scope(exit) freeModule(r.mod);
+		assert(!r.ok);
+		assert(diagnostics().hasErrors());
+	}
 	diagnostics().clear();
 }
 
@@ -1457,6 +1667,105 @@ unittest { // #4 alias assignment: name : alias = target
 	assert(aliasE != invalidEntity);
 	assert(hasComponent!Alias(r.mod, aliasE));
 	assert(getComponent!Alias(r.mod, aliasE).related[0] == target);
+}
+
+unittest {
+	// `export` must OR its bit in rather than replace whatever the value
+	// already set. `pushNamespace` marks the entity `Namespace`; assigning
+	// `Flags.Export` over that left IR `doir.verify` rejects, so this source
+	// used to abort the compiler with "Invalid flags".
+	auto r = compile("export ns : namespace = {\n\tval : compiler.byte = 7\n}\n");
+	scope(exit) freeModule(r.mod);
+	assert(r.ok);
+
+	immutable ns = find(r.mod, r.root, "ns");
+	assert(ns != invalidEntity);
+	assert(flagsSet(r.mod, ns, Flags.Namespace));
+	assert(flagsSet(r.mod, ns, Flags.Export));
+}
+
+unittest { // ditto for the Comptime bit a `block`-typed assignment sets
+	auto r = compile("export blk : block = {\n\t%1 : compiler.byte = 6\n}\n");
+	scope(exit) freeModule(r.mod);
+	assert(r.ok);
+
+	immutable blk = find(r.mod, r.root, "blk");
+	assert(blk != invalidEntity);
+	assert(flagsSet(r.mod, blk, Flags.Export));
+	assert(flagsSet(r.mod, blk, Flags.Comptime));
+}
+
+unittest {
+	// `alias` names exactly one thing. A zero-argument `alias()` used to index
+	// an empty argument list and segfault on the null dynarray; it has to be a
+	// diagnostic instead.
+	auto r = compile("x : alias = alias()\n");
+	scope(exit) freeModule(r.mod);
+	assert(!r.ok);
+	assert(diagnostics().hasErrors());
+	diagnostics().clear();
+}
+
+unittest { // ...and so does a two-argument one
+	auto r = compile("%1 : compiler.byte = 5\nx : alias = alias(%1, %1)\n");
+	scope(exit) freeModule(r.mod);
+	assert(!r.ok);
+	assert(diagnostics().hasErrors());
+	diagnostics().clear();
+}
+
+unittest {
+	// A file that cannot be opened has to raise `FileDoesNotExist`, not just
+	// return false: the driver reports through `diagnostics()` and treats an
+	// empty diagnostic set as success, so a silent false made it compile an
+	// empty module and exit 0.
+	diagnostics().clear();
+	auto mod = createModule();
+	scope(exit) freeModule(mod);
+
+	BlockBuilder* builders;
+	scope(exit) fp.dynarray.free(builders);
+	auto builtin = createBlockBuilder(mod);
+	buildBuiltinBlock(builtin);
+	fp.dynarray.pushBack(builders, builtin);
+
+	assert(!parseFile(mod, builders, "/nonexistent/does_not_exist.doir"));
+	assert(diagnostics().hasErrors());
+	diagnostics().clear();
+}
+
+unittest {
+	// A keyword only counts when it stands as a whole token. The grammar spelled
+	// each one as bare text followed by `_`, which matches the empty string, so
+	// `export` also matched the front of `exported` - and this source silently
+	// declared something named `ed` with the export flag set rather than a
+	// register named `exported`.
+	auto r = compile("exported : compiler.byte = 1\n");
+	scope(exit) freeModule(r.mod);
+	assert(r.ok);
+	assert(find(r.mod, r.root, "exported") != invalidEntity);
+	assert(find(r.mod, r.root, "ed") == invalidEntity);
+	assert(!flagsSet(r.mod, find(r.mod, r.root, "exported"), Flags.Export));
+}
+
+unittest { // ...and the other five are usable as names again, not syntax errors
+	static immutable string[5] names = ["inlined", "flattened", "tailcall", "deducedX", "language2"];
+	foreach (name; names) {
+		auto source = text(name, " : compiler.byte = 1\n");
+		scope(exit) strFree(source);
+
+		auto r = compile(strSlice(source));
+		scope(exit) freeModule(r.mod);
+		assert(r.ok);
+		assert(find(r.mod, r.root, name) != invalidEntity);
+	}
+}
+
+unittest { // a real `export` keyword is still recognised
+	auto r = compile("export y : compiler.byte = 2\n");
+	scope(exit) freeModule(r.mod);
+	assert(r.ok);
+	assert(flagsSet(r.mod, find(r.mod, r.root, "y"), Flags.Export));
 }
 
 unittest { // #5 namespace assignment, with dotted member access

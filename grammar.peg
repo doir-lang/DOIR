@@ -1,24 +1,24 @@
 R"~(
 program <- _ assignment* !. # `!.` indicates end of input
-assignment <- change_language / (<'export'>_)? Identifier _ ':'_ Type wsc (_ '='_ assignment_value)? (SourceInfo wsc)? Terminator _
+assignment <- change_language / (<'export'> !UnicodeIdentifierContinue _)? Identifier _ ':'_ Type wsc (_ '='_ assignment_value)? (SourceInfo wsc)? Terminator _
 assignment_value <- Constant wsc / Block wsc / function_call / Identifier wsc / Type wsc
 
-change_language <- 'language'_ '"' < StringChar* > '"'_ matching_braces _
+change_language <- 'language' !UnicodeIdentifierContinue _ '"' < StringChar* > '"'_ matching_braces _
 matching_braces <- '{' enforested_content* '}'
 enforested_content <- matching_braces / [^{}]
 
-deducible_type <- (<'deduced'>_)? Type _
+deducible_type <- (<'deduced'> !UnicodeIdentifierContinue _)? Type _
 parameter <- Identifier _ ':'_ deducible_type ('='_ Constant _)?
 FunctionType <- '('_ (parameter (','_ parameter)*)? ')' _ <'->'>_ Type
 Type <- FunctionType / Identifier
 
 Block <- block_start assignment* '}'
 block_start <- '{'_
-function_call <- (<'flatten' | 'inline' | 'tail'>_)? Identifier _ '('_ (Identifier _ (','_ Identifier _)*)? ')'wsc
+function_call <- (<'flatten' | 'inline' | 'tail'> !UnicodeIdentifierContinue _)? Identifier _ '('_ (Identifier _ (','_ Identifier _)*)? ')'wsc
 
 Terminator <- (';' | '\n' | '\r\n' | '\r') / !. # newline, semicolon, or end of input
 Identifier <- "%" ('"' < StringChar* > '"') / !Keywords < ([%]/UnicodeIdentifierStart)([.]/UnicodeIdentifierContinue)* > 
-Keywords <- ('deduced' | 'export' | 'flatten' | 'inline' | 'language' | 'tail')_
+Keywords <- ('deduced' | 'export' | 'flatten' | 'inline' | 'language' | 'tail') !UnicodeIdentifierContinue
 SourceInfo <- ('<"' < (!'"' .)* > '":' / '<' < (!':' .)* > ':') < IntegerConstant > (<'-' IntegerConstant >)? ':' < IntegerConstant > (<'-' IntegerConstant > )? '>'
 
 Constant <- < FloatConstant > / < IntegerConstant > / ('"' < StringChar* > '"') / ('\'' < StringChar > '\'')

@@ -37,6 +37,11 @@ bool bubbleComptime(ref Module mod, EntityId subtree) @trusted {
 		}
 
 		immutable function_ = resolveAlias(mod, getComponent!Call(mod, subtree).related[0]);
+		// The callee need not be a function at all - `x : type = ...` followed
+		// by `y : x = x()` resolves to a type definition, which has no `TypeOf`.
+		// `functionArity` is the pass that reports that; bail out quietly here
+		// rather than asserting before it gets the chance.
+		if (!hasComponent!TypeOf(mod, function_)) return true;
 		immutable ft = resolveAlias(mod, getComponent!TypeOf(mod, function_).related[0]);
 		immutable comptimeFunction = flagsSet(mod, ft, Flags.Comptime);
 

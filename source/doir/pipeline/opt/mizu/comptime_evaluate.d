@@ -56,6 +56,10 @@ bool comptimeEvaluate(ref Module mod, EntityId subtree, SystemFunction mizuSched
 	immutable compiler = resolveCached(mod, "compiler", 1, true);
 	immutable assembler = resolveCached(mod, "compiler.assembler", 1, true);
 	immutable calledFunction = resolveAlias(mod, getComponent!Call(mod, subtree).related[0]);
+	// Nothing to run if the call has no target. `invalidEntity` is 0, so
+	// leaving this open would also let an unresolved callee compare equal to
+	// any `mizu.*` name this module never resolved.
+	if (calledFunction == invalidEntity) return true;
 	immutable calleeParent = findParent(mod, calledFunction);
 	// Compiler functions have their own pass and shouldn't really be used
 	// outside of the mizu backend.
@@ -80,6 +84,20 @@ bool comptimeEvaluate(ref Module mod, EntityId subtree, SystemFunction mizuSched
 		resolveCached(mod, "mizu.doir_attach_comptime_number_i64", 1, true);
 
 	if (calledFunction == mizuHalt) return true;
+
+	// Every one of these is needed to assemble the throwaway program below, and
+	// every one of them is `invalidEntity` (0) in a module that never
+	// early_include'd mizu.doir. Building the block anyway emitted bytes that
+	// decode to nothing, and `startFromEnvironment` then jumped the VM into a
+	// wild address - a segfault for any comptime call in a module with no mizu
+	// backend loaded (a zero-argument call is vacuously comptime, so this is
+	// easy to reach). Leave the call alone instead, the way a `compiler.*`
+	// callee is left alone above.
+	if (mizuNs == invalidEntity || mizuU64 == invalidEntity || mizuHalt == invalidEntity
+		|| mizuLoadImmediate == invalidEntity || mizuLoadUpperImmediate == invalidEntity
+		|| mizuDoirSetModule == invalidEntity
+		|| mizuDoirAttachComptimeNumberI64 == invalidEntity)
+		return true;
 
 	getComponent!Number(mod, compilerCurrentEntity).value = subtree;
 
@@ -216,6 +234,9 @@ bool comptimeEvaluate(ref Module mod, EntityId subtree, SystemFunction mizuSched
 		scope(exit) if (portable.program !is null) fp.dynarray.free(portable.program);
 
 		immutable count = daLength(portable.program);
+		// Nothing decoded - there is no entry point to jump to, and handing the
+		// VM a null program counter runs whatever happens to be at address 0.
+		if (count == 0) return true;
 		setupEnvironment(portable.environment, portable.program, portable.program + count);
 		startFromEnvironment(portable.program, portable.environment);
 	}

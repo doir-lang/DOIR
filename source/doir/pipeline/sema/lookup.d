@@ -62,8 +62,9 @@ bool resolveLookups(ref Module mod, EntityId e, bool typesOnly) @trusted {
 }
 
 private void unresolvedDiagnostic(ref Module mod, EntityId e, const(char)[] what, const(char)[] name) @trusted {
+	auto location = findDetailedSourceLocation(mod, e);
 	auto diag = &pushDiagnostic(DiagnosticType.FailedToResolveLookup,
-		findDetailedSourceLocation(mod, e), mod.source, workingFileOr(mod, invalidFileName));
+		location, sourceOf(mod, location), location.file);
 
 	Diagnostic.Annotation annotation;
 	annotation.message = text(what, DoirAnsi.info, name, Ansi.reset, " appears to not exist");
@@ -144,17 +145,17 @@ bool lookupsResolved(ref Module mod, EntityId e) @trusted {
 			removeComponent!LookupCall(mod, e);
 		} else {
 			auto location = findSourceLocation(mod, e);
-			auto diag = &pushDiagnostic(DiagnosticType.FailedToResolveLookup, location, mod.source,
-				workingFileOr(mod, invalidFileName));
+			auto source = sourceOf(mod, location);
+			auto diag = &pushDiagnostic(DiagnosticType.FailedToResolveLookup, location, source,
+				location.file);
 
 			Diagnostic.Annotation annotation;
 			annotation.message = text("Function ", DoirAnsi.info, lookup.name().view, Ansi.reset,
 				" appears to not exist");
-			immutable start = findSlices(mod.source[location.startByte .. location.endByte],
-				lookup.name().view, 0);
+			immutable start = findSlices(spanOf(source, location), lookup.name().view, 0);
 			if (start != size_t.max)
 				location.startByte += start;
-			annotation.position = location.start(mod.source);
+			annotation.position = location.start(source);
 			pushAnnotation(*diag, annotation);
 			valid = false;
 		}

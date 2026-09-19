@@ -15,7 +15,7 @@ import ecrs.storage : EntityId;
 import fp.string : concatenateSlice, strFree = free;
 
 import doir.interface_ : findDetailedSourceLocation, findSourceLocation;
-import doir.module_ : Module, workingFileOr;
+import doir.module_ : Module, sourceOf, workingFileOr;
 
 @nogc nothrow:
 
@@ -228,6 +228,17 @@ struct Range {
 	size_t start, end;
 }
 
+/// The stretch of `source` a location covers, clamped to what `source`
+/// actually holds. A location and the text it is resolved against can still
+/// drift apart - a synthesised location falls back to whatever file was
+/// parsed last - and a diagnostic about that is worth printing wrong, but not
+/// worth a bounds crash inside the error reporter.
+const(char)[] spanOf(const(char)[] source, SourceLocation location) {
+	immutable start = location.startByte < source.length ? location.startByte : source.length;
+	immutable end = location.endByte < source.length ? location.endByte : source.length;
+	return end > start ? source[start .. end] : null;
+}
+
 /// Finds the byte range of argument number `parameterIndex` inside the first
 /// parenthesised argument list in `text_`. `found` is false when there is no
 /// such argument. Nested brackets are tracked so this keeps working for
@@ -306,8 +317,9 @@ Range parseParameterRange(const(char)[] text_, size_t parameterIndex, out bool f
 
 /// `<name> expects <x> inputs`, pointed at the whole call.
 void expectsXInputs(ref Module mod, EntityId subtree, const(char)[] name, const(char)[] x) @trusted {
+	auto location = findDetailedSourceLocation(mod, subtree);
 	auto diag = &pushDiagnostic(DiagnosticType.InvalidFunctionCall,
-		findDetailedSourceLocation(mod, subtree), mod.source, workingFileOr(mod, invalidFileName));
+		location, sourceOf(mod, location), location.file);
 
 	Diagnostic.Annotation annotation;
 	annotation.message = text(DoirAnsi.func, name, Ansi.reset, " expects ", x, " inputs");
@@ -318,25 +330,27 @@ void expectsXInputs(ref Module mod, EntityId subtree, const(char)[] name, const(
 /// `<name> parameter <i+1><msg>`, pointed at the middle of argument `i`.
 void parameterError(ref Module mod, EntityId subtree, const(char)[] name, size_t i, const(char)[] msg) @trusted {
 	auto location = findSourceLocation(mod, subtree);
-	auto diag = &pushDiagnostic(DiagnosticType.InvalidFunctionCall, location, mod.source,
-		workingFileOr(mod, invalidFileName));
+	auto source = sourceOf(mod, location);
+	auto diag = &pushDiagnostic(DiagnosticType.InvalidFunctionCall, location, source,
+		location.file);
 
 	Diagnostic.Annotation annotation;
 	annotation.message = text(DoirAnsi.func, name, Ansi.reset, " parameter ",
 		DoirAnsi.info, i + 1, Ansi.reset, msg);
 
 	bool found;
-	auto range = parseParameterRange(mod.source[location.startByte .. location.endByte], i, found);
+	auto range = parseParameterRange(spanOf(source, location), i, found);
 	if (found)
 		location.startByte += (range.start + range.end) / 2;
-	annotation.position = location.start(mod.source);
+	annotation.position = location.start(source);
 	pushAnnotation(*diag, annotation);
 }
 
 /// `Entity <target> doesn't have an associated register`.
 void noAssociatedRegister(ref Module mod, EntityId subtree, EntityId target) @trusted {
+	auto location = findDetailedSourceLocation(mod, subtree);
 	auto diag = &pushDiagnostic(DiagnosticType.InvalidFunctionCall,
-		findDetailedSourceLocation(mod, subtree), mod.source, workingFileOr(mod, invalidFileName));
+		location, sourceOf(mod, location), location.file);
 
 	Diagnostic.Annotation annotation;
 	annotation.message = text("Entity ", DoirAnsi.info, cast(size_t) target, Ansi.reset,
@@ -348,8 +362,9 @@ void noAssociatedRegister(ref Module mod, EntityId subtree, EntityId target) @tr
 /// A plain single-annotation diagnostic anchored at the whole entity, which
 /// several passes build by hand.
 void simpleCallError(ref Module mod, EntityId subtree, char* message) @trusted {
+	auto location = findDetailedSourceLocation(mod, subtree);
 	auto diag = &pushDiagnostic(DiagnosticType.InvalidFunctionCall,
-		findDetailedSourceLocation(mod, subtree), mod.source, workingFileOr(mod, invalidFileName));
+		location, sourceOf(mod, location), location.file);
 
 	Diagnostic.Annotation annotation;
 	annotation.message = message;
