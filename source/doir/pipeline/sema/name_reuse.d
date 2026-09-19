@@ -87,3 +87,52 @@ bool nameReuse(ref Module mod, EntityId subtree) @trusted {
 
 	return valid;
 }
+
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+version (unittest) {
+	import tests.pipeline_helper;
+}
+
+unittest { // two declarations sharing a name in one block are reported
+	auto r = compile("x : compiler.byte = 1\nx : compiler.byte = 2\n");
+	scope(exit) freeModule(r.mod);
+	assert(!r.ok);
+	assert(diagnostics().hasErrors());
+	diagnostics().clear();
+}
+
+unittest { // ...and every reuse after the first is annotated, not just one
+	auto r = compile(
+		"x : compiler.byte = 1\nx : compiler.byte = 2\nx : compiler.byte = 3\n");
+	scope(exit) freeModule(r.mod);
+	assert(!r.ok);
+	assert(diagnostics().hasErrors());
+	diagnostics().clear();
+}
+
+unittest { // the same name in *different* blocks is fine
+	auto r = compile(
+		"export a : namespace = {\n\tx : compiler.byte = 1\n}\n"
+		~ "export b : namespace = {\n\tx : compiler.byte = 2\n}\n");
+	scope(exit) freeModule(r.mod);
+	assert(r.ok);
+}
+
+unittest { // an entity that is not a block, and an empty one, are skipped
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+	diagnostics().clear();
+
+	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.root);
+	assert(nameReuse(f.mod, byte_)); // not a block
+
+	immutable empty = addEntity(f.mod);
+	addComponent!Block(f.mod, empty);
+	assert(nameReuse(f.mod, empty)); // a block with nothing in it
+	assert(!diagnostics().hasErrors());
+	diagnostics().clear();
+}

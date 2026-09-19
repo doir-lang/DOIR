@@ -162,8 +162,13 @@ SourceInfo <- ('<"' < (!'"' .)* > '":' / '<' < (!':' .)* > ':') < IntegerConstan
 
 Constant <- < FloatConstant > / < IntegerConstant > / ('"' < StringChar* > '"') / ('\'' < StringChar > '\'')
 IntegerConstant <- ('0x' HexDigit+) / ('0b' [01]*) / ('0' [0-7]*) / ([1-9][0-9]*)
-FloatConstant <- ('0x' (HexDigit* '.' HexDigit+ / HexDigit+ '.'?) ([pP][+\-]? [0-9]+)?)
-	/ (([0-9]* '.' [0-9]+ / [0-9]+ '.'?) ('e'i[+\-]? [0-9]+)? )
+# A FloatConstant must carry a '.' or an exponent marker; anything else is an
+# IntegerConstant. The exponent's digits are optional, so a marker with nothing
+# behind it (`1e`, `0x1.8p`) is part of the number and contributes nothing.
+FloatConstant <- ('0x' (HexDigit* '.' HexDigit+ / HexDigit+ '.' HexDigit*) HexExponent? / '0x' HexDigit+ HexExponent)
+	/ (([0-9]* '.' [0-9]+ / [0-9]+ '.' [0-9]*) DecExponent? / [0-9]+ DecExponent)
+HexExponent <- [pP][+\-]? [0-9]*
+DecExponent <- 'e'i[+\-]? [0-9]*
 StringChar <- (!['"\n\\] .) / ('\\' ['\"?\\%abfnrtv]) / ('\\' [0-7]+) / ('\\x' HexDigit+) / ('\\u' HexDigit HexDigit HexDigit HexDigit) / ('\\U' HexDigit HexDigit HexDigit HexDigit HexDigit HexDigit HexDigit HexDigit)
 HexDigit <- [a-f0-9]i
 

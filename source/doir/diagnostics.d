@@ -13,6 +13,7 @@ import diagnose.source_location : Detailed, SourceLocation;
 import ecrs.storage : EntityId;
 
 import fp.string : concatenateSlice, strFree = free;
+import std.typecons : Nullable;
 
 import doir.interface_ : findDetailedSourceLocation, findSourceLocation;
 import doir.module_ : Module, sourceOf, workingFileOr;
@@ -240,16 +241,14 @@ const(char)[] spanOf(const(char)[] source, SourceLocation location) {
 }
 
 /// Finds the byte range of argument number `parameterIndex` inside the first
-/// parenthesised argument list in `text_`. `found` is false when there is no
-/// such argument. Nested brackets are tracked so this keeps working for
-/// doir+'s richer call syntax.
-Range parseParameterRange(const(char)[] text_, size_t parameterIndex, out bool found) {
-	found = false;
-
+/// parenthesised argument list in `text_`, or null when there is no such
+/// argument. Nested brackets are tracked so this keeps working for doir+'s
+/// richer call syntax.
+Nullable!Range parseParameterRange(const(char)[] text_, size_t parameterIndex) {
 	size_t open = size_t.max;
 	foreach (i; 0 .. text_.length)
 		if (text_[i] == '(') { open = i; break; }
-	if (open == size_t.max) return Range.init;
+	if (open == size_t.max) return Nullable!Range.init;
 
 	size_t depth = 0;
 	size_t currentParameter = 0;
@@ -269,11 +268,9 @@ Range parseParameterRange(const(char)[] text_, size_t parameterIndex, out bool f
 			case ')':
 				if (depth == 0) {
 					// Final parameter before ')'
-					if (currentParameter == parameterIndex) {
-						found = true;
-						return Range(parameterBegin, i);
-					}
-					return Range.init;
+					if (currentParameter == parameterIndex)
+						return Nullable!Range(Range(parameterBegin, i));
+					return Nullable!Range.init;
 				}
 				--depth;
 				break;
@@ -286,10 +283,8 @@ Range parseParameterRange(const(char)[] text_, size_t parameterIndex, out bool f
 
 			case ',':
 				if (depth == 0) {
-					if (currentParameter == parameterIndex) {
-						found = true;
-						return Range(parameterBegin, i);
-					}
+					if (currentParameter == parameterIndex)
+						return Nullable!Range(Range(parameterBegin, i));
 					++currentParameter;
 					parameterBegin = i + 1;
 				}
@@ -300,7 +295,7 @@ Range parseParameterRange(const(char)[] text_, size_t parameterIndex, out bool f
 		}
 	}
 
-	return Range.init;
+	return Nullable!Range.init;
 }
 
 
@@ -338,10 +333,9 @@ void parameterError(ref Module mod, EntityId subtree, const(char)[] name, size_t
 	annotation.message = text(DoirAnsi.func, name, Ansi.reset, " parameter ",
 		DoirAnsi.info, i + 1, Ansi.reset, msg);
 
-	bool found;
-	auto range = parseParameterRange(spanOf(source, location), i, found);
-	if (found)
-		location.startByte += (range.start + range.end) / 2;
+	auto range = parseParameterRange(spanOf(source, location), i);
+	if (!range.isNull)
+		location.startByte += (range.get.start + range.get.end) / 2;
 	annotation.position = location.start(source);
 	pushAnnotation(*diag, annotation);
 }
@@ -370,4 +364,180 @@ void simpleCallError(ref Module mod, EntityId subtree, char* message) @trusted {
 	annotation.message = message;
 	annotation.position = diag.location.start;
 	pushAnnotation(*diag, annotation);
+}
+
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+version (unittest) {
+	import ecrs.storage : invalidEntity;
+
+	import fp.string : strFree = free, strSlice = slice;
+
+	import doir.interface_;
+	import doir.module_;
+	import tests.pipeline_helper;
+}
+
+unittest { // `text` renders each piece type it accepts
+	auto s = text("n=", cast(size_t) 42, " f=", 1.5L, " s=", "str");
+	scope(exit) strFree(s);
+	assert(strSlice(s) == "n=42 f=1.5 s=str");
+
+	// A libfp string is a piece too, and a null one contributes nothing.
+	char* inner = text("inner");
+	scope(exit) strFree(inner);
+	char* nested = text("[", inner, "]");
+	scope(exit) strFree(nested);
+	assert(strSlice(nested) == "[inner]");
+
+	char* nothing = null;
+	char* withNull = text("<", nothing, ">");
+	scope(exit) strFree(withNull);
+	assert(strSlice(withNull) == "<>");
+
+	// `appendText` is the same thing onto an existing string.
+	char* built = text("a");
+	scope(exit) strFree(built);
+	appendText(built, "b", cast(size_t) 1);
+	assert(strSlice(built) == "ab1");
+}
+
+unittest { // every catalogued diagnostic has a message, and a kind
+	static foreach (type; [
+		DiagnosticType.LanguageChangeNotSupported, DiagnosticType.FileDoesNotExist,
+		DiagnosticType.NumberingStartsAt1, DiagnosticType.NumberingOutOfOrder,
+		DiagnosticType.AliasNotAllowed, DiagnosticType.InvalidIdentifier,
+		DiagnosticType.InvalidType, DiagnosticType.InvalidFunctionCall,
+		DiagnosticType.CantStoreInFunctionRegister, DiagnosticType.CantCopyRegisters,
+		DiagnosticType.StringProcessingError, DiagnosticType.FailedToResolveLookup,
+	]) {{
+		auto diag = generateDiagnostic(type, Detailed.init, "", "t.doir");
+		scope(exit) diagnostics().push(diag); // takes ownership of the message
+		assert(diag.kind == Kind.error);
+		assert(diag.hasCode && diag.code == cast(size_t) type);
+		assert(diag.message !is null);
+	}}
+	assert(diagnostics().hasErrors());
+	diagnostics().clear();
+
+	auto warning = generateDiagnostic(DiagnosticType.CompilerNamespaceReserved,
+		Detailed.init, "", "t.doir");
+	diagnostics().push(warning);
+	assert(warning.kind == Kind.warning);
+	assert(!diagnostics().hasErrors());
+	diagnostics().clear();
+
+	// `Invalid` is not a diagnostic at all: it falls through with no message.
+	auto invalid = generateDiagnostic(DiagnosticType.Invalid, Detailed.init, "", "t.doir");
+	diagnostics().push(invalid);
+	assert(invalid.message is null);
+	diagnostics().clear();
+}
+
+unittest { // the byte-range overloads resolve their location against the source
+	enum source = "x : compiler.byte = 1\n";
+	auto diag = generateDiagnostic(DiagnosticType.InvalidType,
+		SourceLocation("t.doir", 0, 1), source, "t.doir");
+	diagnostics().push(diag);
+	assert(diag.location.file == "t.doir");
+	diagnostics().clear();
+
+	pushDiagnostic(DiagnosticType.InvalidType, SourceLocation("t.doir", 0, 1), source, "t.doir");
+	assert(diagnostics().count() == 1);
+	diagnostics().clear();
+}
+
+unittest { // spanOf clamps a location to the text it is resolved against
+	enum source = "abcdef";
+	assert(spanOf(source, SourceLocation("t", 1, 4)) == "bcd");
+	assert(spanOf(source, SourceLocation("t", 4, 99)) == "ef"); // end past the text
+	assert(spanOf(source, SourceLocation("t", 99, 99)) is null); // start past it too
+	assert(spanOf(source, SourceLocation("t", 3, 3)) is null);   // empty range
+}
+
+unittest { // parseParameterRange finds the nth argument of a call
+	enum call = "f(a, bb, ccc)";
+
+	auto first = parseParameterRange(call, 0);
+	assert(call[first.get.start .. first.get.end] == "a");
+
+	auto middle = parseParameterRange(call, 1);
+	assert(call[middle.get.start .. middle.get.end] == " bb");
+
+	auto last = parseParameterRange(call, 2);
+	assert(call[last.get.start .. last.get.end] == " ccc");
+
+	// Past the end of the list.
+	assert(parseParameterRange("f(a, bb)", 5).isNull);
+
+	// No argument list at all.
+	assert(parseParameterRange("no call here", 0).isNull);
+}
+
+unittest { // ...and commas inside nested brackets do not separate arguments
+	enum text_ = "f(g(a, b), [c, d], {e}, <h>, i)";
+
+	auto nestedCall = parseParameterRange(text_, 0);
+	assert(text_[nestedCall.get.start .. nestedCall.get.end] == "g(a, b)");
+
+	auto square = parseParameterRange(text_, 1);
+	assert(text_[square.get.start .. square.get.end] == " [c, d]");
+
+	auto brace = parseParameterRange(text_, 2);
+	assert(text_[brace.get.start .. brace.get.end] == " {e}");
+
+	auto angle = parseParameterRange(text_, 3);
+	assert(text_[angle.get.start .. angle.get.end] == " <h>");
+
+	auto plain = parseParameterRange(text_, 4);
+	assert(text_[plain.get.start .. plain.get.end] == " i");
+
+	// An unbalanced closer at depth zero is ignored rather than underflowing.
+	assert(parseParameterRange("f(a]b", 0).isNull);
+}
+
+unittest { // the recurring diagnostic shapes each push one annotated diagnostic
+	diagnostics().clear();
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.root);
+	immutable emit = resolveLookupName(f.mod, internIn(f.mod, "compiler.emit"), f.root);
+	immutable arg = pushNumber(block, internIn(f.mod, "arg"), byte_, 1);
+	immutable call = pushCall(block, internIn(f.mod, "c"), byte_, emit, (&arg)[0 .. 1]);
+
+	expectsXInputs(f.mod, call, "emit", "one");
+	assert(diagnostics().count() == 1);
+
+	parameterError(f.mod, call, "emit", 0, " is wrong");
+	assert(diagnostics().count() == 2);
+
+	noAssociatedRegister(f.mod, call, arg);
+	assert(diagnostics().count() == 3);
+
+	simpleCallError(f.mod, call, text("something went wrong"));
+	assert(diagnostics().count() == 4);
+
+	assert(diagnostics().hasErrors());
+	diagnostics().clear();
+}
+
+unittest {
+	// `parameterError` points at the middle of the argument it names, which it
+	// finds by scanning the source text the entity's location covers - so this
+	// one goes through a real parse rather than hand-built IR.
+	diagnostics().clear();
+	auto r = compile("a : compiler.byte = 1\nb : compiler.byte = compiler.emit(a)\n");
+	scope(exit) freeModule(r.mod);
+	assert(r.ok);
+
+	immutable call = find(r.mod, r.root, "b");
+	assert(call != invalidEntity);
+	parameterError(r.mod, call, "emit", 0, " is wrong");
+	assert(diagnostics().count() == 1);
+	diagnostics().clear();
 }

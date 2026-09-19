@@ -5,7 +5,7 @@
 /// ids it bakes into the generated file are `doirLookup`'s, which are fixed
 /// at *compile* time from Mizu's own module list (plus DOIR's four extra
 /// instructions, which take the ids immediately after Mizu's - see
-/// mizu.doir_instructions).
+/// doir.mizu.instructions).
 ///
 /// The names it emits are the C++ Mizu spellings (`debug_print`,
 /// `load_immediate`, ...), not D's camelCase ones, so existing `.doir` sources
@@ -14,7 +14,7 @@ module tools.mizu_gen;
 
 import core.stdc.stdio : printf;
 
-import mizu.doir_instructions : doirLookup;
+import doir.mizu.instructions : doirLookup;
 import mizu.lookup : notFound;
 
 @nogc nothrow:
@@ -23,7 +23,7 @@ import mizu.lookup : notFound;
 /// Every instruction to bind, in the order the generated file lists them.
 /// These are `doirLookup` names (D spellings); `snakeCase` below converts
 /// each one for the DOIR side.
-private static immutable string[48] program = [
+private static immutable string[44] program = [
 	"findLabel",
 	"debugPrint",
 	"debugPrintBinary",
@@ -68,18 +68,23 @@ private static immutable string[48] program = [
 	"bitwiseXor",
 	"bitwiseAnd",
 	"bitwiseOr",
+];
 
-	"doirSetModule",
-	"doirAttachComptimeNumberI64",
-	"doirExecute",
-	"doirExecuteIf",
+/// DOIR's own four, which the generated file nests in a `doir` namespace of
+/// its own so they read as `mizu.doir.execute` rather than sitting beside
+/// Mizu's instructions as `mizu.doir_execute`.
+private static immutable string[4] doirProgram = [
+	"setModule",
+	"attachComptimeNumberI64",
+	"execute",
+	"executeIf",
 ];
 
 private static immutable string[16] singleOperandOps = [
 	"debugPrint", "debugPrintBinary", "convertToU64", "convertToU32", "convertToU16",
 	"convertToU8", "stackLoadU64", "stackLoadU32", "stackLoadU16", "stackLoadU8",
 	"stackPush", "stackPop", "offsetOfStackBottom", "jumpRelative", "jumpTo",
-	"doirSetModule",
+	"setModule",
 ];
 
 private static immutable string[3] immediateOps = [
@@ -141,6 +146,125 @@ private void printName(const(char)[] name) {
 	printf("%.*s", cast(int) n, buffer.ptr);
 }
 
+/// Emits one instruction's DOIR-level binding.
+private void emitInstruction(const(char)[] name) {
+	if (name == "findLabel") {
+		printName(name); printf("_t : type = (label: compiler.assembler.register) -> u64\n");
+		printf("_ : type = compiler.always_inline("); printName(name); printf("_t)\n");
+		printName(name); printf(" : "); printName(name); printf("_t = {\n");
+		printf("\tregret : compiler.assembler.register = compiler.assembler.return_register(u64)\n");
+		emitOpcodeId(name);
+		printf("\t_ : compiler.assembler.register = inline emit_register(regret)\n");
+		printf("\tmask : compiler.pointer_sized = 0xFF\n");
+		printf("\tlowest : compiler.byte = compiler.bitwise_and(label, mask)\n");
+		printf("\t_ : compiler.byte = compiler.emit(lowest)\n");
+		printf("\t%%8 : compiler.pointer_sized = 8\n");
+		printf("\tshift_8 : compiler.pointer_sized = compiler.shift_right(label, %%8)\n");
+		printf("\tlow : compiler.byte = compiler.bitwise_and(shift_8, mask)\n");
+		printf("\t_ : compiler.byte = compiler.emit(low)\n");
+		printf("\t%%16 : compiler.pointer_sized = 16\n");
+		printf("\tshift_16 : compiler.pointer_sized = compiler.shift_right(label, %%16)\n");
+		printf("\thigh : compiler.byte = compiler.bitwise_and(shift_16, mask)\n");
+		printf("\t_ : compiler.byte = compiler.emit(high)\n");
+		printf("\t%%24 : compiler.pointer_sized = 24\n");
+		printf("\tshift_24 : compiler.pointer_sized = compiler.shift_right(label, %%24)\n");
+		printf("\thighest : compiler.byte = compiler.bitwise_and(shift_24, mask)\n");
+		printf("\t_ : compiler.byte = compiler.emit(highest)\n");
+		emitU16(0);
+		printf("\t_ : u64 = compiler.indicate_return(u64)\n}\n\n");
+
+	} else if (name == "execute") {
+		printName(name); printf(" : execute_t = {\n");
+		printf("\trega : compiler.assembler.register = compiler.assembler.register_for(block, blk)\n");
+		printf("\tregret : compiler.assembler.register = compiler.assembler.return_register(u64)\n");
+		emitOpcodeId(name);
+		printf("\t_ : compiler.assembler.register = inline emit_register(regret)\n");
+		printf("\t_ : compiler.assembler.register = inline emit_register(rega)\n");
+		emitU32(0);
+		printf("\t_ : u64 = compiler.indicate_return(u64)\n}\n\n");
+
+	} else if (name == "executeIf") {
+		printName(name); printf(" : execute_if_t = {\n");
+		printf("\trega : compiler.assembler.register = compiler.assembler.register_for(block, blk)\n");
+		printf("\tregb : compiler.assembler.register = compiler.assembler.register_for(u64, condition)\n");
+		printf("\tregret : compiler.assembler.register = compiler.assembler.return_register(u64)\n");
+		emitOpcodeId(name);
+		printf("\t_ : compiler.assembler.register = inline emit_register(regret)\n");
+		printf("\t_ : compiler.assembler.register = inline emit_register(rega)\n");
+		printf("\t_ : compiler.assembler.register = inline emit_register(regb)\n");
+		emitU16(0);
+		printf("\t_ : u64 = compiler.indicate_return(u64)\n}\n\n");
+
+	} else if (name == "halt") {
+		printName(name); printf(" : zero_parameters_t = {\n");
+		emitOpcodeId(name);
+		emitU64(0);
+		printf("}\n\n");
+
+	} else if (isIn(immediateOps, name)) {
+		printName(name); printf(" : immediate_t = {\n");
+		printf("\tregret : compiler.assembler.register = compiler.assembler.return_register(u64)\n");
+		emitOpcodeId(name);
+		printf("\t_ : compiler.assembler.register = inline emit_register(regret)\n");
+		printf("\tmask : compiler.pointer_sized = 0xFF\n");
+		printf("\tlowest : compiler.byte = compiler.bitwise_and(immediate, mask)\n");
+		printf("\t_ : compiler.byte = compiler.emit(lowest)\n");
+		printf("\t%%8 : compiler.pointer_sized = 8\n");
+		printf("\tshift_8 : compiler.pointer_sized = compiler.shift_right(immediate, %%8)\n");
+		printf("\tlow : compiler.byte = compiler.bitwise_and(shift_8, mask)\n");
+		printf("\t_ : compiler.byte = compiler.emit(low)\n");
+		printf("\t%%16 : compiler.pointer_sized = 16\n");
+		printf("\tshift_16 : compiler.pointer_sized = compiler.shift_right(immediate, %%16)\n");
+		printf("\thigh : compiler.byte = compiler.bitwise_and(shift_16, mask)\n");
+		printf("\t_ : compiler.byte = compiler.emit(high)\n");
+		printf("\t%%24 : compiler.pointer_sized = 24\n");
+		printf("\tshift_24 : compiler.pointer_sized = compiler.shift_right(immediate, %%24)\n");
+		printf("\thighest : compiler.byte = compiler.bitwise_and(shift_24, mask)\n");
+		printf("\t_ : compiler.byte = compiler.emit(highest)\n");
+		emitU16(0);
+		printf("\t_ : u64 = compiler.indicate_return(u64)\n}\n\n");
+
+	} else if (isIn(branchImmediateOps, name)) {
+		printName(name); printf(" : branch_immediate_t = {\n");
+		printf("\trega : compiler.assembler.register = compiler.assembler.register_for(u64, a)\n");
+		printf("\tregret : compiler.assembler.register = compiler.assembler.return_register(u64)\n");
+		emitOpcodeId(name);
+		printf("\t_ : compiler.assembler.register = inline emit_register(regret)\n");
+		printf("\t_ : compiler.assembler.register = inline emit_register(rega)\n");
+		printf("\tmask : compiler.pointer_sized = 0xFF\n");
+		printf("\tlow : compiler.byte = compiler.bitwise_and(immediate, mask)\n");
+		printf("\t_ : compiler.byte = compiler.emit(low)\n");
+		printf("\t%%8 : compiler.pointer_sized = 8\n");
+		printf("\tshift_8 : compiler.pointer_sized = compiler.shift_right(immediate, %%8)\n");
+		printf("\thigh : compiler.byte = compiler.bitwise_and(shift_8, mask)\n");
+		printf("\t_ : compiler.byte = compiler.emit(high)\n");
+		emitU16(0);
+		printf("\t_ : u64 = compiler.indicate_return(u64)\n}\n\n");
+
+	} else if (isIn(singleOperandOps, name)) {
+		printName(name); printf(" : one_parameters_t = {\n");
+		printf("\trega : compiler.assembler.register = compiler.assembler.register_for(u64, a)\n");
+		printf("\tregret : compiler.assembler.register = compiler.assembler.return_register(u64)\n");
+		emitOpcodeId(name);
+		printf("\t_ : compiler.assembler.register = inline emit_register(regret)\n");
+		printf("\t_ : compiler.assembler.register = inline emit_register(rega)\n");
+		emitU32(0);
+		printf("\t_ : u64 = compiler.indicate_return(u64)\n}\n\n");
+
+	} else {
+		printName(name); printf(" : two_parameters_t = {\n");
+		printf("\trega : compiler.assembler.register = compiler.assembler.register_for(u64, a)\n");
+		printf("\tregb : compiler.assembler.register = compiler.assembler.register_for(u64, b)\n");
+		printf("\tregret : compiler.assembler.register = compiler.assembler.return_register(u64)\n");
+		emitOpcodeId(name);
+		printf("\t_ : compiler.assembler.register = inline emit_register(regret)\n");
+		printf("\t_ : compiler.assembler.register = inline emit_register(rega)\n");
+		printf("\t_ : compiler.assembler.register = inline emit_register(regb)\n");
+		emitU16(0);
+		printf("\t_ : u64 = compiler.indicate_return(u64)\n}\n\n");
+	}
+}
+
 extern(C) int main(int argc, char** argv) @trusted {
 	printf("mizu : namespace = {\n");
 	printf("\n");
@@ -196,123 +320,15 @@ extern(C) int main(int argc, char** argv) @trusted {
 	emitOpcodeId("label");
 	printf("\t_ : void = compiler.indicate_return(void)\n}\n\n");
 
-	foreach (name; program) {
-		if (name == "findLabel") {
-			printName(name); printf("_t : type = (label: compiler.assembler.register) -> u64\n");
-			printf("_ : type = compiler.always_inline("); printName(name); printf("_t)\n");
-			printName(name); printf(" : "); printName(name); printf("_t = {\n");
-			printf("\tregret : compiler.assembler.register = compiler.assembler.return_register(u64)\n");
-			emitOpcodeId(name);
-			printf("\t_ : compiler.assembler.register = inline emit_register(regret)\n");
-			printf("\tmask : compiler.pointer_sized = 0xFF\n");
-			printf("\tlowest : compiler.byte = compiler.bitwise_and(label, mask)\n");
-			printf("\t_ : compiler.byte = compiler.emit(lowest)\n");
-			printf("\t%%8 : compiler.pointer_sized = 8\n");
-			printf("\tshift_8 : compiler.pointer_sized = compiler.shift_right(label, %%8)\n");
-			printf("\tlow : compiler.byte = compiler.bitwise_and(shift_8, mask)\n");
-			printf("\t_ : compiler.byte = compiler.emit(low)\n");
-			printf("\t%%16 : compiler.pointer_sized = 16\n");
-			printf("\tshift_16 : compiler.pointer_sized = compiler.shift_right(label, %%16)\n");
-			printf("\thigh : compiler.byte = compiler.bitwise_and(shift_16, mask)\n");
-			printf("\t_ : compiler.byte = compiler.emit(high)\n");
-			printf("\t%%24 : compiler.pointer_sized = 24\n");
-			printf("\tshift_24 : compiler.pointer_sized = compiler.shift_right(label, %%24)\n");
-			printf("\thighest : compiler.byte = compiler.bitwise_and(shift_24, mask)\n");
-			printf("\t_ : compiler.byte = compiler.emit(highest)\n");
-			emitU16(0);
-			printf("\t_ : u64 = compiler.indicate_return(u64)\n}\n\n");
+	foreach (name; program)
+		emitInstruction(name);
 
-		} else if (name == "doirExecute") {
-			printName(name); printf(" : execute_t = {\n");
-			printf("\trega : compiler.assembler.register = compiler.assembler.register_for(block, blk)\n");
-			printf("\tregret : compiler.assembler.register = compiler.assembler.return_register(u64)\n");
-			emitOpcodeId(name);
-			printf("\t_ : compiler.assembler.register = inline emit_register(regret)\n");
-			printf("\t_ : compiler.assembler.register = inline emit_register(rega)\n");
-			emitU32(0);
-			printf("\t_ : u64 = compiler.indicate_return(u64)\n}\n\n");
-
-		} else if (name == "doirExecuteIf") {
-			printName(name); printf(" : execute_if_t = {\n");
-			printf("\trega : compiler.assembler.register = compiler.assembler.register_for(block, blk)\n");
-			printf("\tregb : compiler.assembler.register = compiler.assembler.register_for(u64, condition)\n");
-			printf("\tregret : compiler.assembler.register = compiler.assembler.return_register(u64)\n");
-			emitOpcodeId(name);
-			printf("\t_ : compiler.assembler.register = inline emit_register(regret)\n");
-			printf("\t_ : compiler.assembler.register = inline emit_register(rega)\n");
-			printf("\t_ : compiler.assembler.register = inline emit_register(regb)\n");
-			emitU16(0);
-			printf("\t_ : u64 = compiler.indicate_return(u64)\n}\n\n");
-
-		} else if (name == "halt") {
-			printName(name); printf(" : zero_parameters_t = {\n");
-			emitOpcodeId(name);
-			emitU64(0);
-			printf("}\n\n");
-
-		} else if (isIn(immediateOps, name)) {
-			printName(name); printf(" : immediate_t = {\n");
-			printf("\tregret : compiler.assembler.register = compiler.assembler.return_register(u64)\n");
-			emitOpcodeId(name);
-			printf("\t_ : compiler.assembler.register = inline emit_register(regret)\n");
-			printf("\tmask : compiler.pointer_sized = 0xFF\n");
-			printf("\tlowest : compiler.byte = compiler.bitwise_and(immediate, mask)\n");
-			printf("\t_ : compiler.byte = compiler.emit(lowest)\n");
-			printf("\t%%8 : compiler.pointer_sized = 8\n");
-			printf("\tshift_8 : compiler.pointer_sized = compiler.shift_right(immediate, %%8)\n");
-			printf("\tlow : compiler.byte = compiler.bitwise_and(shift_8, mask)\n");
-			printf("\t_ : compiler.byte = compiler.emit(low)\n");
-			printf("\t%%16 : compiler.pointer_sized = 16\n");
-			printf("\tshift_16 : compiler.pointer_sized = compiler.shift_right(immediate, %%16)\n");
-			printf("\thigh : compiler.byte = compiler.bitwise_and(shift_16, mask)\n");
-			printf("\t_ : compiler.byte = compiler.emit(high)\n");
-			printf("\t%%24 : compiler.pointer_sized = 24\n");
-			printf("\tshift_24 : compiler.pointer_sized = compiler.shift_right(immediate, %%24)\n");
-			printf("\thighest : compiler.byte = compiler.bitwise_and(shift_24, mask)\n");
-			printf("\t_ : compiler.byte = compiler.emit(highest)\n");
-			emitU16(0);
-			printf("\t_ : u64 = compiler.indicate_return(u64)\n}\n\n");
-
-		} else if (isIn(branchImmediateOps, name)) {
-			printName(name); printf(" : branch_immediate_t = {\n");
-			printf("\trega : compiler.assembler.register = compiler.assembler.register_for(u64, a)\n");
-			printf("\tregret : compiler.assembler.register = compiler.assembler.return_register(u64)\n");
-			emitOpcodeId(name);
-			printf("\t_ : compiler.assembler.register = inline emit_register(regret)\n");
-			printf("\t_ : compiler.assembler.register = inline emit_register(rega)\n");
-			printf("\tmask : compiler.pointer_sized = 0xFF\n");
-			printf("\tlow : compiler.byte = compiler.bitwise_and(immediate, mask)\n");
-			printf("\t_ : compiler.byte = compiler.emit(low)\n");
-			printf("\t%%8 : compiler.pointer_sized = 8\n");
-			printf("\tshift_8 : compiler.pointer_sized = compiler.shift_right(immediate, %%8)\n");
-			printf("\thigh : compiler.byte = compiler.bitwise_and(shift_8, mask)\n");
-			printf("\t_ : compiler.byte = compiler.emit(high)\n");
-			emitU16(0);
-			printf("\t_ : u64 = compiler.indicate_return(u64)\n}\n\n");
-
-		} else if (isIn(singleOperandOps, name)) {
-			printName(name); printf(" : one_parameters_t = {\n");
-			printf("\trega : compiler.assembler.register = compiler.assembler.register_for(u64, a)\n");
-			printf("\tregret : compiler.assembler.register = compiler.assembler.return_register(u64)\n");
-			emitOpcodeId(name);
-			printf("\t_ : compiler.assembler.register = inline emit_register(regret)\n");
-			printf("\t_ : compiler.assembler.register = inline emit_register(rega)\n");
-			emitU32(0);
-			printf("\t_ : u64 = compiler.indicate_return(u64)\n}\n\n");
-
-		} else {
-			printName(name); printf(" : two_parameters_t = {\n");
-			printf("\trega : compiler.assembler.register = compiler.assembler.register_for(u64, a)\n");
-			printf("\tregb : compiler.assembler.register = compiler.assembler.register_for(u64, b)\n");
-			printf("\tregret : compiler.assembler.register = compiler.assembler.return_register(u64)\n");
-			emitOpcodeId(name);
-			printf("\t_ : compiler.assembler.register = inline emit_register(regret)\n");
-			printf("\t_ : compiler.assembler.register = inline emit_register(rega)\n");
-			printf("\t_ : compiler.assembler.register = inline emit_register(regb)\n");
-			emitU16(0);
-			printf("\t_ : u64 = compiler.indicate_return(u64)\n}\n\n");
-		}
-	}
+	// DOIR's own four, namespaced so a program spells them
+	// `mizu.doir.execute` and so on.
+	printf("doir : namespace = {\n\n");
+	foreach (name; doirProgram)
+		emitInstruction(name);
+	printf("}\n\n");
 
 	printf("\n");
 	foreach (i; 0 .. 257)

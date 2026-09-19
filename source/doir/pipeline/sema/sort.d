@@ -130,3 +130,82 @@ bool sortSystem(ref Module mod, EntityId root = currentCanonicalizeRoot) {
 	sort(mod, root == currentCanonicalizeRoot ? newRoot : root);
 	return true;
 }
+
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+version (unittest) {
+	import doir.string_helpers : InternedString;
+	import tests.pipeline_helper;
+}
+
+unittest {
+	// A function body's parameters are moved to the front, in declaration
+	// order, whatever order the block happened to list them in; everything
+	// else keeps its id order behind them.
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.root);
+	Lookup[2] inputs = [Lookup(byte_), Lookup(byte_)];
+	InternedString[2] names = [internIn(f.mod, "p0"), internIn(f.mod, "p1")];
+	immutable ft = pushFunctionType(block, internIn(f.mod, "ft"), inputs[], Lookup(byte_), true, names[]);
+
+	auto fb = pushFunction(block, internIn(f.mod, "fn"), ft);
+	immutable body_ = pushNumber(fb.builder, internIn(f.mod, "body"), byte_, 1);
+	// Declared out of order, and behind a non-parameter.
+	pushValuelessParameter(fb, 1, names[1], byte_);
+	pushValuelessParameter(fb, 0, names[0], byte_);
+
+	auto related = &getComponent!Block(f.mod, fb.builder.block).related;
+	assert(daLength(*related) == 3);
+	assert((*related)[0] == body_);
+
+	sort(f.mod, f.root);
+
+	immutable root = newRoot;
+	immutable fn = resolveLookupName(f.mod, internIn(f.mod, "fn"), root);
+	auto sorted = &getComponent!Block(f.mod, fn).related;
+	assert(daLength(*sorted) == 3);
+	assert(hasComponent!FunctionParameter(f.mod, (*sorted)[0]));
+	assert(getComponent!FunctionParameter(f.mod, (*sorted)[0]).index == 0);
+	assert(hasComponent!FunctionParameter(f.mod, (*sorted)[1]));
+	assert(getComponent!FunctionParameter(f.mod, (*sorted)[1]).index == 1);
+	assert(!hasComponent!FunctionParameter(f.mod, (*sorted)[2]));
+}
+
+unittest { // entities on the freelist are not renumbered into the result
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.root);
+	pushNumber(block, internIn(f.mod, "kept"), byte_, 1);
+
+	// An entity that was created and then removed: it is on the freelist, so
+	// the walk must leave it out of the ordering rather than treating it as
+	// an unreached entity to append.
+	immutable dead = addEntity(f.mod);
+	removeEntity(f.mod, dead);
+	assert(entityIsFree(f.mod, dead));
+
+	immutable root = sort(f.mod, f.root);
+	assert(root != invalidEntity);
+	assert(resolveLookupName(f.mod, internIn(f.mod, "kept"), root) != invalidEntity);
+}
+
+unittest { // `sortSystem` is the same thing wrapped as a schedule step
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+
+	assert(sortSystem(f.mod, f.root));
+	immutable first = newRoot;
+	assert(first != invalidEntity);
+
+	// With no root given it re-sorts whatever it last produced.
+	assert(sortSystem(f.mod));
+	assert(newRoot == first);
+}

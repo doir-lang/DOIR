@@ -33,15 +33,137 @@ bool pinRegisters(ref Module mod, EntityId subtree) @trusted {
 	}
 	resolveAliases(mod, inputs.slice);
 
-	if (!hasComponent!Number(mod, inputs[2])) {
+	auto reg = comptimeNumber(mod, inputs[2]);
+	if (reg.isNull) {
 		parameterError(mod, subtree, "pin_register", 2, " must be be a numeric constant");
 		return true;
 	}
 
 	immutable target = inputs[1];
-	immutable r = cast(size_t) getComponent!Number(mod, inputs[2]).value;
+	immutable r = cast(size_t) reg.get;
 
 	getOrAddComponent!AssignedRegister(mod, target).reg = r;
 
 	return true;
+}
+
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+//
+// The two diagnostics below are raised on IR that `sema.functionArity` would
+// have rejected first in a real compile, so this builds the calls directly
+// rather than driving them through the pipeline.
+
+version (unittest) {
+	import ecrs.storage : invalidEntity;
+
+	import tests.pipeline_helper;
+}
+
+unittest { // a well-formed call records the register on its target
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+	diagnostics().clear();
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.root);
+	immutable pinRegister = resolveLookupName(f.mod,
+		internIn(f.mod, "compiler.assembler.pin_register"), f.root);
+	assert(pinRegister != invalidEntity);
+
+	immutable target = pushNumber(block, internIn(f.mod, "target"), byte_, 1);
+	immutable reg = pushNumber(block, internIn(f.mod, "reg"), byte_, 7);
+	EntityId[3] args = [byte_, target, reg];
+	immutable call = pushCall(block, internIn(f.mod, "pin"), byte_, pinRegister, args[]);
+
+	assert(pinRegisters(f.mod, call));
+	assert(hasComponent!AssignedRegister(f.mod, target));
+	assert(getComponent!AssignedRegister(f.mod, target).reg == 7);
+	assert(!diagnostics().hasErrors());
+	diagnostics().clear();
+}
+
+unittest { // a call with the wrong number of arguments is reported
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+	diagnostics().clear();
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.root);
+	immutable pinRegister = resolveLookupName(f.mod,
+		internIn(f.mod, "compiler.assembler.pin_register"), f.root);
+
+	EntityId[1] args = [byte_];
+	immutable call = pushCall(block, internIn(f.mod, "pin"), byte_, pinRegister, args[]);
+
+	assert(pinRegisters(f.mod, call));
+	assert(diagnostics().hasErrors());
+	diagnostics().clear();
+}
+
+unittest { // a register argument the compiler only worked out still counts
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+	diagnostics().clear();
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.root);
+	immutable pinRegister = resolveLookupName(f.mod,
+		internIn(f.mod, "compiler.assembler.pin_register"), f.root);
+
+	// What a `compiler.*` call `opt.computeCompilerNamespace` folded looks
+	// like: still a call, with the value it comes to alongside it.
+	immutable target = pushNumber(block, internIn(f.mod, "target"), byte_, 1);
+	immutable reg = pushCall(block, internIn(f.mod, "reg"), byte_,
+		resolveLookupName(f.mod, internIn(f.mod, "compiler.emit"), f.root), (&target)[0 .. 1]);
+	getOrAddComponent!ComptimeNumber(f.mod, reg).value = 7;
+
+	EntityId[3] args = [byte_, target, reg];
+	immutable call = pushCall(block, internIn(f.mod, "pin"), byte_, pinRegister, args[]);
+
+	assert(pinRegisters(f.mod, call));
+	assert(getComponent!AssignedRegister(f.mod, target).reg == 7);
+	assert(!diagnostics().hasErrors());
+	diagnostics().clear();
+}
+
+unittest { // ...and so is one whose register argument is not a number
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+	diagnostics().clear();
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.root);
+	immutable pinRegister = resolveLookupName(f.mod,
+		internIn(f.mod, "compiler.assembler.pin_register"), f.root);
+
+	immutable target = pushNumber(block, internIn(f.mod, "target"), byte_, 1);
+	immutable notANumber = pushValueless(block, internIn(f.mod, "reg"), byte_);
+	EntityId[3] args = [byte_, target, notANumber];
+	immutable call = pushCall(block, internIn(f.mod, "pin"), byte_, pinRegister, args[]);
+
+	assert(pinRegisters(f.mod, call));
+	assert(!hasComponent!AssignedRegister(f.mod, target));
+	assert(diagnostics().hasErrors());
+	diagnostics().clear();
+}
+
+unittest { // anything that is not a call to `pin_register` is left alone
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+	diagnostics().clear();
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.root);
+	immutable emit = resolveLookupName(f.mod, internIn(f.mod, "compiler.emit"), f.root);
+
+	immutable n = pushNumber(block, internIn(f.mod, "n"), byte_, 1);
+	assert(pinRegisters(f.mod, n)); // not a call
+
+	immutable other = pushCall(block, internIn(f.mod, "e"), byte_, emit, (&n)[0 .. 1]);
+	assert(pinRegisters(f.mod, other)); // a call to something else
+	assert(!diagnostics().hasErrors());
+	diagnostics().clear();
 }

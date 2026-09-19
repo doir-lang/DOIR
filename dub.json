@@ -12,7 +12,7 @@
 	"dependencies": {
 		"mizu": {
 			"repository": "git+https://github.com/doir-lang/Mizu.git",
-			"version": "43028fe0e471971439e46b004435cbfcdc009637"
+			"version": "804ce337e808203a25dad57b9f5f961b3a928687"
 		},
 		"libecrs": {
 			"repository": "git+https://github.com/doir-lang/libECRS.git",
@@ -20,7 +20,7 @@
 		},
 		"diagnose": {
 			"repository": "git+https://github.com/doir-lang/libdiagnose.git",
-			"version": "c4699d756b151b004b44458c7f8e5d0913353fbc"
+			"version": "8387f758815335464e0b1950744cc8e562c57dab"
 		}
 	},
 	"dflags-ldc": [

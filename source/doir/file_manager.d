@@ -24,6 +24,7 @@ static import fp.dynarray;
 import fp.dynarray : daLength = length;
 import fp.pointer : allocFunction;
 import fp.string : makeDynamicSlice, strFree = free, strLength = length, strSlice = slice;
+import std.typecons : Nullable;
 
 @nogc nothrow:
 
@@ -66,14 +67,16 @@ private LoadedFile* findLoaded(const(char)[] path) @trusted {
 	return null;
 }
 
-/// Loads `path` (or returns the already-loaded copy). `ok` is false when the
-/// file could not be opened - the C++ version threw `std::system_error` here,
-/// which the SourceInfo handler caught to report `FileDoesNotExist`.
-const(char)[] getFileString(const(char)[] path, out bool ok) @trusted {
-	if (auto cached = findLoaded(path)) {
-		ok = true;
-		return cached.contents is null ? "" : cached.contents[0 .. cached.size];
-	}
+/// Loads `path` (or returns the already-loaded copy), or null when the file
+/// could not be opened - the C++ version threw `std::system_error` here, which
+/// the SourceInfo handler caught to report `FileDoesNotExist`. An empty file
+/// reads back as a non-null empty slice, which is why this is a `Nullable`
+/// rather than a plain slice whose own null state would conflate the two.
+Nullable!(const(char)[]) getFileString(const(char)[] path) @trusted {
+	alias Result = Nullable!(const(char)[]);
+
+	if (auto cached = findLoaded(path))
+		return Result(cached.contents is null ? "" : cached.contents[0 .. cached.size]);
 
 	char* zPath = makeDynamicSlice(path);
 
@@ -81,25 +84,23 @@ const(char)[] getFileString(const(char)[] path, out bool ok) @trusted {
 	if (!mapFile(zPath, loaded.contents, loaded.size, loaded.backing)
 		&& !readFile(zPath, loaded.contents, loaded.size, loaded.backing)) {
 		strFree(zPath);
-		ok = false;
-		return null;
+		return Result.init;
 	}
 
 	fp.dynarray.pushBack(loadedFiles, loaded);
-	ok = true;
-	return loaded.contents is null ? "" : loaded.contents[0 .. loaded.size];
+	return Result(loaded.contents is null ? "" : loaded.contents[0 .. loaded.size]);
 }
 
 /// Ditto, as raw bytes.
-const(ubyte)[] getFileBytes(const(char)[] path, out bool ok) @trusted {
-	return cast(const(ubyte)[]) getFileString(path, ok);
+Nullable!(const(ubyte)[]) getFileBytes(const(char)[] path) @trusted {
+	auto contents = getFileString(path);
+	if (contents.isNull) return Nullable!(const(ubyte)[]).init;
+	return Nullable!(const(ubyte)[])(cast(const(ubyte)[]) contents.get);
 }
 
 /// True if `path` can be opened for reading.
 bool fileExists(const(char)[] path) @trusted {
-	bool ok;
-	getFileString(path, ok);
-	return ok;
+	return !getFileString(path).isNull;
 }
 
 
@@ -129,13 +130,10 @@ private bool readFile(const(char)* zPath, out char* contents, out size_t size, o
 	if (buffer is null) return false;
 
 	// A short read is a text-mode translation or a racing truncation; keep
-	// what we got rather than failing the whole load.
+	// what we got rather than failing the whole load. A read of *nothing*
+	// leaves an owned but empty buffer, which reads back as empty text the
+	// same way an empty file does.
 	immutable size_t read = fread(buffer, 1, wanted, f);
-	if (read == 0) {
-		allocFunction(buffer, 0);
-		backing = Backing.none;
-		return true;
-	}
 
 	contents = buffer;
 	size = read;
@@ -280,4 +278,140 @@ char* canonicalPath(const(char)[] path) @trusted {
 	}
 
 	return makeDynamicSlice(buffer[0 .. strlen(buffer.ptr)]);
+}
+
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+//
+// The cache is process-wide and hands out slices that have to stay valid for
+// the rest of the run, so these only ever add to it - except the one that
+// tears it down, which is deliberately the last word on it.
+
+version (unittest) {
+	import core.stdc.stdio : fputs, fwrite, remove;
+
+	/// Writes `contents` to `path`, replacing whatever was there.
+	private bool writeTestFile(const(char)* path, const(char)[] contents) @trusted {
+		FILE* f = fopen(path, "wb");
+		if (f is null) return false;
+		if (contents.length) fwrite(contents.ptr, 1, contents.length, f);
+		fclose(f);
+		return true;
+	}
+}
+
+unittest { // a file that exists loads, caches, and comes back identical twice
+	auto first = getFileString("README.md");
+	assert(!first.isNull);
+	assert(first.get.length > 0);
+
+	// The second call is served from the cache, and must be the *same* bytes:
+	// interned strings and source locations point into them.
+	auto second = getFileString("README.md");
+	assert(!second.isNull);
+	assert(second.get.ptr is first.get.ptr);
+	assert(second.get.length == first.get.length);
+
+	// ...and the two convenience wrappers over it.
+	auto bytes = getFileBytes("README.md");
+	assert(!bytes.isNull);
+	assert(bytes.get.length == first.get.length);
+	assert(fileExists("README.md"));
+}
+
+unittest { // a file that does not exist reports failure rather than empty text
+	assert(getFileString("/nonexistent/definitely_not_here.doir").isNull);
+	assert(getFileBytes("/nonexistent/definitely_not_here.doir").isNull);
+	assert(!fileExists("/nonexistent/definitely_not_here.doir"));
+}
+
+unittest { // an empty file loads as empty text, not as a failure
+	enum path = "doir_empty_test_file.tmp";
+	assert(writeTestFile(path, ""));
+	scope(exit) remove(path);
+
+	// The distinction the `Nullable` exists for: present, but zero bytes.
+	auto contents = getFileString(path);
+	assert(!contents.isNull);
+	assert(contents.get.length == 0);
+}
+
+unittest {
+	// `readFile` is the fallback for platforms (or builds) where mapping is
+	// unavailable, so on a platform that does map it is never reached through
+	// `getFileString`. It has the same contract either way.
+	enum path = "doir_read_test_file.tmp";
+	assert(writeTestFile(path, "hello"));
+	scope(exit) remove(path);
+
+	char* zPath = makeDynamicSlice(path);
+	scope(exit) strFree(zPath);
+
+	char* contents;
+	size_t size;
+	Backing backing;
+	assert(readFile(zPath, contents, size, backing));
+	assert(backing == Backing.heap);
+	assert(contents[0 .. size] == "hello");
+	allocFunction(contents, 0);
+
+	// An empty file has no length to size a buffer from.
+	enum emptyPath = "doir_read_empty_test_file.tmp";
+	assert(writeTestFile(emptyPath, ""));
+	scope(exit) remove(emptyPath);
+
+	char* emptyZ = makeDynamicSlice(emptyPath);
+	scope(exit) strFree(emptyZ);
+	char* emptyContents;
+	size_t emptySize;
+	Backing emptyBacking;
+	assert(readFile(emptyZ, emptyContents, emptySize, emptyBacking));
+	assert(emptyBacking == Backing.none);
+	assert(emptyContents is null);
+
+	// One that cannot be opened at all.
+	char* missingZ = makeDynamicSlice("/nonexistent/definitely_not_here.doir");
+	scope(exit) strFree(missingZ);
+	char* missingContents;
+	size_t missingSize;
+	Backing missingBacking;
+	assert(!readFile(missingZ, missingContents, missingSize, missingBacking));
+}
+
+unittest { // canonicalPath resolves a relative path, and rejects a missing one
+	auto resolved = canonicalPath("README.md");
+	scope(exit) strFree(resolved);
+	assert(resolved !is null);
+	assert(strLength(resolved) > "README.md".length); // absolute, so longer
+	assert(strSlice(resolved)[0] == '/' || strSlice(resolved)[1] == ':');
+
+	assert(canonicalPath("/nonexistent/definitely_not_here.doir") is null);
+}
+
+unittest {
+	// Tearing the cache down releases each backing kind. This runs last on
+	// purpose: every slice handed out before it is dangling afterwards, which
+	// is exactly why the rest of the compiler never calls it.
+	enum path = "doir_teardown_test_file.tmp";
+	assert(writeTestFile(path, "mapped contents"));
+	scope(exit) remove(path);
+
+	auto mapped = getFileString(path);
+	assert(!mapped.isNull);
+	assert(mapped.get.length == "mapped contents".length);
+
+	// An entry whose bytes came from the reading fallback, so the `heap` arm
+	// is released too (nothing on a mapping platform produces one otherwise).
+	char* heapPath = makeDynamicSlice("doir_teardown_heap.tmp");
+	LoadedFile heapEntry = LoadedFile(heapPath, cast(char*) allocFunction(null, 4), 4, Backing.heap);
+	fp.dynarray.pushBack(loadedFiles, heapEntry);
+
+	freeFileManager();
+	assert(loadedFiles is null);
+	freeFileManager(); // idempotent
+
+	// The cache refills from scratch afterwards.
+	assert(fileExists("README.md"));
 }

@@ -58,14 +58,15 @@ bool materializeImmediates(ref Module mod, EntityId subtree) @trusted {
 	}
 	resolveAliases(mod, inputs.slice);
 
-	if (!hasComponent!Number(mod, inputs[1])) {
+	auto constant = comptimeNumber(mod, inputs[1]);
+	if (constant.isNull) {
 		// TODO: It would probably be good to relax this constraint in the future
 		parameterError(mod, subtree, "load_immediate", 0, " must evaluate to a numeric constant");
 		return false;
 	}
 
 	immutable target = inputs[1];
-	immutable uint value = cast(uint) getComponent!Number(mod, target).value;
+	immutable uint value = cast(uint) constant.get;
 
 	immutable type = getComponent!TypeOf(mod, subtree).related[0];
 	removeComponent!TypeOf(mod, subtree);
@@ -112,4 +113,190 @@ bool materializeImmediates(ref Module mod, EntityId subtree) @trusted {
 	}
 	builder.end();
 	return true;
+}
+
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+//
+// The expansion itself runs for every `mizu.load_immediate` in a real
+// program (see `doir.pipeline`'s end-to-end tests). What is left here is the
+// malformed calls, which `sema.functionArity` rejects long before this pass
+// in a real compile - so they are built directly, in a module that has the
+// mizu backend loaded so `mizu.load_immediate` resolves at all.
+
+version (unittest) {
+	static import fp.dynarray;
+
+	import doir.parser : parseSource;
+	import doir.pipeline : runPipeline;
+	import tests.pipeline_helper : makeModuleWithBuiltins;
+
+	private struct ImmediateFixture {
+		Module mod;
+		EntityId root;
+	}
+
+	private ImmediateFixture makeImmediateFixture() @trusted {
+		diagnostics().clear();
+
+		ImmediateFixture f;
+		f.mod = createModule();
+
+		BlockBuilder* builders;
+		scope(exit) fp.dynarray.free(builders);
+		{
+			auto builtin = createBlockBuilder(f.mod);
+			buildBuiltinBlock(builtin);
+			fp.dynarray.pushBack(builders, builtin);
+		}
+
+		assert(parseSource(f.mod, builders,
+			"path : compiler.byte_pointer = \"./mizu.doir\"\n"
+			~ "_ : compiler.byte = early_include(path)\n", "immediates.doir"));
+		f.root = runPipeline(f.mod, builders);
+		assert(f.root != invalidEntity);
+		assert(!diagnostics().hasErrors());
+		return f;
+	}
+
+	/// `mizu.load_immediate(args...)` pushed into the fixture's root block.
+	private EntityId pushLoadImmediate(ref ImmediateFixture f, const(EntityId)[] args) {
+		auto block = BlockBuilder(f.root, &f.mod);
+		immutable u64 = resolveLookupName(f.mod, internIn(f.mod, "mizu.u64"), f.root);
+		immutable loadImmediate = resolveLookupName(f.mod,
+			internIn(f.mod, "mizu.load_immediate"), f.root);
+		assert(loadImmediate != invalidEntity);
+		return pushCall(block, InternedString("_"), u64, loadImmediate, args);
+	}
+}
+
+unittest { // a well-formed call is expanded into the bytes that encode it
+	auto f = makeImmediateFixture();
+	scope(exit) freeModule(f.mod);
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable u64 = resolveLookupName(f.mod, internIn(f.mod, "mizu.u64"), f.root);
+	immutable value = pushNumber(block, internIn(f.mod, "v"), u64, 1234);
+	getOrAddComponent!AssignedRegister(f.mod, value).reg = 5;
+
+	EntityId[2] args = [u64, value];
+	immutable call = pushLoadImmediate(f, args[]);
+
+	assert(materializeImmediates(f.mod, call));
+	assert(!hasComponent!Call(f.mod, call));
+	assert(hasComponent!Block(f.mod, call));
+	assert(getComponent!AssignedRegister(f.mod, call).reg == 5);
+	assert(!diagnostics().hasErrors());
+	diagnostics().clear();
+}
+
+unittest { // a value the compiler only worked out is expanded just the same
+	auto f = makeImmediateFixture();
+	scope(exit) freeModule(f.mod);
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable u64 = resolveLookupName(f.mod, internIn(f.mod, "mizu.u64"), f.root);
+
+	// What a `compiler.*` call `opt.computeCompilerNamespace` folded looks
+	// like: still a call, with the value it comes to alongside it.
+	immutable n = pushNumber(block, internIn(f.mod, "n"), u64, 1);
+	immutable value = pushCall(block, internIn(f.mod, "v"), u64,
+		resolveLookupName(f.mod, internIn(f.mod, "compiler.emit"), f.root), (&n)[0 .. 1]);
+	getOrAddComponent!ComptimeNumber(f.mod, value).value = 1234;
+	getOrAddComponent!AssignedRegister(f.mod, value).reg = 5;
+
+	EntityId[2] args = [u64, value];
+	immutable call = pushLoadImmediate(f, args[]);
+
+	assert(materializeImmediates(f.mod, call));
+	assert(hasComponent!Block(f.mod, call));
+	assert(getComponent!AssignedRegister(f.mod, call).reg == 5);
+	assert(!diagnostics().hasErrors());
+	diagnostics().clear();
+}
+
+unittest { // a call with the wrong number of arguments is reported
+	auto f = makeImmediateFixture();
+	scope(exit) freeModule(f.mod);
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable u64 = resolveLookupName(f.mod, internIn(f.mod, "mizu.u64"), f.root);
+	immutable value = pushNumber(block, internIn(f.mod, "v"), u64, 1);
+
+	// One argument rather than two.
+	assert(!materializeImmediates(f.mod, pushLoadImmediate(f, (&u64)[0 .. 1])));
+	assert(diagnostics().hasErrors());
+	diagnostics().clear();
+
+	// ...and no arguments component at all.
+	immutable argless = pushLoadImmediate(f, (&u64)[0 .. 1]);
+	removeComponent!FunctionInputs(f.mod, argless);
+	assert(!materializeImmediates(f.mod, argless));
+	assert(diagnostics().hasErrors());
+	diagnostics().clear();
+	cast(void) value;
+}
+
+unittest { // ...as is one whose value is not a numeric constant
+	auto f = makeImmediateFixture();
+	scope(exit) freeModule(f.mod);
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable u64 = resolveLookupName(f.mod, internIn(f.mod, "mizu.u64"), f.root);
+	immutable notANumber = pushValueless(block, internIn(f.mod, "v"), u64);
+
+	EntityId[2] args = [u64, notANumber];
+	assert(!materializeImmediates(f.mod, pushLoadImmediate(f, args[])));
+	assert(diagnostics().hasErrors());
+	diagnostics().clear();
+}
+
+unittest { // ...and one whose target was never assigned a register
+	auto f = makeImmediateFixture();
+	scope(exit) freeModule(f.mod);
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable u64 = resolveLookupName(f.mod, internIn(f.mod, "mizu.u64"), f.root);
+	immutable value = pushNumber(block, internIn(f.mod, "v"), u64, 1);
+	assert(!hasComponent!AssignedRegister(f.mod, value));
+
+	EntityId[2] args = [u64, value];
+	assert(!materializeImmediates(f.mod, pushLoadImmediate(f, args[])));
+	assert(diagnostics().hasErrors());
+	diagnostics().clear();
+}
+
+unittest { // anything that is not a `load_immediate` call is left alone
+	auto f = makeImmediateFixture();
+	scope(exit) freeModule(f.mod);
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.root);
+	immutable emit = resolveLookupName(f.mod, internIn(f.mod, "compiler.emit"), f.root);
+
+	immutable n = pushNumber(block, internIn(f.mod, "n"), byte_, 1);
+	assert(materializeImmediates(f.mod, n)); // not a call
+
+	immutable other = pushCall(block, InternedString("_"), byte_, emit, (&n)[0 .. 1]);
+	assert(materializeImmediates(f.mod, other)); // a call to something else
+	assert(!diagnostics().hasErrors());
+	diagnostics().clear();
+}
+
+unittest {
+	// A module with no mizu backend loaded resolves every `mizu.*` name to
+	// `invalidEntity`, which is also what an unresolved callee is - so a call
+	// with no target compared *equal* to `load_immediate` and was reported
+	// against a synthesised entity, which aborts in `findSourceLocation`.
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+	diagnostics().clear();
+
+	immutable dangling = addEntity(f.mod);
+	addComponent!Call(f.mod, dangling).related[0] = invalidEntity;
+	assert(materializeImmediates(f.mod, dangling));
+	assert(!diagnostics().hasErrors());
+	diagnostics().clear();
 }

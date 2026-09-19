@@ -267,9 +267,20 @@ template sorted(alias fn) {
 
 /// Set by any pass that changed something, to ask `fixedPoint` for another
 /// round. Thread-local, matching the C++ `bool&` accessor's storage.
-private bool fixedPointChangedFlag = false;
+private bool* fixedPointChangedStack = null;
 
-ref bool fixedPointChanged() { return fixedPointChangedFlag; }
+/// Where the flag goes for a pass run outside any `fixedPoint` - which is how
+/// the per-pass tests call them, and how a schedule may run a pass that only
+/// asks for another round when it is nested in one. There is no round to ask
+/// for, so the write lands here and is dropped rather than dereferencing the
+/// empty stack.
+private bool fixedPointChangedDetached = false;
+
+ref bool fixedPointChanged() {
+	if (fp.dynarray.empty(fixedPointChangedStack))
+		return fixedPointChangedDetached;
+	return *fp.dynarray.back(fixedPointChangedStack);
+}
 
 /// Runs `system` until it stops reporting changes.
 ///
@@ -277,6 +288,14 @@ ref bool fixedPointChanged() { return fixedPointChangedFlag; }
 /// the walkers' `Bound`s, or another combinator's result - so this nests
 /// inside (and around) `ecrs.system.sequential` / `parallel` freely.
 bool fixedPoint(System)(ref Context context, System system) {
+	fp.dynarray.pushBack(fixedPointChangedStack, fixedPointChangedDetached);
+	scope(exit) 
+		if(fp.dynarray.length(fixedPointChangedStack) > 1)
+			fp.dynarray.popBack(fixedPointChangedStack);
+		else {
+			fixedPointChangedDetached = fixedPointChangedStack[0];
+			fp.dynarray.free(fixedPointChangedStack);
+		}
 	do {
 		fixedPointChanged() = false;
 		if (!system(context)) return false;
@@ -484,4 +503,71 @@ unittest { // fixedPoint re-runs a system while it reports changes, and is one
 		depthFirst!record(t.root),
 	)(t.mod));
 	assert(visitCount == 4 + 5);
+}
+
+unittest {
+	// Every walker offers the same four spellings: run now over a named
+	// subtree, run now over whatever `canonicalize.sort` last produced, and
+	// each of those as a `Bound` system. The `Bound.opCall(ref Module)` half
+	// is what a schedule built out of `doir.pipeline`'s combinators calls.
+	import doir.pipeline.sema.sort : sort;
+
+	auto t = makeTree();
+	scope(exit) freeModule(t.mod);
+
+	EntityId[5] postOrder = [t.leafA, t.leafB, t.inner, t.leafC, t.root];
+	EntityId[5] levelOrder = [t.root, t.inner, t.leafC, t.leafA, t.leafB];
+
+	assert(depthFirst!record(t.root)(t.mod));
+	assert(logIs(postOrder[]));
+
+	resetLog();
+	assert(breadthFirst!record(t.root)(t.mod));
+	assert(logIs(levelOrder[]));
+
+	resetLog();
+	assert(sorted!record(t.root, false)(t.mod));
+	assert(logIs(postOrder[]));
+
+	// Rooted at the canonical sort instead. The ids change under it, so this
+	// only checks how many entities the walk reached.
+	immutable newRootId = sort(t.mod, t.root);
+	assert(newRootId != invalidEntity);
+
+	resetLog();
+	assert(depthFirst!record(t.mod));
+	assert(visitCount == 5);
+
+	resetLog();
+	assert(breadthFirst!record(t.mod));
+	assert(visitCount == 5);
+
+	resetLog();
+	assert(sorted!record(t.mod));
+	assert(visitCount == 5);
+
+	resetLog();
+	assert(depthFirst!record()(t.mod));
+	assert(visitCount == 5);
+
+	resetLog();
+	assert(breadthFirst!record()(t.mod));
+	assert(visitCount == 5);
+
+	resetLog();
+	assert(sorted!record()(t.mod));
+	assert(visitCount == 5);
+}
+
+unittest { // `FixedPoint` runs over a module as well as over a context
+	auto t = makeTree();
+	scope(exit) freeModule(t.mod);
+
+	auto system = fixedPoint(&moduleSystem!bumpUntilFour);
+	assert(system(t.mod));
+	assert(visitCount == 4);
+
+	resetLog();
+	assert(system(t.mod.ctx));
+	assert(visitCount == 4);
 }

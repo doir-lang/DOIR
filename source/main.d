@@ -41,7 +41,9 @@ extern(C) int main(int argc, char** argv) @trusted {
 	}
 
 	auto mod = createModule();
+	scope(exit) freeModule(mod);
 	BlockBuilder* builders; // the parser's stack of open blocks
+	scope(exit) fp.dynarray.free(builders);
 	{
 		auto builtin = createBlockBuilder(mod);
 		buildBuiltinBlock(builtin);

@@ -14,7 +14,7 @@ import mizu.opcode : setupEnvironment, startFromEnvironment;
 
 import doir.byte_emiter;
 import doir.interface_;
-import mizu.doir_instructions : doirLookup;
+import doir.mizu.instructions : doirLookup;
 import mizu.portable_format : fromPortable;
 import doir.module_;
 import doir.diagnostics : panic;
@@ -36,6 +36,31 @@ bool comptimeValueAvailable(ref Module mod, EntityId subtree) {
 			&& (getComponent!TypeOf(mod, subtree).related[0] == type
 				|| getComponent!TypeOf(mod, subtree).related[0] == blockType));
 }
+
+/// The instructions `comptimeEvaluate` must not run.
+///
+/// The program it builds holds one call and a `halt`, assembled fresh for
+/// that one call - so an instruction that moves the program counter has
+/// nowhere in *that* program to move to. `jump_to` is handed an address in
+/// the real one (address 0, for a label whose instruction has not been
+/// emitted yet), and the VM leaves for it, taking the compiler with it;
+/// `find_label` is the other half of the same story, scanning the throwaway
+/// program for a label that only exists in the real one and folding its
+/// "not found" 0 back into the caller as though it were an address. `halt`
+/// would end the program before it started, and a `label`'s value is
+/// `opt.mizu.materializeLabels`' to hand out rather than anything the VM
+/// computes.
+private static immutable string[9] neverComptime = [
+	"mizu.halt",
+	"mizu.label",
+	"mizu.find_label",
+	"mizu.jump_relative",
+	"mizu.jump_relative_immediate",
+	"mizu.jump_to",
+	"mizu.branch_relative",
+	"mizu.branch_relative_immediate",
+	"mizu.branch_to",
+];
 
 /// Evaluates `subtree` by assembling it into a throwaway block and running it
 /// on the Mizu VM. `mizuSchedule` is the schedule that lowers that block -
@@ -65,6 +90,9 @@ bool comptimeEvaluate(ref Module mod, EntityId subtree, SystemFunction mizuSched
 	// outside of the mizu backend.
 	if (calleeParent == compiler || calleeParent == assembler) return true;
 
+	foreach (name; neverComptime)
+		if (calledFunction == resolveCached(mod, name, 1, true)) return true;
+
 	immutable type = resolveCached(mod, "type", 1, true);
 	immutable blockType = resolveCached(mod, "block", 1, true);
 	immutable voidType = resolveCached(mod, "void", 1, true);
@@ -79,11 +107,9 @@ bool comptimeEvaluate(ref Module mod, EntityId subtree, SystemFunction mizuSched
 	immutable mizuHalt = resolveCached(mod, "mizu.halt", 1, true);
 	immutable mizuLoadImmediate = resolveCached(mod, "mizu.load_immediate", 1, true);
 	immutable mizuLoadUpperImmediate = resolveCached(mod, "mizu.load_upper_immediate", 1, true);
-	immutable mizuDoirSetModule = resolveCached(mod, "mizu.doir_set_module", 1, true);
+	immutable mizuDoirSetModule = resolveCached(mod, "mizu.doir.set_module", 1, true);
 	immutable mizuDoirAttachComptimeNumberI64 =
-		resolveCached(mod, "mizu.doir_attach_comptime_number_i64", 1, true);
-
-	if (calledFunction == mizuHalt) return true;
+		resolveCached(mod, "mizu.doir.attach_comptime_number_i64", 1, true);
 
 	// Every one of these is needed to assemble the throwaway program below, and
 	// every one of them is `invalidEntity` (0) in a module that never
@@ -217,7 +243,7 @@ bool comptimeEvaluate(ref Module mod, EntityId subtree, SystemFunction mizuSched
 		pushCall(comptimeBlock, InternedString("_"), mizuU64, mizuHalt, none[]);
 	}
 
-	printf("Comptime evaluating: %u\n", subtree);
+	// printf("Comptime evaluating: %u\n", subtree);
 
 	immutable backup = newRoot;
 	newRoot = comptimeBlock.block;
@@ -242,4 +268,196 @@ bool comptimeEvaluate(ref Module mod, EntityId subtree, SystemFunction mizuSched
 	}
 
 	return true;
+}
+
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+//
+// The ordinary path runs whenever a program calls a `mizu.*` function at
+// compile time (see `doir.pipeline`'s end-to-end tests). What is left here is
+// the argument shapes those programs happen not to use: a string constant, an
+// already-evaluated comptime string, and an argument with no name of its own.
+
+version (unittest) {
+	import doir.parser : parseSource;
+	import doir.pipeline : mizuSchedule, runPipeline;
+	import doir.diagnostics : diagnostics;
+	import doir.systems : moduleSystem;
+	import tests.pipeline_helper : compile;
+
+	/// A module that has `mizu.doir` loaded and has been through the pipeline,
+	/// so every `mizu.*` name the evaluator needs resolves.
+	private struct MizuFixture {
+		Module mod;
+		EntityId root;
+	}
+
+	private MizuFixture makeMizuFixture() @trusted {
+		diagnostics().clear();
+
+		MizuFixture f;
+		f.mod = createModule();
+
+		BlockBuilder* builders;
+		scope(exit) fp.dynarray.free(builders);
+		{
+			auto builtin = createBlockBuilder(f.mod);
+			buildBuiltinBlock(builtin);
+			fp.dynarray.pushBack(builders, builtin);
+		}
+
+		assert(parseSource(f.mod, builders,
+			"path : compiler.byte_pointer = \"./mizu.doir\"\n"
+			~ "_ : compiler.byte = early_include(path)\n", "comptime.doir"));
+		f.root = runPipeline(f.mod, builders);
+		assert(f.root != invalidEntity);
+		assert(!diagnostics().hasErrors());
+		return f;
+	}
+
+	/// `mizu.add(a, b)`, marked comptime, pushed into the fixture's root.
+	private EntityId pushComptimeAdd(ref MizuFixture f, const(EntityId)[] args) {
+		auto block = BlockBuilder(f.root, &f.mod);
+		immutable u64 = resolveLookupName(f.mod, internIn(f.mod, "mizu.u64"), f.root);
+		immutable add = resolveLookupName(f.mod, internIn(f.mod, "mizu.add"), f.root);
+		assert(u64 != invalidEntity && add != invalidEntity);
+
+		immutable call = pushCall(block, InternedString("_"), u64, add, args);
+		getOrAddComponent!Flags(f.mod, call).flags |= Flags.Comptime;
+		return call;
+	}
+}
+
+unittest { // a string constant is passed to the VM as the address of its bytes
+	auto f = makeMizuFixture();
+	scope(exit) freeModule(f.mod);
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable bytePointer = resolveLookupName(f.mod,
+		internIn(f.mod, "compiler.byte_pointer"), f.root);
+	immutable s = pushString(block, internIn(f.mod, "s"), bytePointer, internIn(f.mod, "hi"));
+
+	EntityId[2] args = [s, s];
+	immutable call = pushComptimeAdd(f, args[]);
+	assert(comptimeEvaluate(f.mod, call, &moduleSystem!mizuSchedule));
+	assert(!diagnostics().hasErrors());
+	diagnostics().clear();
+}
+
+unittest { // ...and so is one that an earlier round already evaluated
+	auto f = makeMizuFixture();
+	scope(exit) freeModule(f.mod);
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable bytePointer = resolveLookupName(f.mod,
+		internIn(f.mod, "compiler.byte_pointer"), f.root);
+	immutable s = pushValueless(block, internIn(f.mod, "s"), bytePointer);
+	addComponent!ComptimeString(f.mod, s).value = internIn(f.mod, "hi");
+
+	EntityId[2] args = [s, s];
+	immutable call = pushComptimeAdd(f, args[]);
+	assert(comptimeEvaluate(f.mod, call, &moduleSystem!mizuSchedule));
+	assert(!diagnostics().hasErrors());
+	diagnostics().clear();
+}
+
+unittest { // an argument with no name of its own gets a generated one
+	auto f = makeMizuFixture();
+	scope(exit) freeModule(f.mod);
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable u64 = resolveLookupName(f.mod, internIn(f.mod, "mizu.u64"), f.root);
+	// `_` is the discard name, which `pushCommon` attaches no `Name` for.
+	immutable anonymous = pushNumber(block, InternedString("_"), u64, 3);
+	assert(!hasComponent!Name(f.mod, anonymous));
+
+	EntityId[2] args = [anonymous, anonymous];
+	immutable call = pushComptimeAdd(f, args[]);
+	assert(comptimeEvaluate(f.mod, call, &moduleSystem!mizuSchedule));
+	assert(!diagnostics().hasErrors());
+	diagnostics().clear();
+}
+
+unittest { // calls the evaluator has nothing to do with are left alone
+	auto f = makeMizuFixture();
+	scope(exit) freeModule(f.mod);
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable u64 = resolveLookupName(f.mod, internIn(f.mod, "mizu.u64"), f.root);
+	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.root);
+	immutable emit = resolveLookupName(f.mod, internIn(f.mod, "compiler.emit"), f.root);
+	immutable halt = resolveLookupName(f.mod, internIn(f.mod, "mizu.halt"), f.root);
+
+	immutable n = pushNumber(block, internIn(f.mod, "n"), byte_, 1);
+	assert(comptimeEvaluate(f.mod, n, &moduleSystem!mizuSchedule)); // not a call
+
+	// A call that is not marked comptime.
+	immutable runtime = pushCall(block, internIn(f.mod, "r"), byte_, emit, (&n)[0 .. 1]);
+	assert(comptimeEvaluate(f.mod, runtime, &moduleSystem!mizuSchedule));
+	assert(hasComponent!Call(f.mod, runtime));
+
+	// A `compiler.*` callee, which has its own pass.
+	getOrAddComponent!Flags(f.mod, runtime).flags |= Flags.Comptime;
+	assert(comptimeEvaluate(f.mod, runtime, &moduleSystem!mizuSchedule));
+	assert(hasComponent!Call(f.mod, runtime));
+
+	// `mizu.halt`, which would end the throwaway program before it started.
+	EntityId[0] none;
+	immutable haltCall = pushCall(block, InternedString("_"), u64, halt, none[]);
+	getOrAddComponent!Flags(f.mod, haltCall).flags |= Flags.Comptime;
+	assert(comptimeEvaluate(f.mod, haltCall, &moduleSystem!mizuSchedule));
+	assert(hasComponent!Call(f.mod, haltCall));
+
+	// A call whose target never resolved.
+	immutable dangling = pushCommon(f.mod, f.root, InternedString("_"));
+	addComponent!TypeOf(f.mod, dangling).related[0] = u64;
+	addComponent!Call(f.mod, dangling).related[0] = invalidEntity;
+	getOrAddComponent!Flags(f.mod, dangling).flags |= Flags.Comptime;
+	assert(comptimeEvaluate(f.mod, dangling, &moduleSystem!mizuSchedule));
+
+	assert(!diagnostics().hasErrors());
+	diagnostics().clear();
+}
+
+unittest { // a module with no mizu backend loaded evaluates nothing
+	import tests.pipeline_helper : makeModuleWithBuiltins;
+
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+	diagnostics().clear();
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.root);
+	// A zero-argument call is vacuously comptime, and nothing `mizu.*` the
+	// evaluator needs exists here - so it has to bail out rather than assemble
+	// a program out of `invalidEntity`s and jump the VM into it.
+	immutable emitT = resolveLookupName(f.mod, internIn(f.mod, "compiler.emit_t"), f.root);
+	EntityId[0] none;
+	immutable call = pushCall(block, internIn(f.mod, "c"), byte_, emitT, none[]);
+	getOrAddComponent!Flags(f.mod, call).flags |= Flags.Comptime;
+
+	assert(comptimeEvaluate(f.mod, call, &moduleSystem!mizuSchedule));
+	assert(hasComponent!Call(f.mod, call));
+	assert(!diagnostics().hasErrors());
+	diagnostics().clear();
+}
+
+unittest {
+	// A jump handed a compile-time constant is still a jump. It used to be
+	// assembled into the throwaway program and *run*: the VM left for
+	// whatever address the constant named - 0, here - and took the compiler
+	// down with it, so the crash was the compiler's rather than the compiled
+	// program's. It belongs in the output instead.
+	auto r = compile(
+		"path : compiler.byte_pointer = \"./mizu.doir\"\n"
+		~ "_ : compiler.byte = early_include(path)\n"
+		~ "_ : compiler.assembler.register = compiler.assembler.begin_register_allocation()\n"
+		~ "a : mizu.u64 = 0\n"
+		~ "_ : mizu.u64 = mizu.jump_to(a)\n"
+		~ "_ : mizu.u64 = mizu.halt()\n");
+	scope(exit) freeModule(r.mod);
+	assert(r.ok);
+	diagnostics().clear();
 }

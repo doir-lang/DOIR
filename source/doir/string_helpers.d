@@ -16,6 +16,7 @@ import fp.fnv1a : fnv1aHash = hash;
 import fp.hashtable;
 import fp.pointer : allocFunction;
 import fp.string : concatenateSlice, strFree = free, strLength = length, strSlice = slice;
+import std.typecons : Nullable;
 
 /// libfp's own `append` asserts the string is already allocated, so this
 /// null-safe one-character append stands in for it throughout.
@@ -163,15 +164,14 @@ InternedString intern(ref StringInterner self, const(char)[] s) @trusted {
 	return interned;
 }
 
-/// Looks `s` up without interning it. `found` is false if it isn't present.
-InternedString findInterned(ref StringInterner self, const(char)[] s, out bool found) @trusted {
+/// Looks `s` up without interning it, or null if it isn't present. A null
+/// result and an interned empty string are different answers, which is why
+/// this is a `Nullable` rather than an `InternedString(null)` sentinel.
+Nullable!InternedString findInterned(ref StringInterner self, const(char)[] s) @trusted {
 	auto probe = InternEntry(s);
-	if (auto hit = fp.hashtable.find(self.table, probe)) {
-		found = true;
-		return InternedString(hit.text);
-	}
-	found = false;
-	return InternedString(null);
+	if (auto hit = fp.hashtable.find(self.table, probe))
+		return Nullable!InternedString(InternedString(hit.text));
+	return Nullable!InternedString.init;
 }
 
 
@@ -610,10 +610,9 @@ unittest { // interning the empty string does not crash and round trips
 	auto empty = intern(interner, "");
 	assert(empty.view.length == 0);
 
-	bool found;
-	auto looked = findInterned(interner, "", found);
-	assert(found);
-	assert(looked.view.length == 0);
+	auto looked = findInterned(interner, "");
+	assert(!looked.isNull);
+	assert(looked.get.view.length == 0);
 }
 
 unittest { // find reports nothing for strings that were never interned
@@ -621,9 +620,7 @@ unittest { // find reports nothing for strings that were never interned
 	scope(exit) free(interner);
 	intern(interner, "hello");
 
-	bool found;
-	findInterned(interner, "does_not_exist", found);
-	assert(!found);
+	assert(findInterned(interner, "does_not_exist").isNull);
 }
 
 unittest { // allocation spans multiple blocks once the block size is exceeded
@@ -734,3 +731,267 @@ unittest {
 // NOTE: the C++ suite also asserted `string_interner(0)` throws
 // `std::invalid_argument`. `-betterC` has no exceptions; `createInterner`
 // asserts instead, which cannot be caught and so cannot be tested here.
+
+// --- Escape / unescape ------------------------------------------------------
+//
+// The un/escape helpers are the compiler's only string-literal codec: the
+// parser runs every `"..."` it sees through `unescapePythonString`, and
+// `doir.print` runs every string it emits back through `escapePythonString`.
+// Both directions are exercised here, including the failure paths, which
+// `-betterC` reports through `StringProcessingError` rather than by throwing.
+
+unittest { // every simple Python escape decodes to the byte it names
+	static immutable string[11] cases = [
+		"\\\\", "\\'", "\\\"", "\\a", "\\b", "\\f", "\\n", "\\r", "\\t", "\\v", "\\\n",
+	];
+	static immutable string[11] expected = [
+		"\\", "'", "\"", "\a", "\b", "\f", "\n", "\r", "\t", "\v", "", // trailing: line continuation
+	];
+	foreach (i, c; cases) {
+		StringProcessingError err;
+		auto decoded = unescapePythonString(c, err);
+		scope(exit) strFree(decoded);
+		assert(!err.failed);
+		assert((decoded is null ? "" : strSlice(decoded)) == expected[i]);
+	}
+}
+
+unittest { // ...and a plain character passes straight through
+	StringProcessingError err;
+	auto decoded = unescapePythonString("plain text", err);
+	scope(exit) strFree(decoded);
+	assert(!err.failed);
+	assert(strSlice(decoded) == "plain text");
+}
+
+unittest { // \xhh, in both digit cases
+	StringProcessingError err;
+	auto decoded = unescapePythonString("\\x41\\xfF", err);
+	scope(exit) strFree(decoded);
+	assert(!err.failed);
+	assert(strSlice(decoded) == "A\xff");
+}
+
+unittest { // octal escapes take up to three digits, and stop at a non-octal one
+	StringProcessingError err;
+	auto decoded = unescapePythonString("\\101\\78", err);
+	scope(exit) strFree(decoded);
+	assert(!err.failed);
+	assert(strSlice(decoded) == "A\x078");
+}
+
+unittest { // \U reaches past the BMP, where appendUtf8 emits four bytes
+	StringProcessingError err;
+	auto decoded = unescapePythonString("\\U0001F600", err); // grinning face
+	scope(exit) strFree(decoded);
+	assert(!err.failed);
+	assert(strSlice(decoded) == "\xf0\x9f\x98\x80");
+}
+
+unittest { // and \u the one-byte and two-byte cases
+	StringProcessingError err;
+	auto decoded = unescapePythonString("\\u0041\\u00e9", err);
+	scope(exit) strFree(decoded);
+	assert(!err.failed);
+	assert(strSlice(decoded) == "A\xc3\xa9");
+}
+
+unittest { // every way a Python escape can fail reports through `err`
+	static immutable string[7] bad = [
+		"\\",          // trailing backslash
+		"\\q",         // not an escape at all
+		"\\x",         // \x with nothing behind it
+		"\\xzz",       // ...or with non-hex digits
+		"\\u00",       // \u truncated
+		"\\U0000",     // \U truncated
+		"\\UFFFFFFFF", // out of Unicode range
+	];
+	foreach (c; bad) {
+		StringProcessingError err;
+		auto decoded = unescapePythonString(c, err);
+		scope(exit) strFree(decoded); // the partial result still has to be freed
+		assert(err.failed);
+		assert(err.message.length > 0);
+	}
+}
+
+unittest { // a surrogate half is not a legal codepoint in UTF-8
+	StringProcessingError err;
+	auto decoded = unescapePythonString("\\ud800", err);
+	scope(exit) strFree(decoded);
+	assert(err.failed);
+}
+
+unittest { // `fail` keeps the *first* error rather than the last
+	StringProcessingError err;
+	fail(err, "first", 1);
+	fail(err, "second", 2);
+	assert(err.failed);
+	assert(err.message == "first");
+	assert(err.start == 1);
+}
+
+unittest { // appendUtf8 rejects anything above the Unicode maximum
+	char* out_ = null;
+	scope(exit) strFree(out_);
+	StringProcessingError err;
+	appendUtf8(out_, 0x110000, err);
+	assert(err.failed);
+}
+
+unittest { // hexDigit covers all three digit ranges, and reports the rest
+	StringProcessingError ok;
+	assert(hexDigit('7', ok) == 7);
+	assert(hexDigit('c', ok) == 12);
+	assert(hexDigit('C', ok) == 12);
+	assert(!ok.failed);
+
+	StringProcessingError bad;
+	assert(hexDigit('g', bad) == 0);
+	assert(bad.failed);
+}
+
+unittest { // escapePythonString is the inverse for everything it can name
+	static immutable string[10] cases = [
+		"\\", "'", "\"", "\a", "\b", "\f", "\n", "\r", "\t", "\v",
+	];
+	static immutable string[10] expected = [
+		"\\\\", "\\'", "\\\"", "\\a", "\\b", "\\f", "\\n", "\\r", "\\t", "\\v",
+	];
+	foreach (i, c; cases) {
+		auto escaped = escapePythonString(c);
+		scope(exit) strFree(escaped);
+		assert(strSlice(escaped) == expected[i]);
+	}
+}
+
+unittest { // printable ASCII stays literal; anything else below 0x80 goes to \xhh
+	auto printable = escapePythonString("Az09 ~");
+	scope(exit) strFree(printable);
+	assert(strSlice(printable) == "Az09 ~");
+
+	static immutable char[1] control = [cast(char) 0x01];
+	auto escaped = escapePythonString(control[0 .. 1]);
+	scope(exit) strFree(escaped);
+	assert(strSlice(escaped) == "\\x01");
+}
+
+unittest { // a codepoint past the BMP escapes as \U, not \u
+	auto escaped = escapePythonString("\xf0\x9f\x98\x80"); // grinning face
+	scope(exit) strFree(escaped);
+	assert(strSlice(escaped) == "\\U0001f600");
+}
+
+unittest { // decodeUtf8 handles each sequence length, and truncation at each
+	static immutable string[4] whole = ["A", "\xc3\xa9", "\xe2\x82\xac", "\xf0\x9f\x98\x80"];
+	static immutable uint[4] expected = [0x41, 0xE9, 0x20AC, 0x1F600];
+	foreach (n, s; whole) {
+		size_t i = 0;
+		assert(decodeUtf8(s, i) == expected[n]);
+		assert(i == s.length);
+	}
+
+	// A lead byte with its continuation bytes cut off decodes as itself and
+	// still advances, so the caller cannot loop forever or read past the end.
+	foreach (s; whole[1 .. $]) {
+		auto truncated = s[0 .. $ - 1];
+		size_t i = 0;
+		immutable cp = decodeUtf8(truncated, i);
+		assert(i > 0);
+		assert(cp == cast(ubyte) truncated[0] || i == truncated.length);
+	}
+}
+
+unittest { // the C++ escaper names the same set, and hex-escapes the rest
+	static immutable string[11] cases = [
+		"\\", "\"", "'", "?", "\a", "\b", "\f", "\n", "\r", "\t", "\v",
+	];
+	static immutable string[11] expected = [
+		"\\\\", "\\\"", "\\'", "\\?", "\\a", "\\b", "\\f", "\\n", "\\r", "\\t", "\\v",
+	];
+	foreach (i, c; cases) {
+		auto escaped = escapeCppString(c);
+		scope(exit) strFree(escaped);
+		assert(strSlice(escaped) == expected[i]);
+	}
+
+	auto plain = escapeCppString("ok");
+	scope(exit) strFree(plain);
+	assert(strSlice(plain) == "ok");
+}
+
+unittest {
+	// A `\xhh` escape is greedy in C++, so a hex digit directly behind one
+	// would be absorbed into it; the literal is spliced there, exactly as it
+	// is after a `\0`.
+	static immutable char[2] highThenHex = [cast(char) 0x80, 'a'];
+	auto escaped = escapeCppString(highThenHex[0 .. 2]);
+	scope(exit) strFree(escaped);
+	assert(strSlice(escaped) == "\\x80\" \"a");
+
+	static immutable char[2] highThenLetter = [cast(char) 0x80, 'z'];
+	auto plain = escapeCppString(highThenLetter[0 .. 2]);
+	scope(exit) strFree(plain);
+	assert(strSlice(plain) == "\\x80z");
+}
+
+unittest { // the C++ unescaper accepts everything the Python one does...
+	StringProcessingError err;
+	auto decoded = unescapeCppString(
+		"\\\\\\'\\\"\\a\\b\\f\\n\\r\\t\\v\\x41\\u0041\\U00000041\\101\\78", err);
+	scope(exit) strFree(decoded);
+	assert(!err.failed);
+	assert(strSlice(decoded) == "\\'\"\a\b\f\n\r\t\vAAAA\x078");
+}
+
+unittest { // ...its \x is greedy, keeping only the low byte...
+	StringProcessingError err;
+	auto decoded = unescapeCppString("\\x141", err);
+	scope(exit) strFree(decoded);
+	assert(!err.failed);
+	assert(strSlice(decoded) == "\x41");
+}
+
+unittest { // ...and it reports the same failures
+	static immutable string[6] bad = [
+		"\\", "\\q", "\\x", "\\xz", "\\u00", "\\UFFFFFFFF",
+	];
+	foreach (c; bad) {
+		StringProcessingError err;
+		auto decoded = unescapeCppString(c, err);
+		scope(exit) strFree(decoded);
+		assert(err.failed);
+	}
+}
+
+unittest { // a \u naming a surrogate fails inside appendUtf8, not before it
+	StringProcessingError err;
+	auto decoded = unescapeCppString("\\udc00", err);
+	scope(exit) strFree(decoded);
+	assert(err.failed);
+}
+
+unittest { // replaceAll rewrites every occurrence, and ignores an empty needle
+	auto s = escapePythonString("a-b-c");
+	scope(exit) strFree(s);
+	replaceAll(s, "-", "+");
+	assert(strSlice(s) == "a+b+c");
+
+	replaceAll(s, "", "!"); // would loop forever if it were honoured
+	assert(strSlice(s) == "a+b+c");
+}
+
+unittest { // a BMP codepoint above 0x7FF is three UTF-8 bytes
+	StringProcessingError err;
+	auto decoded = unescapePythonString("\\u20ac", err); // euro sign
+	scope(exit) strFree(decoded);
+	assert(!err.failed);
+	assert(strSlice(decoded) == "\xe2\x82\xac");
+}
+
+unittest { // the C++ unescaper's \U needs all eight digits present
+	StringProcessingError err;
+	auto decoded = unescapeCppString("\\U0000", err);
+	scope(exit) strFree(decoded);
+	assert(err.failed);
+}

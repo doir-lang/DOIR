@@ -12,7 +12,7 @@ blk : block = {
 }
 false : u64 = 0
 true : u64 = 1
-_ : u64 = mizu.doir_execute_if(blk, true)
+_ : u64 = mizu.doir.execute_if(blk, true)
 
 a : u64 = 5
 _ : u64 = mizu.load_immediate(u64, a)

@@ -12,18 +12,36 @@ import core.stdc.stdio : fprintf, printf, stderr;
 
 private enum modules = [
 	"doir.string_helpers",
+	"doir.print",
+	"doir.file_manager",
+	"doir.diagnostics",
 	"doir.module_",
 	"doir.interface_",
 	"doir.systems",
 	"doir.verify",
 	"doir.parser",
 	"doir.byte_emiter",
+	"doir.pipeline",
+	"doir.mizu.instructions",
 	"doir.pipeline.sema.function_arity",
+	"doir.pipeline.sema.strip_names",
+	"doir.pipeline.sema.name_reuse",
+	"doir.pipeline.sema.lookup",
+	"doir.pipeline.sema.process_early_include",
+	"doir.pipeline.sema.materialize",
+	"doir.pipeline.sema.comptime",
+	"doir.pipeline.sema.sort",
+	"doir.pipeline.opt.materialize_aliases",
+	"doir.pipeline.opt.strip_freestanding_blocks",
+	"doir.pipeline.opt.pin_registers",
+	"doir.pipeline.opt.mizu.comptime_evaluate",
+	"doir.pipeline.opt.mizu.materialize_immediates",
+	"doir.pipeline.opt.mizu.materialize_labels",
 	"doir.pipeline.opt.inline_functions",
 	"doir.pipeline.opt.compute_compiler_namespace",
 ];
 
-extern(C) int main() @nogc nothrow {
+private int runEveryTest() @nogc nothrow {
 	size_t total = 0;
 
 	static foreach (name; modules) {{
@@ -41,3 +59,22 @@ extern(C) int main() @nogc nothrow {
 	printf("doir: all %d tests passed.\n", cast(int) total);
 	return 0;
 }
+
+/// `tools/coverage.sh` builds this as ordinary D rather than `-betterC`,
+/// because `-cov` registers its counters through druntime. That build needs
+/// druntime's own `main` so the registration actually runs.
+version(DoirCoverage) {
+	/*
+	 * druntime would otherwise run every `unittest` itself on the way to
+	 * `main`, and `runEveryTest` then runs the same tests a second time.
+	 * Replacing the tester with one that runs nothing (but still asks for
+	 * `main`) leaves this build doing exactly what the `-betterC` one does.
+	 */
+	shared static this() {
+		import core.runtime : Runtime, UnitTestResult;
+		Runtime.extendedModuleUnitTester = () => UnitTestResult(0, 0, true, false);
+	}
+
+	int main() { return runEveryTest(); }
+} else
+	extern(C) int main() @nogc nothrow { return runEveryTest(); }

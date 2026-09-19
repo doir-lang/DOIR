@@ -45,11 +45,10 @@ bool functionArity(ref Module mod, EntityId subtree) @trusted {
 		annotation.message = text("Number of function parameters ", DoirAnsi.info, callCount, Ansi.reset,
 			" differs from expected number ", DoirAnsi.info, declCount, Ansi.reset);
 
-		bool found;
 		auto range = parseParameterRange(spanOf(source, location),
-			callCount > 0 ? callCount - 1 : 0, found);
-		if (found)
-			location.startByte += (range.start + range.end) / 2;
+			callCount > 0 ? callCount - 1 : 0);
+		if (!range.isNull)
+			location.startByte += (range.get.start + range.get.end) / 2;
 		annotation.position = location.start(source);
 		pushAnnotation(*diag, annotation);
 		return false;
@@ -83,6 +82,7 @@ private void notAFunction(ref Module mod, EntityId subtree, EntityId decl) @trus
 // Ported from tests/spec_syntax.test.cpp.
 
 version (unittest) {
+	import doir.string_helpers : InternedString;
 	import tests.pipeline_helper;
 }
 
@@ -119,4 +119,25 @@ unittest {
 	scope(exit) freeModule(r.mod);
 	assert(r.ok);
 	assert(find(r.mod, r.root, "%1") != invalidEntity);
+}
+
+unittest {
+	// A call target with no name of its own is named by its entity id in the
+	// diagnostic instead. Nothing in the parser can produce such a call - an
+	// argument is always an identifier - so this one is built directly.
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+	diagnostics().clear();
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.root);
+	// `_` is the discard name, which `pushCommon` attaches no `Name` for, and
+	// a plain number is not callable.
+	immutable target = pushNumber(block, InternedString("_"), byte_, 1);
+	assert(!hasComponent!Name(f.mod, target));
+
+	immutable call = pushCall(block, internIn(f.mod, "c"), byte_, target, (&target)[0 .. 1]);
+	assert(!functionArity(f.mod, call));
+	assert(diagnostics().hasErrors());
+	diagnostics().clear();
 }

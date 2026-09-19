@@ -118,13 +118,176 @@ bool processEarlyInclude(ref Module mod, EntityId subtree, ref EarlyIncludeConte
 		removeComponent!LookupTypeOf(mod, subtree);
 	}
 
-	bool ok;
-	auto contents = getFileString(internedPath.view, ok);
-	attachNumber(mod, subtree, pointerSized, ok ? contents.length : 0);
+	auto contents = getFileString(internedPath.view);
+	attachNumber(mod, subtree, pointerSized, contents.isNull ? 0 : contents.get.length);
 	return true;
 }
 
 /// Visitor adaptor for `doir.systems`, bound to `earlyIncludeContext`.
 bool processEarlyIncludeVisitor(ref Module mod, EntityId subtree) {
 	return processEarlyInclude(mod, subtree, earlyIncludeContext);
+}
+
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+//
+// The happy path runs whenever a program includes something (see
+// `doir.pipeline`'s end-to-end tests). What is left here is the malformed
+// calls, which `sema.functionArity` would reject before this pass ever saw
+// them in a real compile - so they are built directly.
+
+version (unittest) {
+	import doir.string_helpers : InternedString;
+	import tests.pipeline_helper;
+
+	/// A module with an open builder stack, as the pass expects to find one.
+	private struct IncludeFixture {
+		Module mod;
+		EntityId root;
+		BlockBuilder* builders;
+		EarlyIncludeContext context;
+	}
+
+	private IncludeFixture makeIncludeFixture() @trusted {
+		IncludeFixture f;
+		f.mod = createModule();
+		auto builtin = createBlockBuilder(f.mod);
+		buildBuiltinBlock(builtin);
+		fp.dynarray.pushBack(f.builders, builtin);
+		f.root = f.builders[0].block;
+		f.context.builders = &f.builders;
+		return f;
+	}
+
+	/// Not `free`: a `free` declared here would hide every imported one
+	/// throughout the module (see the note in README.md).
+	private void freeFixture(ref IncludeFixture f) @trusted {
+		fp.dynarray.free(f.builders);
+		freeModule(f.mod);
+	}
+
+	/// Builds `early_include(args...)` inside the fixture's root block.
+	private EntityId pushInclude(ref IncludeFixture f, const(EntityId)[] args) {
+		auto block = BlockBuilder(f.root, &f.mod);
+		immutable pointerSized = resolveLookupName(f.mod,
+			internIn(f.mod, "compiler.pointer_sized"), f.root);
+		immutable include = resolveLookupName(f.mod, internIn(f.mod, "early_include"), f.root);
+		return pushCall(block, InternedString("_"), pointerSized, include, args);
+	}
+}
+
+unittest { // a resolved `early_include` call includes its file and is replaced
+	diagnostics().clear();
+	auto f = makeIncludeFixture();
+	scope(exit) f.freeFixture();
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable bytePointer = resolveLookupName(f.mod,
+		internIn(f.mod, "compiler.byte_pointer"), f.root);
+	immutable path = pushString(block, internIn(f.mod, "path"), bytePointer,
+		internIn(f.mod, "./test_string.doir"));
+	immutable call = pushInclude(f, (&path)[0 .. 1]);
+
+	assert(processEarlyInclude(f.mod, call, f.context));
+	assert(!diagnostics().hasErrors());
+
+	// The call is gone, replaced by the included file's byte count.
+	assert(!hasComponent!Call(f.mod, call));
+	assert(hasComponent!Number(f.mod, call));
+	assert(getComponent!Number(f.mod, call).value > 0);
+	// ...and the file's contents were parsed into the surrounding block.
+	assert(resolveLookupName(f.mod, internIn(f.mod, "%0"), f.root) != invalidEntity);
+	diagnostics().clear();
+}
+
+unittest { // a call with the wrong number of arguments is reported
+	diagnostics().clear();
+	auto f = makeIncludeFixture();
+	scope(exit) f.freeFixture();
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable bytePointer = resolveLookupName(f.mod,
+		internIn(f.mod, "compiler.byte_pointer"), f.root);
+	immutable path = pushString(block, internIn(f.mod, "path"), bytePointer,
+		internIn(f.mod, "./test_string.doir"));
+
+	// No arguments at all. An empty list still leaves a (zero-length) inputs
+	// component behind, so the count check is what catches that; stripping the
+	// component reaches the `hasAnyInputs` check in front of it.
+	EntityId[0] none;
+	assert(!processEarlyInclude(f.mod, pushInclude(f, none[]), f.context));
+	assert(diagnostics().hasErrors());
+	diagnostics().clear();
+
+	immutable argless = pushInclude(f, none[]);
+	removeComponent!FunctionInputs(f.mod, argless);
+	assert(!processEarlyInclude(f.mod, argless, f.context));
+	assert(diagnostics().hasErrors());
+	diagnostics().clear();
+
+	// ...and too many.
+	EntityId[2] two = [path, path];
+	assert(!processEarlyInclude(f.mod, pushInclude(f, two[]), f.context));
+	assert(diagnostics().hasErrors());
+	diagnostics().clear();
+}
+
+unittest { // ...as is an argument that does not name a file
+	diagnostics().clear();
+	auto f = makeIncludeFixture();
+	scope(exit) f.freeFixture();
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable pointerSized = resolveLookupName(f.mod,
+		internIn(f.mod, "compiler.pointer_sized"), f.root);
+
+	// A number rather than a string constant.
+	immutable number = pushNumber(block, internIn(f.mod, "n"), pointerSized, 1);
+	assert(!processEarlyInclude(f.mod, pushInclude(f, (&number)[0 .. 1]), f.context));
+	assert(diagnostics().hasErrors());
+	diagnostics().clear();
+
+	// A string naming a path that cannot be resolved.
+	immutable bytePointer = resolveLookupName(f.mod,
+		internIn(f.mod, "compiler.byte_pointer"), f.root);
+	immutable missing = pushString(block, internIn(f.mod, "missing"), bytePointer,
+		internIn(f.mod, "/nonexistent/definitely_not_here.doir"));
+	assert(!processEarlyInclude(f.mod, pushInclude(f, (&missing)[0 .. 1]), f.context));
+	assert(diagnostics().hasErrors());
+	diagnostics().clear();
+
+	// An argument naming something that does not exist at all.
+	Lookup[1] nowhere = [Lookup(internIn(f.mod, "nope"))];
+	auto unresolvable = pushCall(block, InternedString("_"), pointerSized,
+		resolveLookupName(f.mod, internIn(f.mod, "early_include"), f.root), nowhere[]);
+	assert(!processEarlyInclude(f.mod, unresolvable, f.context));
+	assert(diagnostics().hasErrors());
+	diagnostics().clear();
+}
+
+unittest { // anything that is not an `early_include` call is left alone
+	diagnostics().clear();
+	auto f = makeIncludeFixture();
+	scope(exit) f.freeFixture();
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.root);
+	immutable emit = resolveLookupName(f.mod, internIn(f.mod, "compiler.emit"), f.root);
+
+	immutable n = pushNumber(block, internIn(f.mod, "n"), byte_, 1);
+	assert(processEarlyInclude(f.mod, n, f.context)); // not a call
+
+	immutable other = pushCall(block, InternedString("_"), byte_, emit, (&n)[0 .. 1]);
+	assert(processEarlyInclude(f.mod, other, f.context)); // a call to something else
+
+	// An `early_include` with no surrounding block to include into.
+	immutable orphan = addEntity(f.mod);
+	addComponent!Call(f.mod, orphan).related[0] =
+		resolveLookupName(f.mod, internIn(f.mod, "early_include"), f.root);
+	assert(processEarlyInclude(f.mod, orphan, f.context));
+
+	assert(!diagnostics().hasErrors());
+	diagnostics().clear();
 }

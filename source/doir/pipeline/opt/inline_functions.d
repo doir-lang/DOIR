@@ -153,3 +153,36 @@ unittest {
 	assert(find(r.mod, r.root, "x") != invalidEntity);
 	diagnostics().clear();
 }
+
+unittest {
+	// A parameter with no name of its own - `_`, which `pushCommon` attaches
+	// no `Name` for - gets a generated `a<n>` so the alias standing in for it
+	// inside the inlined body still has something to be called.
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+	diagnostics().clear();
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.root);
+
+	Lookup[1] inputs = [Lookup(byte_)];
+	InternedString[1] names = [InternedString("_")];
+	immutable ft = pushFunctionType(block, internIn(f.mod, "ft"), inputs[], Lookup(byte_), true, names[]);
+	getOrAddComponent!Flags(f.mod, ft).flags |= Flags.Inline;
+
+	auto fb = pushFunction(block, internIn(f.mod, "fn"), ft, true);
+	pushNumber(fb.builder, internIn(f.mod, "inner"), byte_, 1);
+	immutable functionDef = fb.builder.block;
+	assert(!hasComponent!Name(f.mod, getComponent!Block(f.mod, functionDef).related[0]));
+
+	immutable argument = pushNumber(block, internIn(f.mod, "arg"), byte_, 2);
+	immutable call = pushCall(block, internIn(f.mod, "c"), byte_, functionDef, (&argument)[0 .. 1]);
+
+	assert(inlineFunctions(f.mod, call));
+	assert(!hasComponent!Call(f.mod, call));
+	assert(hasComponent!Block(f.mod, call));
+	// The generated name is what the substituted alias is called.
+	assert(resolveLookupName(f.mod, internIn(f.mod, "a0"), call) != invalidEntity);
+	assert(!diagnostics().hasErrors());
+	diagnostics().clear();
+}

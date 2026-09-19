@@ -68,11 +68,16 @@ private void ensureSlot(ref ByteEmiter self, EntityId e) @trusted {
 }
 
 private void emitNumberAssign(ref ByteEmiter self, ref ByteArray out_, ref Module mod, EntityId subtree) @trusted {
-	if (hasComponent!Number(mod, subtree)) {
+	// Either kind of constant is a byte here - `opt.computeCompilerNamespace`
+	// leaves a `ComptimeNumber` behind on a folded `compiler.bitwise_and` /
+	// `shift_right` call, and `mizu`'s `emit_register` hands exactly those to
+	// `compiler.emit`.
+	auto number = comptimeNumber(mod, subtree);
+	if (!number.isNull) {
 		immutable byteType = resolveLookupName(mod, internIn(mod, "compiler.byte"), 1);
 		if (resolveAlias(mod, getComponent!TypeOf(mod, subtree).related[0]) != byteType) return;
 
-		immutable value = cast(size_t) getComponent!Number(mod, subtree).value;
+		immutable value = cast(size_t) number.get;
 		ensureSlot(self, subtree);
 		free(self.values[subtree]);
 		fp.dynarray.pushBack(self.values[subtree].data, cast(ubyte) value);

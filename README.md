@@ -43,6 +43,40 @@ dub test  --compiler=ldc2                 # bin/doir-tests
 `bin/doir <path>` compiles a `.doir` file, prints the resulting IR and writes
 the Mizu binary to `res.bin`.
 
+## Coverage
+
+```sh
+tools/coverage.sh        # per-module summary
+tools/coverage.sh -v     # ... and every uncovered line
+DC=dmd tools/coverage.sh # measure with DMD instead of the default LDC
+```
+
+`-cov` records its line counts through druntime, which `-betterC` does not
+have, so the script builds the same sources and the same tests as ordinary
+D — `tests/runner.d` supplies a druntime `main` when `DoirCoverage` is set,
+and disables druntime's own test pass so the tests still run exactly once. It
+asks `dub describe` where the sources, import paths, libraries and versions
+are rather than repeating `dub.json`, and drops any dependency's `.lst` files
+from the report so the numbers cover DOIR only.
+
+### What the last percent is
+
+Every reachable line is covered. The ~40 that are not are all one of three
+things, and none of them can be reached by a test that lives to report it:
+
+- **`panic` and its call sites.** `panic` prints and calls `abort()`; a test
+  that reaches one takes the whole run down with it, and `-cov` writes its
+  counts at druntime shutdown, which an aborting process never gets to. Most
+  of these are `doir.verify`, whose checks are assertions about the compiler's
+  own IR rather than about the program being compiled — so a test could only
+  reach one by hand-building IR the compiler itself cannot produce.
+- **The three lines next to one.** A `case` label, a `default` label and a
+  `printf` that each sit directly in front of a `panic`.
+- **`buildAssignment`'s `case ValueKind.none`.** `final switch` requires every
+  enum member to have a case, and `assignment` only calls `buildAssignment`
+  with `hasValue` false for that one — so the case exists to satisfy the
+  language, not because anything reaches it.
+
 ### Regenerating `mizu.doir`
 
 `mizu.doir` binds every Mizu instruction at the DOIR level, and bakes in the

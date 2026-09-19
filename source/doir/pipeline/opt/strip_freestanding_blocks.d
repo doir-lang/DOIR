@@ -29,3 +29,44 @@ bool stripFreestandingBlocks(ref Module mod, EntityId subtree) @trusted {
 
 	return true;
 }
+
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+version (unittest) {
+	import tests.pipeline_helper;
+}
+
+unittest {
+	// A `block`-typed block nothing refers to is dead code once the block
+	// itself is not consumed, so the pass unlinks it from its parent.
+	auto r = compile("blk : block = {\n\t%1 : compiler.byte = 6\n}\n");
+	scope(exit) freeModule(r.mod);
+	assert(r.ok);
+	assert(find(r.mod, r.root, "blk") == invalidEntity);
+}
+
+unittest { // ...and an exported one is kept, because something outside may use it
+	auto r = compile("export blk : block = {\n\t%1 : compiler.byte = 6\n}\n");
+	scope(exit) freeModule(r.mod);
+	assert(r.ok);
+	assert(find(r.mod, r.root, "blk") != invalidEntity);
+}
+
+unittest { // a freestanding block whose parent is gone has nothing to unlink
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+
+	immutable blockType = resolveLookupName(f.mod, internIn(f.mod, "block"), f.root);
+	assert(blockType != invalidEntity);
+
+	immutable orphan = addEntity(f.mod);
+	addComponent!Block(f.mod, orphan);
+	addComponent!TypeOf(f.mod, orphan).related[0] = blockType;
+	assert(stripFreestandingBlocks(f.mod, orphan));
+
+	// Neither does something that is not a block at all.
+	assert(stripFreestandingBlocks(f.mod, blockType));
+}

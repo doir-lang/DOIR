@@ -572,3 +572,202 @@ unittest { // canonicalize.sort invalidates previously cached resolutions
 	immutable expectedAfter = resolveLookupName(f.mod, internIn(f.mod, "compiler.pointer"), newRootId);
 	assert(resolveCached(f.mod, "compiler.pointer", newRootId) == expectedAfter);
 }
+
+
+// --- The entity-keyed containers -------------------------------------------
+
+unittest { // EntityMap: insert, overwrite, look up, and the two `get` shapes
+	EntityMap m;
+	scope(exit) m.free();
+
+	assert(m.length == 0);
+	assert(!m.contains(cast(EntityId) 1));
+	assert(m.get(cast(EntityId) 1) == cast(EntityId) 1);          // absent: the key itself
+	assert(m.get(cast(EntityId) 1, cast(EntityId) 9) == cast(EntityId) 9); // ...or the fallback
+
+	m.set(cast(EntityId) 1, cast(EntityId) 2);
+	assert(m.length == 1);
+	assert(m.contains(cast(EntityId) 1));
+	assert(m.get(cast(EntityId) 1) == cast(EntityId) 2);
+	assert(m.get(cast(EntityId) 1, cast(EntityId) 9) == cast(EntityId) 2);
+
+	// Setting an existing key replaces its value rather than adding a row.
+	m.set(cast(EntityId) 1, cast(EntityId) 3);
+	assert(m.length == 1);
+	assert(m.get(cast(EntityId) 1) == cast(EntityId) 3);
+	assert(m.rows.length == 1);
+	assert(m.rows[0] == EntityPair(cast(EntityId) 1, cast(EntityId) 3));
+
+	// A second key appends, keeping insertion order.
+	m.set(cast(EntityId) 5, cast(EntityId) 6);
+	assert(m.rows.length == 2);
+	assert(m.rows[1].key == cast(EntityId) 5);
+
+	// An empty map has no rows to walk.
+	EntityMap empty;
+	scope(exit) empty.free();
+	assert(empty.rows is null);
+}
+
+unittest { // EntitySet is an EntityMap mapping each entity to itself
+	EntitySet s;
+	scope(exit) s.free();
+	assert(!s.contains(cast(EntityId) 3));
+	s.insert(cast(EntityId) 3);
+	assert(s.contains(cast(EntityId) 3));
+}
+
+unittest { // SortedEntitySet stays sorted, rejects duplicates, and removes
+	SortedEntitySet s;
+	scope(exit) s.free();
+
+	assert(s.length == 0);
+	assert(s.slice is null);
+	assert(!s.contains(cast(EntityId) 1));
+
+	assert(s.insert(cast(EntityId) 5));
+	assert(s.insert(cast(EntityId) 1));
+	assert(s.insert(cast(EntityId) 3));
+	assert(!s.insert(cast(EntityId) 3)); // already there
+	assert(s.length == 3);
+	assert(s.slice == [cast(EntityId) 1, cast(EntityId) 3, cast(EntityId) 5]);
+
+	s.remove(cast(EntityId) 3);
+	assert(s.slice == [cast(EntityId) 1, cast(EntityId) 5]);
+	s.remove(cast(EntityId) 99); // not present: a no-op
+	assert(s.length == 2);
+}
+
+
+// --- Source-text bookkeeping ------------------------------------------------
+
+unittest { // registerSource replaces the text of a file it already knows
+	auto m = createModule();
+	scope(exit) freeModule(m);
+
+	registerSource(m, "a.doir", "first");
+	assert(sourceOf(m, "a.doir") == "first");
+	registerSource(m, "a.doir", "second");
+	assert(sourceOf(m, "a.doir") == "second");
+
+	// A file nobody registered falls back to whatever was parsed last.
+	m.source = "fallback";
+	assert(sourceOf(m, "unknown.doir") == "fallback");
+}
+
+unittest { // workingFileOr and workingSource follow `hasWorkingFile`
+	auto m = createModule();
+	scope(exit) freeModule(m);
+	m.source = "fallback";
+
+	assert(workingFileOr(m, "<unknown>") == "<unknown>");
+	assert(workingSource(m) == "fallback");
+
+	registerSource(m, "w.doir", "working text");
+	m.workingFile = "w.doir";
+	m.hasWorkingFile = true;
+	assert(workingFileOr(m, "<unknown>") == "w.doir");
+	assert(workingSource(m) == "working text");
+}
+
+unittest { // entityIsFree reports what the context's freelist holds
+	auto m = createModule();
+	scope(exit) freeModule(m);
+
+	immutable e = addEntity(m);
+	assert(!entityIsFree(m, e)); // nothing has been removed yet, so no freelist
+	removeEntity(m, e);
+	assert(entityIsFree(m, e));
+	assert(!entityIsFree(m, cast(EntityId) 0));
+}
+
+
+// --- Substitution -----------------------------------------------------------
+
+unittest { // substituteEntities rewrites unresolved-component lookups too
+	auto m = createModule();
+	scope(exit) freeModule(m);
+
+	immutable oldTarget = addEntity(m);
+	immutable newTarget = addEntity(m);
+	immutable user = addEntity(m);
+
+	// A `Lookup` built from an entity id is *resolved*, which is the case
+	// `substituteLookup` rewrites; one built from a name is not.
+	addComponent!LookupTypeOf(m, user).lookup = Lookup(oldTarget);
+	addComponent!LookupCall(m, user).lookup = Lookup(oldTarget);
+	auto inputs = &addComponent!LookupFunctionInputs(m, user);
+	doir.interface_.push(*inputs, Lookup(oldTarget));
+	doir.interface_.push(*inputs, Lookup(internIn(m, "by_name")));
+
+	EntityPairLiteral[1] subs = [EntityPairLiteral(oldTarget, newTarget)];
+	substituteEntities(m, user, subs[]);
+
+	assert(getComponent!LookupTypeOf(m, user).lookup.entity() == newTarget);
+	assert(getComponent!LookupCall(m, user).lookup.entity() == newTarget);
+	assert(getComponent!LookupFunctionInputs(m, user)[0].entity() == newTarget);
+	assert(!getComponent!LookupFunctionInputs(m, user)[1].resolved()); // untouched
+}
+
+unittest { // ...and recurses into a block, up to `maxDepth`
+	auto m = createModule();
+	scope(exit) freeModule(m);
+
+	immutable oldTarget = addEntity(m);
+	immutable newTarget = addEntity(m);
+
+	auto outer = createBlockBuilder(m);
+	immutable outerBlock = outer.block;
+	immutable shallow = addEntity(m);
+	addComponent!TypeOf(m, shallow).related[0] = oldTarget;
+	fp.dynarray.pushBack(getComponent!Block(m, outerBlock).related, shallow);
+
+	immutable innerBlock = addEntity(m);
+	addComponent!Block(m, innerBlock);
+	immutable deep = addEntity(m);
+	addComponent!TypeOf(m, deep).related[0] = oldTarget;
+	fp.dynarray.pushBack(getComponent!Block(m, innerBlock).related, deep);
+	fp.dynarray.pushBack(getComponent!Block(m, outerBlock).related, innerBlock);
+
+	// One level down only: `shallow` is rewritten, `deep` is not.
+	EntityPairLiteral[1] subs = [EntityPairLiteral(oldTarget, newTarget)];
+	substituteEntities(m, outerBlock, subs[], 1);
+	assert(getComponent!TypeOf(m, shallow).related[0] == newTarget);
+	assert(getComponent!TypeOf(m, deep).related[0] == oldTarget);
+
+	// All the way down.
+	substituteEntities(m, outerBlock, subs[]);
+	assert(getComponent!TypeOf(m, deep).related[0] == newTarget);
+}
+
+unittest { // `currentCanonicalizeRoot` as the range means "whatever sort produced"
+	import doir.pipeline.sema.sort : newRoot, sort;
+
+	auto m = createModule();
+	scope(exit) freeModule(m);
+
+	immutable oldTarget = addEntity(m);
+	immutable newTarget = addEntity(m);
+	auto builder = createBlockBuilder(m);
+	immutable user = addEntity(m);
+	addComponent!TypeOf(m, user).related[0] = oldTarget;
+	fp.dynarray.pushBack(getComponent!Block(m, builder.block).related, user);
+
+	sort(m, builder.block);
+	assert(newRoot != invalidEntity);
+
+	// Ids were renumbered by the sort, so look the pair up again through it.
+	EntityMap map;
+	scope(exit) map.free();
+	foreach (e; 0 .. entityCount(m))
+		if (hasComponent!TypeOf(m, cast(EntityId) e))
+			map.set(getComponent!TypeOf(m, cast(EntityId) e).related[0], cast(EntityId) 0);
+	assert(map.length == 1);
+
+	substituteEntities(m, currentCanonicalizeRoot, map);
+	foreach (e; 0 .. entityCount(m))
+		if (hasComponent!TypeOf(m, cast(EntityId) e))
+			assert(getComponent!TypeOf(m, cast(EntityId) e).related[0] == cast(EntityId) 0);
+	cast(void) oldTarget;
+	cast(void) newTarget;
+}

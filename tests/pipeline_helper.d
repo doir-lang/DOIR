@@ -72,6 +72,7 @@ PipelineResult compile(const(char)[] source, const(char)[] path = "test.doir") {
 	result.mod = createModule();
 
 	BlockBuilder* builders; // the parser's stack of open blocks
+	scope(exit) fp.dynarray.free(builders);
 	fp.dynarray.pushBack(builders, builtinBlockBuilder(result.mod));
 
 	if (parseSource(result.mod, builders, source, path) && !diagnostics().hasErrors())

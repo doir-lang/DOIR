@@ -8,6 +8,7 @@ module doir.interface_;
 static import fp.dynarray;
 import fp.dynarray : daLength = length, daFree = free;
 import fp.string : findSlices, splitSlices, strFree = free;
+import std.typecons : Nullable;
 
 import diagnose.source_location : Detailed, SourceLocation;
 import ecrs.relation : Relation, dynamicExtent;
@@ -424,19 +425,15 @@ Lookup typeOfLookup(ref Module mod, EntityId e) {
 		: getComponent!LookupTypeOf(mod, e).lookup;
 }
 
-/// The return type of `e`, resolved or not; `found` is false when it has
-/// neither component.
-Lookup returnTypeOf(ref Module mod, EntityId e, out bool found) {
-	if (hasComponent!FunctionReturnType(mod, e)) {
-		found = true;
-		return Lookup(getComponent!FunctionReturnType(mod, e).related[0]);
-	}
-	if (hasComponent!LookupFunctionReturnType(mod, e)) {
-		found = true;
-		return getComponent!LookupFunctionReturnType(mod, e).lookup;
-	}
-	found = false;
-	return Lookup.init;
+/// The return type of `e`, resolved or not, or null when it has neither
+/// component - a valueless function and one whose return type simply has not
+/// been resolved yet are both `e`s this is asked about.
+Nullable!Lookup returnTypeOf(ref Module mod, EntityId e) {
+	if (hasComponent!FunctionReturnType(mod, e))
+		return Nullable!Lookup(Lookup(getComponent!FunctionReturnType(mod, e).related[0]));
+	if (hasComponent!LookupFunctionReturnType(mod, e))
+		return Nullable!Lookup(getComponent!LookupFunctionReturnType(mod, e).lookup);
+	return Nullable!Lookup.init;
 }
 
 
@@ -624,6 +621,23 @@ EntityId pushNumber(ref BlockBuilder b, InternedString name, EntityId type, real
 }
 EntityId pushNumber(ref BlockBuilder b, InternedString name, InternedString typeLookup, real value) {
 	return attachNumber(*b.mod, pushCommon(*b.mod, b.block, name), typeLookup, value);
+}
+
+/// The constant `subtree` stands for, if the compiler knows one: a literal, or
+/// a value a pass worked out for it - a `mizu.label()`'s id, the result of a
+/// call the comptime VM ran, or a `compiler.*` call
+/// `opt.computeCompilerNamespace` folded. The two are distinct components
+/// because they say different things about the entity: a `Number` *is* the
+/// constant, while a `ComptimeNumber` says only that the compiler knows what
+/// the entity works out to (see `opt.mizu.materializeLabels`). Anything that
+/// wants to read the value rather than reshape the entity wants either, so it
+/// asks here instead of reaching for `Number` directly.
+Nullable!real comptimeNumber(ref Module mod, EntityId subtree) {
+	if (hasComponent!Number(mod, subtree))
+		return Nullable!real(getComponent!Number(mod, subtree).value);
+	if (hasComponent!ComptimeNumber(mod, subtree))
+		return Nullable!real(getComponent!ComptimeNumber(mod, subtree).value);
+	return Nullable!real.init;
 }
 
 // %1 : u8p = "hello world"
@@ -1245,10 +1259,6 @@ void resolveAliases(ref Module mod, EntityId[] aliases, size_t maxDepth = 128) {
 // Copying entities and merging blocks (interface.copy.cpp)
 // ===========================================================================
 
-private EntityId applySub(EntityMap* subs, EntityId e) {
-	return subs is null ? e : get(*subs, e);
-}
-
 /// Copies a fixed-arity relation, substituting each slot.
 private void copyFixedRelation(T)(ref Module mod, EntityId to, EntityId from, EntityMap* subs) {
 	auto source = getComponent!T(mod, from);
@@ -1552,6 +1562,7 @@ ref BlockBuilder buildBuiltinBlock(return ref BlockBuilder self) @trusted {
 	const pointerSizedInterned = internIn(*mod, "pointer_sized");
 	const valueInterned = internIn(*mod, "value");
 	const tInterned = internIn(*mod, "T");
+	const _Interned = internIn(*mod, "_");
 
 	auto typeBuilder = pushType(self, internIn(*mod, "type"));
 	immutable type = typeBuilder.end();
@@ -1563,6 +1574,11 @@ ref BlockBuilder buildBuiltinBlock(return ref BlockBuilder self) @trusted {
 
 	auto voidBuilder = pushType(self, internIn(*mod, "void"));
 	voidBuilder.end();
+
+	// TODO: Should we replace this with something in the parser that makes type variables?
+	auto autoBuilder = pushType(self, _Interned);
+	addComponent!Name(*mod, autoBuilder.block).value = _Interned;
+	autoBuilder.end();
 
 	immutable earlyInclude = pushCommon(*mod, self.block, internIn(*mod, "early_include"));
 
@@ -2002,4 +2018,607 @@ unittest {
 	// other branch under the same condition) leaves the destination's
 	// LookupAlias default-constructed rather than copying the source's value.
 	assert(hasComponent!LookupAlias(f.mod, dest));
+}
+
+
+// --- The small component accessors ------------------------------------------
+
+unittest { // FunctionParameterNames: push, assign, slice and length
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+
+	immutable e = addEntity(f.mod);
+	auto names = &addComponent!FunctionParameterNames(f.mod, e);
+	assert(length(*names) == 0);
+	assert(slice(*names) is null);
+
+	push(*names, internIn(f.mod, "a"));
+	push(*names, internIn(f.mod, "b"));
+	assert(length(*names) == 2);
+	assert(slice(*names)[1] == "b");
+
+	// `assign` replaces whatever was there.
+	InternedString[1] replacement = [internIn(f.mod, "only")];
+	assign(*names, replacement[]);
+	assert(length(*names) == 1);
+	assert(slice(*names)[0] == "only");
+}
+
+unittest { // LookupFunctionInputs: push, slice, index and clear
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+
+	immutable e = addEntity(f.mod);
+	auto lookups = &addComponent!LookupFunctionInputs(f.mod, e);
+	assert(length(*lookups) == 0);
+	assert(slice(*lookups) is null);
+
+	push(*lookups, Lookup(internIn(f.mod, "x")));
+	assert(length(*lookups) == 1);
+	assert(slice(*lookups).length == 1);
+	assert((*lookups)[0].name() == "x");
+
+	clear(*lookups);
+	assert(length(*lookups) == 0);
+}
+
+unittest { // returnTypeOf says so when there is no return type to find
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+
+	assert(returnTypeOf(f.mod, addEntity(f.mod)).isNull);
+}
+
+
+// --- Block helpers ----------------------------------------------------------
+
+unittest { // prependToNames rewrites every name in a subtree, recursively
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = resolveName(f, "compiler.byte");
+	auto inner = pushNamespace(block, internIn(f.mod, "ns"));
+	pushNumber(inner, internIn(f.mod, "deep"), byte_, 1);
+	pushNumber(block, internIn(f.mod, "shallow"), byte_, 1);
+
+	prependToNames(f.mod, f.root, "p_");
+
+	assert(resolveLookupName(f.mod, internIn(f.mod, "p_shallow"), f.root) != invalidEntity);
+	assert(resolveLookupName(f.mod, internIn(f.mod, "p_ns.p_deep"), f.root) != invalidEntity);
+}
+
+unittest { // stripValue removes whichever kind of value an entity carries
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = resolveName(f, "compiler.byte");
+	immutable emit = resolveName(f, "compiler.emit");
+
+	immutable number = pushNumber(block, internIn(f.mod, "n"), byte_, 1);
+	stripValue(f.mod, number);
+	assert(!hasComponent!Number(f.mod, number));
+	assert(!hasComponent!TypeOf(f.mod, number));
+
+	immutable str = pushString(block, internIn(f.mod, "s"), byte_, internIn(f.mod, "v"));
+	stripValue(f.mod, str);
+	assert(!hasComponent!DString(f.mod, str));
+
+	immutable valueless = pushValueless(block, internIn(f.mod, "v"), byte_);
+	stripValue(f.mod, valueless);
+	assert(!flagsSet(f.mod, valueless, Flags.Valueless));
+	assert(!hasComponent!TypeOf(f.mod, valueless));
+
+	immutable arg = pushNumber(block, internIn(f.mod, "arg"), byte_, 1);
+	immutable call = pushCall(block, internIn(f.mod, "c"), byte_, emit, (&arg)[0 .. 1]);
+	stripValue(f.mod, call);
+	assert(!hasComponent!Call(f.mod, call));
+	assert(!hasComponent!FunctionInputs(f.mod, call));
+
+	auto sub = pushSubblock(block, internIn(f.mod, "b"), byte_);
+	stripValue(f.mod, sub.block);
+	assert(!hasComponent!Block(f.mod, sub.block));
+
+	// Each kind can also be kept, which is what the three flags are for.
+	immutable kept = pushNumber(block, internIn(f.mod, "kept"), byte_, 1);
+	stripValue(f.mod, kept, false, false, false);
+	assert(hasComponent!Number(f.mod, kept));
+}
+
+unittest { // a builder can be emptied and refilled
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+
+	auto block = createBlockBuilder(f.mod);
+	immutable byte_ = resolveName(f, "compiler.byte");
+	pushNumber(block, internIn(f.mod, "n"), byte_, 1);
+	assert(daLength(getComponent!Block(f.mod, block.block).related) == 1);
+
+	clear(block);
+	assert(daLength(getComponent!Block(f.mod, block.block).related) == 0);
+}
+
+
+// --- Function builders ------------------------------------------------------
+
+unittest {
+	// `attachFunction` can declare the parameters itself. Their names come from
+	// the type when it has them, and are generated as `a<n>` when it does not.
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = resolveName(f, "compiler.byte");
+
+	// A function type built from resolved entities, so the function's return
+	// type is copied across as a resolved one too.
+	EntityId[2] resolvedInputs = [byte_, byte_];
+	immutable unnamed = pushFunctionType(block, internIn(f.mod, "unnamed_t"),
+		resolvedInputs[], cast(EntityId) byte_, true);
+	auto generated = pushFunction(block, internIn(f.mod, "generated"), unnamed, true);
+	assert(hasComponent!FunctionReturnType(f.mod, generated.builder.block));
+	assert(resolveLookupName(f.mod, internIn(f.mod, "a0"), generated.builder.block) != invalidEntity);
+	assert(resolveLookupName(f.mod, internIn(f.mod, "a1"), generated.builder.block) != invalidEntity);
+
+	InternedString[2] names = [internIn(f.mod, "lhs"), internIn(f.mod, "rhs")];
+	immutable named = pushFunctionType(block, internIn(f.mod, "named_t"),
+		resolvedInputs[], cast(EntityId) byte_, true, names[]);
+	auto declared = pushFunction(block, internIn(f.mod, "declared"), named, true);
+	assert(resolveLookupName(f.mod, internIn(f.mod, "lhs"), declared.builder.block) != invalidEntity);
+}
+
+unittest {
+	// `pushParameters` takes its names from the caller, from the type, or
+	// generates them - and copes with a parameter type that never resolved.
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = resolveName(f, "compiler.byte");
+
+	// Names given by the caller win over the type's own.
+	InternedString[1] typeNames = [internIn(f.mod, "from_type")];
+	Lookup[1] inputs = [Lookup(byte_)];
+	immutable ft = pushFunctionType(block, internIn(f.mod, "ft"), inputs[], Lookup(byte_), true, typeNames[]);
+
+	auto explicit = pushFunction(block, internIn(f.mod, "explicit"), ft);
+	InternedString[1] override_ = [internIn(f.mod, "given")];
+	pushParameters(explicit, ft, override_[]);
+	assert(resolveLookupName(f.mod, internIn(f.mod, "given"), explicit.builder.block) != invalidEntity);
+
+	// With no names anywhere, they are generated.
+	Lookup[1] unresolved = [Lookup(internIn(f.mod, "nope"))];
+	immutable anonymousFt = pushFunctionType(block, internIn(f.mod, "anon_t"),
+		unresolved[], Lookup(byte_), true);
+	auto anonymous = pushFunction(block, internIn(f.mod, "anonymous"), anonymousFt);
+	pushParameters(anonymous, anonymousFt);
+	immutable parameter = resolveLookupName(f.mod, internIn(f.mod, "a0"), anonymous.builder.block);
+	assert(parameter != invalidEntity);
+	// The parameter's own type is still the unresolved lookup it was declared with.
+	assert(hasComponent!LookupTypeOf(f.mod, parameter));
+
+	// A function type with no inputs at all has nothing to declare.
+	Lookup[0] none;
+	immutable emptyFt = pushFunctionType(block, internIn(f.mod, "empty_t"), none[], Lookup(byte_), true);
+	auto empty = pushFunction(block, internIn(f.mod, "empty"), emptyFt);
+	pushParameters(empty, emptyFt);
+	assert(daLength(getComponent!Block(f.mod, empty.builder.block).related) == 0);
+}
+
+
+// --- Source locations -------------------------------------------------------
+
+unittest { // a Detailed location is used directly, in both spellings
+	import diagnose.source_location : Detailed, Pair;
+
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+
+	enum source = "one\ntwo\nthree\n";
+	registerSource(f.mod, "loc.doir", source);
+	f.mod.workingFile = "loc.doir";
+	f.mod.hasWorkingFile = true;
+
+	immutable e = addEntity(f.mod);
+	Detailed detailed;
+	detailed.file = "loc.doir";
+	detailed.start = Pair(2, 1);
+	detailed.end = Pair(2, 4);
+	addComponent!Detailed(f.mod, e) = detailed;
+
+	auto bytes = findSourceLocation(f.mod, e);
+	assert(bytes.file == "loc.doir");
+	assert(bytes.startByte == 4); // the start of "two"
+
+	// The detailed spelling short-circuits the conversion entirely.
+	auto back = findDetailedSourceLocation(f.mod, e);
+	assert(back.start == Pair(2, 1));
+}
+
+unittest { // ...and failing that, the entity's name is looked for in the source
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+
+	enum source = "alpha beta gamma\n";
+	registerSource(f.mod, "loc.doir", source);
+	f.mod.workingFile = "loc.doir";
+	f.mod.hasWorkingFile = true;
+
+	immutable e = addEntity(f.mod);
+	addComponent!Name(f.mod, e).value = internIn(f.mod, "beta");
+
+	auto location = findSourceLocation(f.mod, e);
+	assert(location.file == "loc.doir");
+	assert(location.startByte == 6);
+	assert(location.endByte == 10);
+}
+
+unittest { // an entity nothing in its chain can locate points at the file's top
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+
+	immutable parent = addEntity(f.mod);
+	addComponent!Block(f.mod, parent);
+	immutable child = pushCommon(f.mod, parent, InternedString("_"));
+
+	auto location = findSourceLocation(f.mod, child);
+	assert(location.startByte == 0);
+	assert(location.endByte == 0);
+
+	// A parent relation that points at itself must not loop forever either.
+	immutable selfParented = addEntity(f.mod);
+	addComponent!Parent(f.mod, selfParented).related[0] = selfParented;
+	assert(findSourceLocation(f.mod, selfParented).endByte == 0);
+}
+
+
+// --- Scope walking and type resolution --------------------------------------
+
+unittest { // findFunctionInsideOf recognises a function by its *type* too
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = resolveName(f, "compiler.byte");
+	EntityId[0] none;
+	immutable ft = pushFunctionType(block, internIn(f.mod, "ft"), none[],
+		cast(EntityId) byte_, true);
+
+	// A value *of* a function type, carrying no return type of its own.
+	immutable value = pushCommon(f.mod, f.root, internIn(f.mod, "value"));
+	addComponent!TypeOf(f.mod, value).related[0] = ft;
+	assert(findFunctionInsideOf(f.mod, value) == value);
+
+	// Something that is in no function at all.
+	assert(findFunctionInsideOf(f.mod, byte_) == invalidEntity);
+}
+
+unittest {
+	// `resolveTypeModifications` looks through a type modifier's argument,
+	// whether the argument list has been resolved yet or not.
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = resolveName(f, "compiler.byte");
+	immutable pointer = resolveName(f, "compiler.pointer");
+	// `resolveTypeModifications` looks the three modifier names up starting
+	// from the entity it is resolving, which finds nothing for a freshly
+	// pushed one; priming the module's resolve cache from the root is what the
+	// pipeline has already done by the time it runs for real.
+	typeModifiers(f.mod, f.root);
+
+	// Resolved inputs.
+	immutable resolved = pushCall(block, internIn(f.mod, "resolved"), byte_, pointer,
+		(&byte_)[0 .. 1]);
+	assert(resolveTypeModifications(f.mod, resolved) == byte_);
+
+	// Unresolved inputs, but a resolved first one.
+	Lookup[1] inputs = [Lookup(byte_)];
+	immutable pending = pushCall(block, internIn(f.mod, "pending"), byte_, pointer, inputs[]);
+	assert(resolveTypeModifications(f.mod, pending) == byte_);
+
+	// An empty argument list has nothing to look through to.
+	Lookup[0] none;
+	immutable empty = pushCall(block, internIn(f.mod, "empty"), byte_, pointer, none[]);
+	assert(resolveTypeModifications(f.mod, empty) == empty);
+
+	// ...and neither does one whose first argument never resolved.
+	Lookup[1] unresolved = [Lookup(internIn(f.mod, "nope"))];
+	immutable dangling = pushCall(block, internIn(f.mod, "dangling"), byte_, pointer, unresolved[]);
+	assert(resolveTypeModifications(f.mod, dangling) == dangling);
+}
+
+unittest { // resolveAlias stops when a chain runs longer than it is allowed to
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = resolveName(f, "compiler.byte");
+	immutable first = pushAlias(block, internIn(f.mod, "first"), byte_);
+	immutable second = pushAlias(block, internIn(f.mod, "second"), first);
+
+	assert(resolveAlias(f.mod, second) == byte_);
+	// One link is not enough to reach the bottom of a two-link chain.
+	assert(resolveAlias(f.mod, second, 1) == first);
+}
+
+
+// --- Copying ----------------------------------------------------------------
+
+unittest {
+	// `deepCopy` has to carry across every component that makes up a
+	// declaration, for every kind of declaration - so this copies a block
+	// holding one of each and checks the copy came out the same shape.
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+
+	auto outer = BlockBuilder(f.root, &f.mod);
+	auto source = pushSubblock(outer, internIn(f.mod, "source"),
+		resolveName(f, "compiler.byte"));
+
+	immutable byte_ = resolveName(f, "compiler.byte");
+	immutable emit = resolveName(f, "compiler.emit");
+
+	immutable number = pushNumber(source, internIn(f.mod, "number"), byte_, 7);
+	pushString(source, internIn(f.mod, "string"), byte_, internIn(f.mod, "text"));
+	pushValueless(source, internIn(f.mod, "valueless"), byte_);
+	pushAlias(source, internIn(f.mod, "alias_resolved"), byte_);
+	pushAlias(source, internIn(f.mod, "alias_pending"), internIn(f.mod, "nope"));
+	pushNamespace(source, internIn(f.mod, "namespace"));
+	pushPointer(source, internIn(f.mod, "pointer"), byte_);
+	pushType(source, internIn(f.mod, "type_def"));
+
+	// Calls, resolved and not, with and without parameter names.
+	immutable call = pushCall(source, internIn(f.mod, "call"), byte_, emit, (&number)[0 .. 1]);
+	InternedString[1] callNames = [internIn(f.mod, "only")];
+	addComponent!FunctionParameterNames(f.mod, call).assign(callNames[]);
+
+	Lookup[1] pendingArgs = [Lookup(internIn(f.mod, "nope"))];
+	pushCall(source, internIn(f.mod, "call_pending"), internIn(f.mod, "nope"),
+		internIn(f.mod, "nope"), pendingArgs[]);
+
+	// Function types, resolved and not.
+	EntityId[1] resolvedInputs = [byte_];
+	immutable resolvedFt = pushFunctionType(source, internIn(f.mod, "ft_resolved"),
+		resolvedInputs[], cast(EntityId) byte_, true);
+	Lookup[1] pendingInputs = [Lookup(internIn(f.mod, "nope"))];
+	pushFunctionType(source, internIn(f.mod, "ft_pending"),
+		pendingInputs[], Lookup(internIn(f.mod, "nope")), true);
+
+	// Function definitions, resolved and not, each with a parameter.
+	pushFunction(source, internIn(f.mod, "fn_resolved"), resolvedFt, true);
+
+	Lookup[1] lookupInputs = [Lookup(byte_)];
+	InternedString[1] fnNames = [internIn(f.mod, "p")];
+	immutable lookupFt = pushFunctionType(source, internIn(f.mod, "ft_lookup"),
+		lookupInputs[], Lookup(byte_), true, fnNames[]);
+	auto fn = pushFunction(source, internIn(f.mod, "fn_lookup"), lookupFt, true);
+	pushNumber(fn.builder, internIn(f.mod, "inner"), byte_, 1);
+
+	immutable copied = deepCopy(f.mod, source.block);
+	assert(copied != invalidEntity);
+	assert(hasComponent!Block(f.mod, copied));
+	assert(daLength(getComponent!Block(f.mod, copied).related)
+		== daLength(getComponent!Block(f.mod, source.block).related));
+
+	// Spot-check that the copy is a copy, not a share: renaming one does not
+	// rename the other.
+	immutable original = getComponent!Block(f.mod, source.block).related[0];
+	immutable duplicate = getComponent!Block(f.mod, copied).related[0];
+	assert(original != duplicate);
+	assert(getComponent!Name(f.mod, duplicate).value == getComponent!Name(f.mod, original).value);
+	assert(getComponent!Parent(f.mod, duplicate).related[0] == copied);
+}
+
+unittest {
+	// The same paths again with a substitution table, which is what inlining
+	// uses: every reference to a substituted entity comes out pointing at its
+	// replacement.
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+
+	auto outer = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = resolveName(f, "compiler.byte");
+	immutable emit = resolveName(f, "compiler.emit");
+
+	auto source = pushSubblock(outer, internIn(f.mod, "source"), byte_);
+	immutable target = pushNumber(outer, internIn(f.mod, "target"), byte_, 1);
+	immutable replacement = pushNumber(outer, internIn(f.mod, "replacement"), byte_, 2);
+	pushCall(source, internIn(f.mod, "call"), byte_, emit, (&target)[0 .. 1]);
+	pushAlias(source, internIn(f.mod, "aliased"), target);
+
+	auto destination = pushSubblock(outer, internIn(f.mod, "destination"), byte_);
+	copyExisting(destination, source);
+
+	auto related = &getComponent!Block(f.mod, destination.block).related;
+	assert(daLength(*related) == 2);
+	// Without a substitution table the references are carried across as they were.
+	assert(getComponent!FunctionInputs(f.mod, (*related)[0]).related[0] == target);
+	assert(getComponent!Alias(f.mod, (*related)[1]).related[0] == target);
+	cast(void) replacement;
+}
+
+unittest { // copyExisting can leave a function's parameters behind
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+
+	auto outer = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = resolveName(f, "compiler.byte");
+	EntityId[1] inputs = [byte_];
+	immutable ft = pushFunctionType(outer, internIn(f.mod, "ft"), inputs[],
+		cast(EntityId) byte_, true);
+	auto fn = pushFunction(outer, internIn(f.mod, "fn"), ft, true);
+	pushNumber(fn.builder, internIn(f.mod, "body"), byte_, 1);
+	assert(daLength(getComponent!Block(f.mod, fn.builder.block).related) == 2);
+
+	auto destination = pushSubblock(outer, internIn(f.mod, "destination"), byte_);
+	auto asBlock = BlockBuilder(fn.builder.block, &f.mod);
+	copyExisting(destination, asBlock, true);
+	assert(daLength(getComponent!Block(f.mod, destination.block).related) == 1);
+}
+
+unittest { // deepCopy runs an extra hook over each copied entity when given one
+	static __gshared size_t visited;
+	static void count(EntityId dest, EntityId src) @nogc nothrow { ++visited; }
+
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+
+	auto outer = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = resolveName(f, "compiler.byte");
+	auto source = pushSubblock(outer, internIn(f.mod, "source"), byte_);
+	pushNumber(source, internIn(f.mod, "a"), byte_, 1);
+	pushNumber(source, internIn(f.mod, "b"), byte_, 2);
+
+	visited = 0;
+	deepCopy(f.mod, source.block, &count);
+	assert(visited == 3); // the block plus its two children
+}
+
+unittest { // inlineInto splices a block's children in and reparents them
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+
+	auto outer = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = resolveName(f, "compiler.byte");
+
+	auto source = pushSubblock(outer, internIn(f.mod, "source"), byte_);
+	immutable a = pushNumber(source, internIn(f.mod, "a"), byte_, 1);
+	immutable b = pushNumber(source, internIn(f.mod, "b"), byte_, 2);
+
+	auto destination = pushSubblock(outer, internIn(f.mod, "destination"), byte_);
+	immutable existing = pushNumber(destination, internIn(f.mod, "existing"), byte_, 3);
+
+	// Just the second child, spliced in front of what is already there.
+	inlineInto(f.mod, source.block, destination.block, 0, 1, 1);
+	auto related = &getComponent!Block(f.mod, destination.block).related;
+	assert(daLength(*related) == 2);
+	assert((*related)[0] == b);
+	assert((*related)[1] == existing);
+	assert(getComponent!Parent(f.mod, b).related[0] == destination.block);
+
+	// ...and the rest, at the end.
+	inlineInto(f.mod, source.block, destination.block, 2, 0, 1);
+	assert(daLength(*related) == 3);
+	assert((*related)[2] == a);
+
+	assert(blockOffsetOf(f.mod, destination.block, a) == 2);
+	assert(blockOffsetOf(f.mod, destination.block, source.block) == invalidEntity);
+}
+
+unittest {
+	// `attachValuelessFunction` copies whichever flavour of return type the
+	// function type carries, the same way `attachFunction` does.
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = resolveName(f, "compiler.byte");
+
+	EntityId[0] none;
+	immutable resolvedFt = pushFunctionType(block, internIn(f.mod, "resolved_t"),
+		none[], cast(EntityId) byte_, true);
+	immutable resolved = pushValuelessFunction(block, internIn(f.mod, "resolved"), resolvedFt);
+	assert(hasComponent!FunctionReturnType(f.mod, resolved));
+	assert(getComponent!FunctionReturnType(f.mod, resolved).related[0] == byte_);
+
+	Lookup[0] noLookups;
+	immutable pendingFt = pushFunctionType(block, internIn(f.mod, "pending_t"),
+		noLookups[], Lookup(byte_), true);
+	immutable pending = pushValuelessFunction(block, internIn(f.mod, "pending"), pendingFt);
+	assert(hasComponent!LookupFunctionReturnType(f.mod, pending));
+}
+
+unittest {
+	// A copy rewrites every reference that points *inside* what is being
+	// copied - including the ones still spelled as (already resolved) lookups,
+	// which is the shape the IR is in before `sema.lookupsResolved` runs.
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+
+	auto outer = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = resolveName(f, "compiler.byte");
+	auto source = pushSubblock(outer, internIn(f.mod, "source"), byte_);
+
+	immutable target = pushNumber(source, internIn(f.mod, "target"), byte_, 1);
+
+	// A resolved `LookupCall` + `LookupFunctionInputs`, both naming `target`.
+	immutable user = pushCommon(f.mod, source.block, internIn(f.mod, "user"));
+	addComponent!LookupTypeOf(f.mod, user).lookup = Lookup(byte_);
+	addComponent!LookupCall(f.mod, user).lookup = Lookup(target);
+	auto inputs = &addComponent!LookupFunctionInputs(f.mod, user);
+	push(*inputs, Lookup(target));
+	push(*inputs, Lookup(internIn(f.mod, "by_name"))); // not resolved: carried across as-is
+
+	// ...and a resolved `LookupAlias`, which is the other `copyLookup` caller.
+	immutable aliased = pushCommon(f.mod, source.block, internIn(f.mod, "aliased"));
+	addComponent!LookupAlias(f.mod, aliased).lookup = Lookup(target);
+
+	immutable copied = deepCopy(f.mod, source.block);
+	auto related = &getComponent!Block(f.mod, copied).related;
+	assert(daLength(*related) == 3);
+
+	immutable copiedTarget = (*related)[0];
+	immutable copiedUser = (*related)[1];
+	immutable copiedAlias = (*related)[2];
+	assert(copiedTarget != target);
+	assert(getComponent!LookupCall(f.mod, copiedUser).lookup.entity() == copiedTarget);
+	assert(getComponent!LookupFunctionInputs(f.mod, copiedUser)[0].entity() == copiedTarget);
+	assert(!getComponent!LookupFunctionInputs(f.mod, copiedUser)[1].resolved());
+	assert(getComponent!LookupAlias(f.mod, copiedAlias).lookup.entity() == copiedTarget);
+	// A lookup naming something *outside* the copy still names it.
+	assert(getComponent!LookupTypeOf(f.mod, copiedUser).lookup.entity() == byte_);
+}
+
+unittest {
+	// A function definition can carry its own inputs, its own parameter names,
+	// and a pending type - each of which the copy has to bring across.
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+
+	auto outer = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = resolveName(f, "compiler.byte");
+	auto source = pushSubblock(outer, internIn(f.mod, "source"), byte_);
+
+	immutable fn = pushCommon(f.mod, source.block, internIn(f.mod, "fn"));
+	addComponent!LookupTypeOf(f.mod, fn).lookup = Lookup(byte_);
+	addComponent!FunctionReturnType(f.mod, fn).related[0] = byte_;
+	auto fnInputs = &addComponent!FunctionInputs(f.mod, fn);
+	fp.dynarray.pushBack(fnInputs.related, cast(EntityId) byte_);
+	auto fnLookupInputs = &addComponent!LookupFunctionInputs(f.mod, fn);
+	push(*fnLookupInputs, Lookup(byte_));
+	InternedString[1] names = [internIn(f.mod, "p")];
+	addComponent!FunctionParameterNames(f.mod, fn).assign(names[]);
+
+	immutable copied = deepCopy(f.mod, source.block);
+	immutable copiedFn = getComponent!Block(f.mod, copied).related[0];
+	assert(hasComponent!FunctionInputs(f.mod, copiedFn));
+	assert(hasComponent!LookupFunctionInputs(f.mod, copiedFn));
+	assert(hasComponent!FunctionParameterNames(f.mod, copiedFn));
+	assert(getComponent!FunctionParameterNames(f.mod, copiedFn).slice[0] == "p");
+}
+
+unittest {
+	// `copyComponents` copies a block relation straight across when asked to.
+	// (`deepCopy` never does: it rebuilds the block structure first, so that
+	// the children are copies rather than the originals.)
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+
+	auto outer = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = resolveName(f, "compiler.byte");
+	auto source = pushSubblock(outer, internIn(f.mod, "source"), byte_);
+	immutable child = pushNumber(source, internIn(f.mod, "child"), byte_, 1);
+
+	immutable out_ = addEntity(f.mod);
+	copyComponents(f.mod, out_, source.block, true);
+	assert(hasComponent!Block(f.mod, out_));
+	assert(getComponent!Block(f.mod, out_).related[0] == child);
+
+	// ...and leaves it alone when not.
+	immutable without = addEntity(f.mod);
+	copyComponents(f.mod, without, source.block, false);
+	assert(!hasComponent!Block(f.mod, without));
 }

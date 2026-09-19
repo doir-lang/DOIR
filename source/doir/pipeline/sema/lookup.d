@@ -163,3 +163,78 @@ bool lookupsResolved(ref Module mod, EntityId e) @trusted {
 
 	return valid;
 }
+
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+version (unittest) {
+	import tests.pipeline_helper;
+}
+
+unittest { // each kind of name that cannot be resolved is reported as such
+	static immutable string[4] sources = [
+		"x : nope = 1\n",                                   // Type
+		"x : alias = nope\n",                               // Alias
+		"n : compiler.byte = 1\nx : compiler.byte = nope(n)\n", // Function
+		"n : compiler.byte = 1\nx : compiler.byte = compiler.emit(nope)\n", // Function argument
+	];
+	foreach (source; sources) {
+		auto r = compile(source);
+		scope(exit) freeModule(r.mod);
+		assert(!r.ok);
+		assert(diagnostics().hasErrors());
+		diagnostics().clear();
+	}
+}
+
+unittest { // ...and an unresolvable function return type too
+	auto r = compile("f : (a: compiler.byte) -> nope\n");
+	scope(exit) freeModule(r.mod);
+	assert(!r.ok);
+	assert(diagnostics().hasErrors());
+	diagnostics().clear();
+}
+
+unittest {
+	// `LookupLookup` is a plain "this entity refers to that name" reference.
+	// Nothing in the parser produces one, so both halves of the pass are
+	// driven directly.
+	//
+	// The reference is resolved *strictly*, which searches forward from the
+	// referring entity for the block containing it - an invariant
+	// `canonicalize.sort` establishes - so the module is sorted first, the way
+	// it is by the time the real pass runs.
+	import doir.pipeline.sema.sort : sort;
+
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+	diagnostics().clear();
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.root);
+	pushNumber(block, internIn(f.mod, "target"), byte_, 1);
+	pushCommon(f.mod, f.root, internIn(f.mod, "user"));
+	pushCommon(f.mod, f.root, internIn(f.mod, "dangling"));
+
+	immutable root = sort(f.mod, f.root);
+	immutable target = resolveLookupName(f.mod, internIn(f.mod, "target"), root);
+	immutable user = resolveLookupName(f.mod, internIn(f.mod, "user"), root);
+	immutable dangling = resolveLookupName(f.mod, internIn(f.mod, "dangling"), root);
+	assert(target != invalidEntity && user != invalidEntity && dangling != invalidEntity);
+
+	addComponent!LookupLookup(f.mod, user).lookup = Lookup(internIn(f.mod, "target"));
+	assert(resolveLookups(f.mod, user, false));
+	assert(getComponent!LookupLookup(f.mod, user).lookup.resolved());
+	assert(getComponent!LookupLookup(f.mod, user).lookup.entity() == target);
+	assert(lookupsResolved(f.mod, user));
+	assert(!diagnostics().hasErrors());
+
+	// One that names nothing is reported instead.
+	addComponent!LookupLookup(f.mod, dangling).lookup = Lookup(internIn(f.mod, "nope"));
+	assert(resolveLookups(f.mod, dangling, false));
+	assert(!lookupsResolved(f.mod, dangling));
+	assert(diagnostics().hasErrors());
+	diagnostics().clear();
+}

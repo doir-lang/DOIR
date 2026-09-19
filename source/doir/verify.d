@@ -175,7 +175,6 @@ bool structure(ref Manager diags, ref Module mod, EntityId subtree, bool topLeve
 		switch (count) {
 			case 0:
 				panic("TODO: Value required error");
-				break;
 			case 1:
 				// Do Nothing we are good :)
 				break;
@@ -488,6 +487,98 @@ unittest { // a freshly built builtin block passes verify.structure
 	scope(exit) freeModule(f.mod);
 	Manager diags;
 	scope(exit) freeManager(diags);
+	assert(structure(diags, f.mod, f.root));
+	assert(!diags.hasErrors());
+}
+
+unittest {
+	// `getLocation` has two ways of placing a name in the source text: the
+	// name's bytes may lie *inside* the working file's buffer, in which case
+	// the offset is the pointer difference, or they may not, in which case the
+	// text is searched for them. Interned names always take the second path -
+	// the interner's arena is a separate allocation - so the first is reached
+	// only by handing it a slice of the source itself.
+	diagnostics().clear();
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+
+	// One buffer, so a slice of it really does point inside the registered
+	// text (a string literal used twice need not be the same allocation).
+	static immutable char[17] buffer = "alpha beta gamma\n";
+	const source = buffer[0 .. $];
+	registerSource(f.mod, "loc.doir", source);
+	f.mod.workingFile = "loc.doir";
+	f.mod.hasWorkingFile = true;
+
+	// A slice of the buffer itself: the pointer-difference path.
+	auto inside = getLocation(f.mod, source[6 .. 10]);
+	assert(inside.file == "loc.doir");
+	assert(inside.startByte == 6);
+	assert(inside.endByte == 10);
+
+	// Equal content from somewhere else: the search path finds it anyway.
+	auto searched = getLocation(f.mod, internIn(f.mod, "beta").view);
+	assert(searched.startByte == 6);
+	assert(searched.endByte == 10);
+
+	// Content that is not in the file at all has no location to give.
+	auto missing = getLocation(f.mod, internIn(f.mod, "not here at all").view);
+	assert(missing.startByte == 0);
+	assert(missing.endByte == 0);
+	diagnostics().clear();
+}
+
+unittest {
+	// A malformed name makes `structure` report the entity invalid rather than
+	// panicking: it is a diagnostic about the program, not about the IR.
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+	Manager diags;
+	scope(exit) freeManager(diags);
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.root);
+	pushNumber(block, internIn(f.mod, "%nope"), byte_, 1);
+
+	assert(!structure(diags, f.mod, f.root));
+	assert(diags.hasErrors());
+}
+
+unittest {
+	// A function definition may carry its own parameter names, which have to
+	// agree in number - and in spelling - with the ones its parameters were
+	// declared under.
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+	Manager diags;
+	scope(exit) freeManager(diags);
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.root);
+	Lookup[1] inputs = [Lookup(byte_)];
+	InternedString[1] names = [internIn(f.mod, "p")];
+	immutable ft = pushFunctionType(block, internIn(f.mod, "ft"), inputs[], Lookup(byte_), true, names[]);
+
+	auto fb = pushFunction(block, internIn(f.mod, "fn"), ft, true);
+	// The names the *definition* carries, over and above the type's.
+	addComponent!FunctionParameterNames(f.mod, fb.builder.block).assign(names[]);
+
+	assert(structure(diags, f.mod, f.root));
+	assert(!diags.hasErrors());
+}
+
+unittest {
+	// A top-level block is allowed to carry flags, as long as they are only
+	// the ones a block can have.
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+	Manager diags;
+	scope(exit) freeManager(diags);
+
+	getOrAddComponent!Flags(f.mod, f.root).flags = Flags.None;
+	assert(structure(diags, f.mod, f.root));
+
+	getComponent!Flags(f.mod, f.root).flags = Flags.Flatten;
 	assert(structure(diags, f.mod, f.root));
 	assert(!diags.hasErrors());
 }

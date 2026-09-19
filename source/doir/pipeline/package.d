@@ -29,6 +29,7 @@ import doir.pipeline.opt.inline_functions;
 import doir.pipeline.opt.materialize_aliases;
 import doir.pipeline.opt.mizu.comptime_evaluate;
 import doir.pipeline.opt.mizu.materialize_immediates;
+import doir.pipeline.opt.mizu.materialize_labels;
 import doir.pipeline.opt.pin_registers;
 import doir.pipeline.opt.strip_freestanding_blocks;
 
@@ -71,6 +72,7 @@ bool mizuSchedule(ref Module mod) {
 		depthFirst!pinRegisters(),
 		breadthFirst!(computeCompilerNamespaceVisitor!false)(),
 		depthFirst!materializeImmediates(),
+		depthFirst!materializeLabels(),
 		breadthFirst!inlineFunctions(),
 		breadthFirst!(computeCompilerNamespaceVisitor!true)(),
 	)(mod);
@@ -150,4 +152,121 @@ EntityId runPipeline(ref Module mod, ref BlockBuilder* builders, StageHook hook 
 	root = sort(mod, newRoot);
 	structure(diagnostics(), mod, root);
 	return root;
+}
+
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+//
+// The per-pass tests live beside the passes; what is left for here is the
+// schedule as a whole - that a real program, with every stage doing real work,
+// comes out the far end.
+
+version (unittest) {
+	static import fp.dynarray;
+
+	import diagnose.source_location : SourceLocation;
+
+	import doir.parser : parseFile, parseSource;
+	import doir.pipeline.sema.sort : newRoot;
+	import tests.pipeline_helper;
+}
+
+unittest {
+	// `test.doir` is the repository's own end-to-end program: it
+	// `early_include`s the whole Mizu instruction binding file, declares a
+	// quoted block, runs it on the comptime VM through `mizu.doir.execute_if`,
+	// and pins registers on the result. Compiling it drives every stage of the
+	// pipeline over real input - which is the only way most of `opt/mizu` and
+	// `sema.processEarlyInclude` are reached at all.
+	diagnostics().clear();
+	auto mod = createModule();
+	scope(exit) freeModule(mod);
+
+	BlockBuilder* builders;
+	scope(exit) fp.dynarray.free(builders);
+	{
+		auto builtin = createBlockBuilder(mod);
+		buildBuiltinBlock(builtin);
+		fp.dynarray.pushBack(builders, builtin);
+	}
+
+	assert(parseFile(mod, builders, "test.doir"));
+	assert(!diagnostics().hasErrors());
+
+	immutable root = runPipeline(mod, builders);
+	assert(root != invalidEntity);
+	assert(!diagnostics().hasErrors());
+	assert(root == newRoot);
+
+	// The block the program executes at compile time was inlined into the call
+	// that ran it, so its body is present in the output rather than the call.
+	assert(resolveLookupName(mod, internIn(mod, "e"), root) != invalidEntity);
+	diagnostics().clear();
+}
+
+unittest {
+	// ...and `test_string.doir`, which is nothing but `compiler.emit` calls, so
+	// the byte emiter has something to emit.
+	import doir.byte_emiter;
+
+	diagnostics().clear();
+	auto mod = createModule();
+	scope(exit) freeModule(mod);
+
+	BlockBuilder* builders;
+	scope(exit) fp.dynarray.free(builders);
+	{
+		auto builtin = createBlockBuilder(mod);
+		buildBuiltinBlock(builtin);
+		fp.dynarray.pushBack(builders, builtin);
+	}
+
+	assert(parseFile(mod, builders, "test_string.doir"));
+	immutable root = runPipeline(mod, builders);
+	assert(root != invalidEntity);
+	assert(!diagnostics().hasErrors());
+
+	internIn(mod, "compiler.emit");
+	internIn(mod, "compiler.emit_bytes");
+	ByteEmiter emiter;
+	scope(exit) emiter.free();
+	auto bytes = emitAll(emiter, mod, newRoot);
+	scope(exit) bytes.free();
+	assert(bytes.length > 0);
+	assert(bytes.slice == cast(const(ubyte)[]) "Hello World");
+	diagnostics().clear();
+}
+
+unittest {
+	// The stage hook is what stops a compile part way: the driver prints and
+	// stops on an error, the tests just stop. One that always refuses aborts
+	// at the first stage boundary, and `runPipeline` says so with
+	// `invalidEntity` rather than by leaving a half-built root behind.
+	static bool refuse() { return false; }
+
+	diagnostics().clear();
+	auto mod = createModule();
+	scope(exit) freeModule(mod);
+
+	BlockBuilder* builders;
+	scope(exit) fp.dynarray.free(builders);
+	{
+		auto builtin = createBlockBuilder(mod);
+		buildBuiltinBlock(builtin);
+		fp.dynarray.pushBack(builders, builtin);
+	}
+	assert(parseSource(mod, builders, "%1 : compiler.byte = 5\n", "hook.doir"));
+
+	assert(runPipeline(mod, builders, &refuse) == invalidEntity);
+	diagnostics().clear();
+}
+
+unittest { // `stopOnError` is the default policy: it only stops once one is raised
+	diagnostics().clear();
+	assert(stopOnError());
+	pushDiagnostic(DiagnosticType.InvalidType, SourceLocation("t.doir", 0, 0), "", "t.doir");
+	assert(!stopOnError());
+	diagnostics().clear();
 }

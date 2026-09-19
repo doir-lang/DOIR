@@ -118,3 +118,159 @@ bool validateComptime(ref Module mod, EntityId subtree) @trusted {
 	}
 	return true;
 }
+
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+version (unittest) {
+	import doir.string_helpers : InternedString;
+	import doir.systems : fixedPointChanged;
+	import tests.pipeline_helper;
+}
+
+unittest {
+	// A call whose arguments are all compile-time known is itself compile-time
+	// known; one handed a runtime value is not, unless the function it calls is
+	// marked comptime.
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+	diagnostics().clear();
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.root);
+	immutable indicateReturn = resolveLookupName(f.mod,
+		internIn(f.mod, "compiler.indicate_return"), f.root);
+	assert(indicateReturn != invalidEntity);
+	// `return_t` carries no `Comptime` flag, so the call's own comptime-ness
+	// follows its arguments rather than the callee.
+	assert(!flagsSet(f.mod, resolveLookupName(f.mod, internIn(f.mod, "compiler.return_t"), f.root),
+		Flags.Comptime));
+
+	immutable runtime = pushValueless(block, internIn(f.mod, "runtime"), byte_);
+	assert(!flagsSet(f.mod, runtime, Flags.Comptime));
+
+	immutable call = pushCall(block, internIn(f.mod, "c"), byte_, indicateReturn,
+		(&runtime)[0 .. 1]);
+	// Pretend an earlier round had marked it comptime, so this one has to
+	// clear the flag again and ask for another round.
+	getOrAddComponent!Flags(f.mod, call).flags |= Flags.Comptime;
+	fixedPointChanged() = false;
+
+	assert(bubbleComptime(f.mod, call));
+	assert(!flagsSet(f.mod, call, Flags.Comptime));
+	assert(fixedPointChanged());
+	fixedPointChanged() = false;
+	diagnostics().clear();
+}
+
+unittest { // a type argument counts as compile-time known whatever else it is
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+	diagnostics().clear();
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.root);
+	immutable indicateReturn = resolveLookupName(f.mod,
+		internIn(f.mod, "compiler.indicate_return"), f.root);
+
+	// `compiler.return_t` is a `TypeDefinition` that is not itself flagged
+	// comptime, so the loop skips over it and the call stays comptime.
+	// (`compiler.byte` would not do: it is a *call* to `base_type`, not a
+	// type definition, so it counts as an ordinary runtime value here.)
+	immutable returnT = resolveLookupName(f.mod, internIn(f.mod, "compiler.return_t"), f.root);
+	assert(hasComponent!TypeDefinition(f.mod, returnT));
+	assert(!flagsSet(f.mod, returnT, Flags.Comptime));
+
+	immutable call = pushCall(block, internIn(f.mod, "c"), byte_, indicateReturn,
+		(&returnT)[0 .. 1]);
+	assert(bubbleComptime(f.mod, call));
+	assert(flagsSet(f.mod, call, Flags.Comptime));
+	fixedPointChanged() = false;
+	diagnostics().clear();
+}
+
+unittest { // a compile-time call handed a runtime value is reported
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+	diagnostics().clear();
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.root);
+	immutable emit = resolveLookupName(f.mod, internIn(f.mod, "compiler.emit"), f.root);
+
+	immutable runtime = pushValueless(block, internIn(f.mod, "runtime"), byte_);
+	immutable named = pushCall(block, internIn(f.mod, "named"), byte_, emit, (&runtime)[0 .. 1]);
+	getOrAddComponent!Flags(f.mod, named).flags |= Flags.Comptime;
+
+	assert(!validateComptime(f.mod, named));
+	assert(diagnostics().hasErrors());
+	diagnostics().clear();
+
+	// The same, on an entity with no name of its own: the message falls back
+	// to `%id`.
+	immutable anonymous = pushCall(block, InternedString("_"), byte_, emit, (&runtime)[0 .. 1]);
+	getOrAddComponent!Flags(f.mod, anonymous).flags |= Flags.Comptime;
+	assert(!hasComponent!Name(f.mod, anonymous));
+	assert(!validateComptime(f.mod, anonymous));
+	assert(diagnostics().hasErrors());
+	diagnostics().clear();
+}
+
+unittest {
+	// `compiler.assembler.register_for` is the one exception: its *second*
+	// argument is allowed to be a runtime value.
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+	diagnostics().clear();
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.root);
+	immutable registerFor = resolveLookupName(f.mod,
+		internIn(f.mod, "compiler.assembler.register_for"), f.root);
+	assert(registerFor != invalidEntity);
+
+	immutable returnT = resolveLookupName(f.mod, internIn(f.mod, "compiler.return_t"), f.root);
+	immutable runtime = pushValueless(block, internIn(f.mod, "runtime"), byte_);
+	EntityId[2] args = [returnT, runtime]; // the *second* argument is the runtime one
+	immutable call = pushCall(block, internIn(f.mod, "c"), byte_, registerFor, args[]);
+	getOrAddComponent!Flags(f.mod, call).flags |= Flags.Comptime;
+
+	assert(validateComptime(f.mod, call));
+	assert(!diagnostics().hasErrors());
+	diagnostics().clear();
+}
+
+unittest { // entities neither pass has anything to say about
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+	diagnostics().clear();
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.root);
+
+	immutable bare = addEntity(f.mod);
+	assert(bubbleComptime(f.mod, bare));   // neither a call nor typed
+	assert(validateComptime(f.mod, bare)); // not a call
+
+	// A call with no arguments component at all.
+	immutable emit = resolveLookupName(f.mod, internIn(f.mod, "compiler.emit"), f.root);
+	immutable argless = addEntity(f.mod);
+	addComponent!Call(f.mod, argless).related[0] = emit;
+	assert(bubbleComptime(f.mod, argless));
+	assert(validateComptime(f.mod, argless));
+
+	// Something explicitly opted out of comptime inference, on both branches.
+	immutable optedOut = pushNumber(block, internIn(f.mod, "n"), byte_, 1);
+	getOrAddComponent!Flags(f.mod, optedOut).flags |= Flags.NoComptime;
+	assert(bubbleComptime(f.mod, optedOut));
+
+	immutable optedOutCall = pushCall(block, internIn(f.mod, "c"), byte_, emit,
+		(&optedOut)[0 .. 1]);
+	getOrAddComponent!Flags(f.mod, optedOutCall).flags |= Flags.NoComptime;
+	assert(bubbleComptime(f.mod, optedOutCall));
+
+	fixedPointChanged() = false;
+	diagnostics().clear();
+}
