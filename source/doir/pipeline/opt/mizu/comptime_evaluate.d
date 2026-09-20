@@ -18,7 +18,7 @@ import doir.mizu.instructions : doirLookup;
 import mizu.portable_format : fromPortable;
 import doir.module_;
 import doir.diagnostics : panic;
-import doir.pipeline.sema.sort : newRoot;
+import doir.pipeline.sema.sort : newRoot, sortSuspended;
 import doir.string_helpers : InternedString, wildcardName;
 import doir.systems : SystemFunction, fixedPointChanged;
 
@@ -184,10 +184,14 @@ bool comptimeEvaluate(ref Module mod, EntityId subtree, SystemFunction mizuSched
 		foreach (i; 0 .. count) {
 			auto e = resolveAlias(mod, getComponent!FunctionInputs(mod, subtree).related[i]);
 
+			// Named by position, never after the argument it carries. Two
+			// slots can hold the same entity (`mizu.add(a, a)`) or two
+			// same-named ones, and naming them after their argument put two
+			// children with one name in this block - which is a redefinition to
+			// anything that walks it, `sema.nameReuse` included, now that the
+			// backend runs that as part of lowering.
 			InternedString name;
-			if (hasComponent!Name(mod, e))
-				name = getComponent!Name(mod, e).value;
-			else {
+			{
 				char[24] buffer;
 				immutable n = snprintf(buffer.ptr, buffer.length, "a%zu", i);
 				name = internIn(mod, buffer[0 .. n]);
@@ -247,8 +251,21 @@ bool comptimeEvaluate(ref Module mod, EntityId subtree, SystemFunction mizuSched
 
 	immutable backup = newRoot;
 	newRoot = comptimeBlock.block;
-	mizuSchedule(mod.ctx);
+	// Every id here - `comptimeBlock.block`, `backup`, and every id the walk
+	// that reached this call is holding - is an id in the module, and a sort
+	// renumbers all of them. See `sema.sort.sortSuspended`.
+	sortSuspended = true;
+	immutable lowered = mizuSchedule(mod.ctx);
+	sortSuspended = false;
 	newRoot = backup;
+
+	// A lowering schedule that failed has raised its diagnostic, and the stage
+	// hook ends the compile on the way out of this walk. Carrying on would run
+	// the VM over a block the schedule did not finish lowering, and - since
+	// this is reached once per comptime call, with the failure the same every
+	// time - would raise that one diagnostic again for every call in the
+	// module before anything looked at it.
+	if (!lowered) return false;
 
 	ByteEmiter emiter;
 	scope(exit) emiter.free();

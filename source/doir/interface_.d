@@ -196,6 +196,33 @@ struct ComptimeString {
 	InternedString value;
 }
 
+/// The schedule a block claimed with `compiler.run_schedule("...")`: how the
+/// code belonging to that block is lowered. `doir.systems`' ownership filter
+/// reads it to decide what each schedule may visit, and
+/// `opt.runRegisteredSchedules` runs it.
+///
+/// On the block, rather than in a list beside the module, because that is what
+/// it is a fact about - and because `canonicalize.sort` renumbers entities. A
+/// list of block ids goes stale the moment anything re-sorts; a component moves
+/// with its block.
+///
+/// One per block: a second `run_schedule` in the same block replaces the first,
+/// the way the bottom-most `override_fallback_schedule` replaces the ones above
+/// it. Two schedules for one block has no meaning the lowering could act on.
+struct ScheduleClaim {
+	/// The schedule, as the source wrote it.
+	///
+	/// Kept as text and re-parsed when it runs, rather than carried about as a
+	/// parsed `DynamicSystem`. That owns heap, so a component holding one would
+	/// need a `finalize` (libECRS supports it - see `FunctionParameterNames`),
+	/// and would put `doir.interface_`, which everything imports, on top of
+	/// `doir.dynamic_systems`, which imports half the compiler to build its
+	/// registry. A string costs one re-parse per compile and inverts nothing.
+	/// `opt.runSchedule` has already parsed it once to check it, so the parse
+	/// that matters - the one whose failure is a diagnostic - has happened.
+	InternedString source;
+}
+
 /// A call of `related[0]`. Also expects `FunctionInputs` attached.
 struct Call {
 	mixin RelationBody!1;
@@ -1045,6 +1072,22 @@ EntityId findParent(ref Module mod, EntityId e) {
 	return findBlock(mod, e, e);
 }
 
+/// Whether `e` is declared somewhere inside `blockEntity` - directly, or in a
+/// block nested in it however deeply.
+///
+/// What "a schedule scoped to a block" means in practice: `opt.inlineFunctions`
+/// asks it before copying a body in, and `opt.runSchedule` asks it to find the
+/// call sites of everything a block declares.
+bool declaredWithin(ref Module mod, EntityId e, EntityId blockEntity) {
+	while (e != invalidEntity) {
+		if (e == blockEntity) return true;
+		immutable parent = findParent(mod, e);
+		if (parent == e) return false; // a block that contains itself: the root
+		e = parent;
+	}
+	return false;
+}
+
 /// The function `subtree` sits inside, or `invalidEntity` when it is not in
 /// one.
 EntityId findFunctionInsideOf(ref Module mod, EntityId subtree) {
@@ -1618,6 +1661,27 @@ ref BlockBuilder buildBuiltinBlock(return ref BlockBuilder self) @trusted {
 		bytePointerOnly[], byte_, true);
 	orFlags(*mod, emitBytesT, Flags.Comptime);
 	pushValuelessFunction(compiler, internIn(*mod, "emit_bytes"), emitBytesT);
+
+	// `compiler.run_schedule("...")`: runs a schedule, written out as a string,
+	// over the block the call sits in. Shaped like `early_include` - a string
+	// in, a count out - because it does the same sort of thing: the argument
+	// names work for the compiler to do, and the call is replaced by what that
+	// work amounted to. See `doir.dynamic_systems`.
+	immutable runScheduleT = pushFunctionType(compiler, internIn(*mod, "run_schedule_t"),
+		bytePointerOnly[], pointerSized, true);
+	orFlags(*mod, runScheduleT, Flags.Comptime);
+	pushValuelessFunction(compiler, internIn(*mod, "run_schedule"), runScheduleT);
+
+	// `compiler.override_fallback_schedule("...")`: the same string, but instead
+	// of running it here it becomes what lowering means for the whole module -
+	// comptime evaluation included. A backend says this; a program that wants a
+	// different one says it again, further down. See
+	// `doir.pipeline.opt.override_fallback_schedule`.
+	immutable overrideFallbackScheduleT = pushFunctionType(compiler,
+		internIn(*mod, "override_fallback_schedule_t"), bytePointerOnly[], pointerSized, true);
+	orFlags(*mod, overrideFallbackScheduleT, Flags.Comptime);
+	pushValuelessFunction(compiler, internIn(*mod, "override_fallback_schedule"),
+		overrideFallbackScheduleT);
 
 	Lookup[2] pointerSizedPair = [Lookup(pointerSized), Lookup(pointerSized)];
 	InternedString[2] valueArgNames = [valueInterned, internIn(*mod, "arg")];

@@ -14,6 +14,7 @@ import doir.file_manager : canonicalPath, getFileString;
 import doir.interface_;
 import doir.module_;
 import doir.parser : parseFile;
+import doir.systems : fixedPointChanged;
 
 @nogc nothrow:
 
@@ -120,6 +121,8 @@ bool processEarlyInclude(ref Module mod, EntityId subtree, ref EarlyIncludeConte
 
 	auto contents = getFileString(internedPath.view);
 	attachNumber(mod, subtree, pointerSized, contents.isNull ? 0 : contents.get.length);
+	
+	fixedPointChanged() = true;
 	return true;
 }
 

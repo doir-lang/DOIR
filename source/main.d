@@ -57,7 +57,7 @@ extern(C) int main(int argc, char** argv) @trusted {
 	auto root = runPipeline(mod, builders, &reportDiagnostics);
 	if (root == invalidEntity) return -1;
 
-	printModule(stdout, mod, root, true, true);
+	// printModule(stdout, mod, root, true, true);
 
 	{
 		internIn(mod, "compiler.emit");

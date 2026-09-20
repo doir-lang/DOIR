@@ -29,13 +29,14 @@ module doir.systems;
 static import fp.dynarray;
 import fp.dynarray : daLength = length;
 
-import ecrs.context : Context;
-import ecrs.storage : EntityId, invalidEntity;
+import ecrs.context : Context, getStorage;
+import ecrs.storage : EntityId, empty, invalidEntity;
 
 /// libECRS's own combinators, so a schedule only has to import this module.
 public import ecrs.system : sequential, parallel;
 
-import doir.interface_ : Block, currentCanonicalizeRoot;
+import doir.interface_ : Block, Call, ScheduleClaim, currentCanonicalizeRoot,
+	findParent, resolveAlias;
 import doir.module_;
 import doir.pipeline.sema.sort : canonicalizeSort = sort, newRoot;
 
@@ -112,7 +113,8 @@ template depthFirst(alias fn) {
 			auto frame = &stack[daLength(stack) - 1];
 
 			if (!hasComponent!Block(mod, frame.entity)) {
-				if (!fn(mod, frame.entity)) return false;
+				if (ownedByCurrentLowering(mod, frame.entity) && !fn(mod, frame.entity))
+					return false;
 				fp.dynarray.popBack(stack);
 				continue;
 			}
@@ -126,7 +128,7 @@ template depthFirst(alias fn) {
 				fp.dynarray.pushBack(stack, Frame(child, 0));
 			} else {
 				immutable entity = frame.entity;
-				if (!fn(mod, entity)) return false;
+				if (ownedByCurrentLowering(mod, entity) && !fn(mod, entity)) return false;
 				fp.dynarray.popBack(stack);
 			}
 		}
@@ -165,7 +167,9 @@ template breadthFirst(alias fn) {
 		while (head < daLength(queue)) {
 			immutable entity = queue[head++];
 
-			if (!fn(mod, entity)) return false;
+			// Skipped, but still descended through: the children below may be
+			// owned even when this is not.
+			if (ownedByCurrentLowering(mod, entity) && !fn(mod, entity)) return false;
 
 			if (!hasComponent!Block(mod, entity)) continue;
 			auto block = &getComponent!Block(mod, entity);
@@ -205,10 +209,10 @@ template breadthFirst(alias fn) {
 template sorted(alias fn) {
 	private bool walkImpl(ref Module mod, EntityId subtree) @trusted {
 		if (!hasComponent!Block(mod, subtree))
-			return fn(mod, subtree);
+			return !ownedByCurrentLowering(mod, subtree) || fn(mod, subtree);
 
 		if (daLength(getComponent!Block(mod, subtree).related) == 0)
-			return fn(mod, subtree);
+			return !ownedByCurrentLowering(mod, subtree) || fn(mod, subtree);
 
 		for (size_t e = getComponent!Block(mod, subtree).related[0]; e <= subtree; ++e) {
 			// Re-read the block every iteration: a visitor may have added
@@ -219,7 +223,8 @@ template sorted(alias fn) {
 				// If the first child is a block its full range may not be
 				// captured by the loop, so recurse into it.
 				if (!walkImpl(mod, cast(EntityId) e)) return false;
-			} else if (!fn(mod, cast(EntityId) e)) return false;
+			} else if (ownedByCurrentLowering(mod, cast(EntityId) e)
+				&& !fn(mod, cast(EntityId) e)) return false;
 		}
 		return true;
 	}
@@ -258,6 +263,228 @@ template sorted(alias fn) {
 	Bound sorted(EntityId subtree = currentCanonicalizeRoot, bool sortWhenFinished = false) {
 		return Bound(subtree, sortWhenFinished);
 	}
+}
+
+
+// ---------------------------------------------------------------------------
+// Ownership
+// ---------------------------------------------------------------------------
+//
+// A block carrying a `ScheduleClaim` is saying how the code belonging to it is
+// lowered. "Belonging" is wider than "inside": a block that
+// declares instructions is speaking for every call to those instructions, and
+// those calls are written elsewhere - that is the whole point of a block
+// declaring them.
+//
+// So every entity has an owner, and lowering one block means running its
+// schedule over the module with everything owned by somebody else skipped.
+// That is not the same as running the schedule rooted at each owned entity in
+// turn: passes come in an order, and a stateful one
+// (`opt.allocateRegisters` hands out consecutive registers across a single
+// walk) needs to see all of its entities in one pass before the next pass
+// starts. Filtering one global walk preserves that; re-rooting does not.
+
+/// The nearest block around `e` that claimed a schedule, or `invalidEntity`.
+private EntityId lexicalOwnerOf(ref Module mod, EntityId e) {
+	while (e != invalidEntity) {
+		if (hasComponent!ScheduleClaim(mod, e)) return e;
+		immutable parent = findParent(mod, e);
+		if (parent == e) return invalidEntity; // a block that contains itself: the root
+		e = parent;
+	}
+	return invalidEntity;
+}
+
+/// Which scheduled block `e` belongs to, or `invalidEntity` when none does and
+/// the module's fallback schedule has it.
+///
+/// A call belongs to whoever declared what it calls, and only falls back on
+/// where it was written when the callee is not somebody's. The callee wins
+/// deliberately: a call to `ns.f()` written inside another scheduled block is
+/// still a use of `ns`'s declaration, and `ns` is the one that said how its
+/// declarations are lowered.
+///
+/// Free until something claims. Every walk in the compiler asks this about
+/// every entity it reaches, so a module with no `compiler.run_schedule` in it
+/// must not pay for a parent-chain walk per entity - and with the claim on the
+/// block, "has anyone claimed" is one look at whether that component's storage
+/// is empty.
+EntityId ownerOf(ref Module mod, EntityId e) @trusted {
+	if (empty(getStorage!ScheduleClaim(mod.ctx))) return invalidEntity;
+
+	if (hasComponent!Call(mod, e)) {
+		immutable callee = resolveAlias(mod, getComponent!Call(mod, e).related[0]);
+		if (callee != invalidEntity && callee != e) {
+			immutable owner = lexicalOwnerOf(mod, callee);
+			if (owner != invalidEntity) return owner;
+		}
+	}
+	return lexicalOwnerOf(mod, e);
+}
+
+/// Whether the schedule that is running is a block's own, rather than the
+/// module's fallback - the sibling of `fixedPointChanged` below, and ambient
+/// for the same reason: a walker's visitor signature is fixed, so a pass that
+/// wants to know something about the walk running it has to read it from
+/// somewhere rather than be handed it.
+///
+/// A bool, and not the block's entity id, which is the one thing it must not
+/// be: a schedule may `sort`, and a sort renumbers every entity in the module,
+/// so an id opened before the run names somebody else by the end of it. Nothing
+/// needs the block's identity anyway. `ownedByCurrentLowering` below settles
+/// which entities are the running schedule's by comparing *claims* to
+/// `currentScheduleSource`, and the block whose schedule it is answers that
+/// question about itself; the only thing left for this to say is who gets the
+/// code nobody claimed, and that is the fallback schedule's alone.
+///
+/// Thread-local, which for once is not only a detail: a `LoweringBlock` opened
+/// on one thread is not visible to a `parallel` branch running on a worker.
+/// That makes the filter vanish rather than go wrong - the dispatched half
+/// visits everything - but it means a schedule that both owns and dispatches
+/// does not restrict what its dispatched half does.
+private bool currentLoweringIsABlocks;
+
+/// Set while an `applyGlobally` schedule node is running: the ownership filter is
+/// off and every walk sees the whole module.
+///
+/// For a phase that allocates a module-wide resource rather than lowering
+/// somebody's code. `opt.allocateRegisters` hands out consecutive register
+/// numbers and `opt.pinRegisters` records them, and a register is the machine's,
+/// not a block's - so partitioning that walk by ownership does not give two
+/// blocks their own registers, it gives them the same ones twice, and leaves
+/// every value the owner did not declare (a literal the caller wrote, the
+/// `begin_register_allocation` call that starts the count) unallocated on the
+/// far side of the filter.
+private bool currentLoweringIsGlobal = false;
+
+/// Runs the ownership filter off for as long as it is alive, restoring whatever
+/// it replaced - so an `applyGlobally` inside a block's schedule widens for that
+/// node only.
+struct GlobalLowering {
+	private bool previous = false;
+
+	@nogc nothrow:
+	@disable this(this);
+	this(bool unused) {
+		previous = currentLoweringIsGlobal;
+		currentLoweringIsGlobal = true;
+	}
+	~this() { currentLoweringIsGlobal = previous; }
+}
+
+/// The text of the schedule currently lowering, or null when it is the
+/// compiler's own compiled-in one (which has no source to compare against).
+///
+/// The filter below is about *which schedule*, not which block. Two schedules
+/// must not both lower the same entity - that is the whole reason for the
+/// ownership filter - but a block whose claim is the very schedule already
+/// running is not a second schedule, and carving its code out of that run
+/// leaves it lowered by nobody. That is the ordinary case for a backend, which
+/// says the same list twice: `compiler.run_schedule` so the block owns the
+/// calls to its declarations, and `compiler.override_fallback_schedule` so the
+/// module is lowered that way too.
+private const(char)[] currentScheduleSource;
+
+/// How many lowering schedules are running, nested.
+///
+/// Zero outside all of them, and the filter is then off entirely. The filter
+/// partitions *lowering* - it is there so two schedules do not both lower the
+/// same entity - and canonicalize, sema and comptime evaluation are not
+/// lowering anybody's code: they have to see the whole module.
+///
+/// This used to be read off the lowering block, which cannot tell "no schedule
+/// is running" from "the module's own schedule is running", since neither is a
+/// block. That was harmless only while no claim existed before
+/// lowering began, and a claim comes into being earlier than that: the schedule
+/// holding `opt.runSchedule` is itself run once per block `opt.comptimeEvaluate`
+/// lowers, so the first comptime call in the compile creates the claim, and
+/// every sema walk after it - `comptimeEvaluateVisitor` included - then skipped
+/// everything the claim owned.
+private size_t loweringDepth;
+
+/// Ditto.
+const(char)[] loweringSchedule() { return currentScheduleSource; }
+
+/// Whether `source` is the schedule that is running - interned, so this is
+/// identity, not a comparison of the text.
+bool isCurrentSchedule(const(char)[] source) @trusted {
+	return source.ptr !is null && source.ptr is currentScheduleSource.ptr
+		&& source.length == currentScheduleSource.length;
+}
+
+/// Names the schedule running for as long as it is alive, restoring whatever
+/// it replaced.
+struct LoweringSchedule {
+	private const(char)[] previous;
+
+	@nogc nothrow:
+	@disable this(this);
+	this(const(char)[] source) {
+		previous = currentScheduleSource;
+		currentScheduleSource = source;
+		++loweringDepth;
+	}
+	~this() {
+		currentScheduleSource = previous;
+		--loweringDepth;
+	}
+}
+
+/// Opens a lowering block for as long as it is alive. Nested ones restore the
+/// one they replaced, so a schedule run from inside a block's schedule narrows
+/// rather than clears.
+///
+/// Takes the block it is opened for, and keeps only whether there was one; see
+/// `currentLoweringIsABlocks` on why the id must not outlive the call.
+struct LoweringBlock {
+	private bool previous;
+
+	@nogc nothrow:
+	@disable this(this);
+	this(EntityId blockEntity) {
+		previous = currentLoweringIsABlocks;
+		currentLoweringIsABlocks = blockEntity != invalidEntity;
+	}
+	~this() { currentLoweringIsABlocks = previous; }
+}
+
+/// Whether the walk should hand `e` to its visitor: one rule, both ways round.
+///
+/// A block's schedule sees what that block owns. The module's fallback schedule
+/// is nobody's block, so it sees what nobody owns - which is the same rule, not
+/// an exception to it. Claiming a schedule is therefore taking the code over
+/// rather than asking for something extra on top: whatever a block claimed, the
+/// fallback schedule leaves alone, and the two never lower the same entity twice.
+///
+/// Nothing is filtered before the first claim is made, because with no
+/// scheduled blocks everything is unowned - so every walk ahead of
+/// `opt.runSchedule` (all of canonicalize and sema, and the passes standing in
+/// front of it in the lowering schedule) sees the whole module, as it always
+/// has.
+///
+/// Note what this does *not* say: a walk still descends through an entity it
+/// skips. A scheduled block can sit inside a block nobody claimed, and the
+/// children on the far side of it are reachable no other way.
+///
+/// Public because one pass has to ask it about an entity no walk handed it:
+/// `opt.inlineFunctions` copies a body in from wherever that body was declared,
+/// which is the one thing a pass does that the walk reaching it does not bound.
+bool ownedByCurrentLowering(ref Module mod, EntityId e) {
+	if (loweringDepth == 0) return true;
+	if (currentLoweringIsGlobal) return true;
+
+	immutable owner = ownerOf(mod, e);
+
+	// Code nobody claimed is the fallback schedule's share, and only its share.
+	if (owner == invalidEntity) return !currentLoweringIsABlocks;
+
+	// Owned by somebody who asked for exactly the schedule that is running -
+	// the block whose schedule this is among them, since its own claim is that
+	// schedule. Nobody else is going to lower any of them: a claim stands down
+	// when its schedule is already the one running, see `opt.run_schedule`, so
+	// skipping them here would leave them untouched rather than lower them twice.
+	return hasComponent!ScheduleClaim(mod, owner)
+		&& isCurrentSchedule(getComponent!ScheduleClaim(mod, owner).source.view);
 }
 
 

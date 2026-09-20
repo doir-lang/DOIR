@@ -125,8 +125,21 @@ EntityId sort(ref Module mod, EntityId root) @trusted {
 	return newRootId;
 }
 
+/// Set while something is lowering a tree it reached from inside a walk over
+/// the module - `opt.comptimeEvaluate` lowering the throwaway block it built
+/// for one comptime call - and a sort would therefore renumber the module out
+/// from under that walk.
+///
+/// A schedule is a list a program wrote, and the same list lowers the module
+/// and every throwaway block the comptime evaluator builds along the way. A
+/// `sort` in it means the first; there is nothing to gain from the second,
+/// since the throwaway block was just built an entity at a time and is already
+/// in the order it was built in.
+bool sortSuspended;
+
 /// `canonicalize.sort` packaged as a system, for use in a schedule.
 bool sortSystem(ref Module mod, EntityId root = currentCanonicalizeRoot) {
+	if (sortSuspended) return true;
 	sort(mod, root == currentCanonicalizeRoot ? newRoot : root);
 	return true;
 }
@@ -208,4 +221,21 @@ unittest { // `sortSystem` is the same thing wrapped as a schedule step
 	// With no root given it re-sorts whatever it last produced.
 	assert(sortSystem(f.mod));
 	assert(newRoot == first);
+}
+
+unittest { // `sortSuspended` makes the sort system stand down
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+
+	// A sort publishes the root's new id; a suspended one leaves it alone, and
+	// still reports success so the rest of the schedule runs.
+	newRoot = invalidEntity;
+	sortSuspended = true;
+	scope(exit) sortSuspended = false;
+	assert(sortSystem(f.mod, f.root));
+	assert(newRoot == invalidEntity);
+
+	sortSuspended = false;
+	assert(sortSystem(f.mod, f.root));
+	assert(newRoot != invalidEntity);
 }

@@ -31,6 +31,8 @@ import doir.pipeline.opt.mizu.comptime_evaluate;
 import doir.pipeline.opt.mizu.materialize_immediates;
 import doir.pipeline.opt.mizu.materialize_labels;
 import doir.pipeline.opt.pin_registers;
+import doir.pipeline.opt.override_fallback_schedule;
+import doir.pipeline.opt.run_schedule;
 import doir.pipeline.opt.strip_freestanding_blocks;
 
 @nogc nothrow:
@@ -48,8 +50,16 @@ private bool resolveLookupsVisitor(bool typesOnly)(ref Module mod, EntityId e) {
 	return resolveLookups(mod, e, typesOnly);
 }
 
-private bool comptimeEvaluateVisitor(ref Module mod, EntityId e) {
-	return comptimeEvaluate(mod, e, &moduleSystem!mizuSchedule);
+/// Public because `doir.dynamic_systems` registers it: the pass underneath
+/// (`comptimeEvaluate`) takes the schedule it lowers each block with as an
+/// argument, which a schedule string has no way to write, so this binding is
+/// the only spelling of it a string can name.
+///
+/// What it binds is `runFallbackSchedule`, not a fixed backend: a block lowered
+/// to run at compile time is lowered the same way the module around it will be,
+/// so a program that overrode the fallback schedule overrode this too.
+bool comptimeEvaluateVisitor(ref Module mod, EntityId e) {
+	return comptimeEvaluate(mod, e, &moduleSystem!runFallbackSchedule);
 }
 
 
@@ -61,12 +71,42 @@ private bool comptimeEvaluateVisitor(ref Module mod, EntityId e) {
 // walkers and combinators; `moduleSystem!schedule` turns one into the libECRS
 // system that `comptimeEvaluate` (and `ecrs.system`'s own combinators) take.
 
-/// The schedule the comptime evaluator runs over each block it lowers.
+/// The lowering schedule the compiler falls back on when nothing overrode it -
+/// the mizu backend, which is the only one built in.
+///
+/// `mizu.doir` carries this same list as a `compiler.override_fallback_schedule`
+/// string, and that is what lowers a program which early_include's it. This
+/// copy stays because a program that includes no backend at all still has to
+/// compile: most of what is below is not the mizu backend -
+/// `computeCompilerNamespace` folds the `compiler.*` namespace, and the builtin
+/// block's own `compiler.byte` is a `compiler.base_type` call waiting to be
+/// folded - so with nothing standing in, a module with no `early_include` would
+/// not get a usable `compiler.byte`.
+///
+/// The three passes it opens with used to sit in `canonicalizeSchedule`, ahead of
+/// comptime evaluation. They are here instead because they are answerable to
+/// the backend rather than to the language: what counts as a name collision,
+/// what a function's arity is, and when a block-scoped `compiler.run_schedule`
+/// gets its turn are all things a backend should be able to say differently -
+/// and a pass the compiler runs before handing over is one it has already
+/// decided for everyone.
+///
+/// `validateComptime` was meant to be a fourth and stayed behind; see the note
+/// on `canonicalizeSchedule` for why.
 bool mizuSchedule(ref Module mod) {
 	// NOTE: `materialize_aliases` is commented out in driver.cpp's mizu
 	// schedule; it is ported (doir.pipeline.opt.materialize_aliases) but likewise
 	// unused here.
 	return sequential(
+		depthFirst!nameReuse(),
+		depthFirst!functionArity(),
+		// The one place a schedule a user wrote in their source can see what the
+		// lowering is about to do: after it, but before any of it has run. See
+		// `doir.pipeline.opt.run_schedule` on why it is not one of the
+		// `compiler.*` builtins `computeCompilerNamespace` folds, and why
+		// claiming and running are two passes rather than one.
+		depthFirst!runSchedule(),
+		&moduleSystem!runRegisteredSchedules,
 		depthFirst!pinRegisters(),
 		breadthFirst!allocateRegisters(),
 		depthFirst!pinRegisters(),
@@ -78,38 +118,75 @@ bool mizuSchedule(ref Module mod) {
 	)(mod);
 }
 
+/// Everything between parsing and the final sort: canonicalizing the tree,
+/// resolving it, then evaluating and lowering it.
+///
+/// This was three schedules not long ago - `canonicalizeSchedule`,
+/// `canonicalizeSchedule`, `optSchedule` - run back to back by `runPipeline`. None of
+/// the boundaries between them was worth keeping: nothing ever looked at a
+/// module that had been through one and not the next, and having them meant
+/// "have the includes been pulled in yet?", "has comptime run yet?" and "has
+/// this module's own schedule run yet?" were questions with a different answer
+/// depending on which stage you were standing in. One schedule gives each of
+/// them one answer - when this returns, every `early_include` has been spliced
+/// in, comptime has run, every schedule the source asked for has run, and the
+/// module has been lowered.
+///
+/// What is left inside are three phases separated by sorts, and the sorts are
+/// the reason they are still distinguishable at all. Each phase adds entities -
+/// included files, materialized function types and parameters, blocks the
+/// comptime evaluator builds - and `sortSystem` is what renumbers them into the
+/// order the next phase's walks need to already be in.
 bool canonicalizeSchedule(ref Module mod, EntityId root, ref BlockBuilder* builders) {
+	clearFallbackScheduleOverride();
 	earlyIncludeContext.builders = &builders;
-	sortSystem(mod, root);
-	return sequential(
-		sorted!processEarlyIncludeVisitor(currentCanonicalizeRoot, true),
-		sorted!materializeFunctionTypesAndParameters(currentCanonicalizeRoot, true),
-	)(mod);
-}
 
-bool semaSchedule(ref Module mod) {
-	immutable ok = sequential(
-		depthFirst!nameReuse(),
+	// Canonicalize: splice in every `early_include` and materialize what it
+	// brought with it, until a round changes nothing. An included file can
+	// include more, hence the fixed point; each pass re-sorts because it is
+	// adding entities to the block it is walking.
+	// `sortSystem` in the schedule below takes `currentCanonicalizeRoot`, which
+	// resolves to `newRoot` - unset on the first compile in the process, and
+	// the previous module's root on every one after. Seed it from the parser's
+	// root so the first sort sorts this tree. (Assigned rather than sorted for:
+	// the sort itself is the schedule's first entry.)
+	newRoot = root;
+
+	return sequential(
+		fixedPoint(sequential(
+			&moduleSystem!sortSystem,
+			sorted!processEarlyIncludeVisitor(currentCanonicalizeRoot, false),
+			sorted!materializeFunctionTypesAndParameters(currentCanonicalizeRoot, false),
+		)),
+		&moduleSystem!sortSystem,
+
 		depthFirst!(resolveLookupsVisitor!true)(),
 		depthFirst!materializeFunctionTypesAndParameters(),
 		// We may have materialized some function parameters which can now be found
 		depthFirst!(resolveLookupsVisitor!false)(),
 		depthFirst!lookupsResolved(),
 		fixedPoint(depthFirst!bubbleComptime()),
+		// Not moved out to the backend with `nameReuse` and `functionArity`,
+		// though it was meant to be. It reports a compile time call handed a
+		// value that is not compile time known, and lowering manufactures
+		// those: `opt.inlineFunctions` copies a body in with its parameters
+		// replaced by the caller's runtime values, and every copied
+		// `compiler.shift_right(r, 8)` in `mizu.doir` then looks like the thing
+		// this rejects. The check only holds ahead of any lowering, which is
+		// here.
 		depthFirst!validateComptime(),
-		depthFirst!functionArity(),
-	)(mod);
-	if (!ok) return false;
 
-	sortSystem(mod);
-	return true;
-}
+		// sortSystem,
 
-bool optSchedule(ref Module mod) {
-	return sequential(
 		fixedPoint(depthFirst!comptimeEvaluateVisitor()),
 		breadthFirst!stripFreestandingBlocks(),
-		&moduleSystem!mizuSchedule,
+		// Pass one of `compiler.override_fallback_schedule`, and it has to be
+		// here: `comptimeEvaluateVisitor` below lowers with whatever this
+		// settles on, so the answer has to be settled before the first comptime
+		// call is evaluated rather than alongside them.
+		depthFirst!findFallbackScheduleOverride(),
+		// Pass two: lower, with the module's own schedule if it named one.
+		&moduleSystem!runFallbackSchedule,
 	)(mod);
 }
 
@@ -128,7 +205,7 @@ bool stopOnError() {
 	return !diagnostics().hasErrors();
 }
 
-/// Runs everything after parsing - structure, canonicalize, sema, opt, and the
+/// Runs everything after parsing - structure, canonicalize, sema, and the
 /// final sort - over a module whose source has already been parsed into
 /// `builders`, the parser's stack of open blocks (a libfp dynarray whose
 /// bottom entry is the builtin block).
@@ -141,12 +218,6 @@ EntityId runPipeline(ref Module mod, ref BlockBuilder* builders, StageHook hook 
 	if (!hook()) return invalidEntity;
 
 	canonicalizeSchedule(mod, root, builders);
-	if (!hook()) return invalidEntity;
-
-	semaSchedule(mod);
-	if (!hook()) return invalidEntity;
-
-	optSchedule(mod);
 	if (!hook()) return invalidEntity;
 
 	root = sort(mod, newRoot);
@@ -199,6 +270,13 @@ unittest {
 	assert(root != invalidEntity);
 	assert(!diagnostics().hasErrors());
 	assert(root == newRoot);
+
+	// `mizu.doir` ends in a `compiler.override_fallback_schedule`, so the module
+	// was lowered by the schedule written in that file rather than by
+	// `mizuSchedule`. The two currently list the same passes, which is exactly
+	// why this is worth asserting: a fallback would look identical in the
+	// output.
+	assert(hasFallbackScheduleOverride());
 
 	// The block the program executes at compile time was inlined into the call
 	// that ran it, so its body is present in the output rather than the call.

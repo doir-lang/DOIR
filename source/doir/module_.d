@@ -243,6 +243,15 @@ Module createModule() @trusted {
 	m.ctx = ecrs.context.create();
 	m.interner = cast(StringInterner*) allocFunction(null, StringInterner.sizeof);
 	*m.interner = createInterner();
+
+	// Forced into existence here, on the thread that built the module, because
+	// `doir.systems.ownerOf` asks whether it is empty for every entity of every
+	// walk - and a `parallel` branch of a schedule asks it from a worker.
+	// `getStorage` creates the storage the first time it is asked for, which
+	// writes to the context; done once here it never writes again, and the
+	// question becomes the read it looks like.
+	ecrs.context.getStorage!ScheduleClaim(m.ctx);
+
 	return m;
 }
 

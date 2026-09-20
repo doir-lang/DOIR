@@ -21,7 +21,7 @@ Identifier <- "%" ('"' < StringChar* > '"') / !Keywords < ([%]/UnicodeIdentifier
 Keywords <- ('deduced' | 'export' | 'flatten' | 'inline' | 'language' | 'tail') !UnicodeIdentifierContinue
 SourceInfo <- ('<"' < (!'"' .)* > '":' / '<' < (!':' .)* > ':') < IntegerConstant > (<'-' IntegerConstant >)? ':' < IntegerConstant > (<'-' IntegerConstant > )? '>'
 
-Constant <- < FloatConstant > / < IntegerConstant > / ('"' < StringChar* > '"') / ('\'' < StringChar > '\'')
+Constant <- < FloatConstant > / < IntegerConstant > / RawString / ('"' < StringChar* > '"') / ('\'' < StringChar > '\'')
 IntegerConstant <- ('0x' HexDigit+) / ('0b' [01]*) / ('0' [0-7]*) / ([1-9][0-9]*)
 # A FloatConstant must carry a '.' or an exponent marker. Without that
 # requirement its `[0-9]+ '.'?` alternative also matched a bare integer, and
@@ -36,6 +36,21 @@ FloatConstant <- ('0x' (HexDigit* '.' HexDigit+ / HexDigit+ '.' HexDigit*) HexEx
 	/ (([0-9]* '.' [0-9]+ / [0-9]+ '.' [0-9]*) DecExponent? / [0-9]+ DecExponent)
 HexExponent <- [pP][+\-]? [0-9]*
 DecExponent <- 'e'i[+\-]? [0-9]*
+# A raw string literal: an opening run of 3 or more double quotes, everything
+# up to the next run of at least that many, and no escape processing at all -
+# `\n`, `\\` and `"` inside are the bytes they are spelled with, and the literal
+# may span newlines. `$delim` captures the opening run and back-references it
+# for the close, so `"""""` ends only at another `"""""`.
+# PEG's `*` does not backtrack, so the opening delimiter is the *whole* run of
+# quotes the literal starts with: an empty raw string cannot be spelled
+# (`""""""` is a six-quote opener still looking for its close - write `""`), and
+# the content cannot begin with a quote. It may end with one, because the
+# `!'"'` guard below refuses to close in the middle of a longer run and so
+# leaves the content every quote but the final N.
+# It must come before the `'"' StringChar* '"'` alternative of `Constant`:
+# that one would otherwise match the first two quotes of `"""..."""` as an
+# empty string and leave the rest behind.
+RawString <- $delim<'"""' '"'*> < (!($delim !'"') .)* > $delim
 StringChar <- (!['"\n\\] .) / ('\\' ['\"?\\%abfnrtv]) / ('\\' [0-7]+) / ('\\x' HexDigit+) / ('\\u' HexDigit HexDigit HexDigit HexDigit) / ('\\U' HexDigit HexDigit HexDigit HexDigit HexDigit HexDigit HexDigit HexDigit)
 HexDigit <- [a-f0-9]i
 

@@ -997,7 +997,31 @@ mizu : namespace = {
 	x254 : compiler.assembler.register = 254
 	x255 : compiler.assembler.register = 255
 	x256 : compiler.assembler.register = 256
+
+	schedule : compiler.byte_pointer = """
+		sequential(
+			depthFirst(nameReuse),
+			depthFirst(functionArity),
+			depthFirst(runSchedule),
+			runRegisteredSchedules,
+
+			applyGlobally(sequential(
+				sort,
+				depthFirst(pinRegisters),
+				breadthFirst(allocateRegisters),
+				depthFirst(pinRegisters)
+			)),
+
+			breadthFirst(computeCompilerNamespace!false),
+			depthFirst(materializeImmediates),
+			depthFirst(materializeLabels),
+			breadthFirst(inlineFunctions),
+			breadthFirst(computeCompilerNamespace!true),
+			debugPrint
+		)
+	"""
+	_ : compiler.pointer_sized = compiler.run_schedule(schedule)
 }
 
+_ : compiler.pointer_sized = compiler.override_fallback_schedule(mizu.schedule)
 _ : mizu.u64 = compiler.assembler.begin_register_allocation()
-

@@ -379,6 +379,44 @@ private bool stringChar(ref Parser p) @trusted {
 	return true;
 }
 
+/// `RawString <- $delim<'"""' '"'*> < (!($delim !'"') .)* > $delim`
+///
+/// An opening run of three or more quotes, everything up to the next run of
+/// at least that many, and no escape processing at all: `\n`, `\\` and a lone
+/// `"` stand for the bytes they are spelled with, and the literal may span
+/// newlines.
+///
+/// The opening delimiter is the *whole* run of quotes the literal starts with
+/// - the grammar's `'"""' '"'*` is a PEG `*`, which never gives a quote back -
+/// so an empty raw string cannot be spelled (`""""""` is a six-quote opener
+/// still looking for its close; write `""`) and the content cannot begin with
+/// a quote. It may end with one: the close is the *last* `n` quotes of the run
+/// that ends the literal, so `"""a""""` holds `a"` and only a run of `2n` or
+/// more is needed before the content keeps quotes the author did not mean.
+///
+/// On success `content` is a slice of the source between the two delimiters -
+/// the caller interns it verbatim, there being nothing to unescape.
+private bool rawString(ref Parser p, out const(char)[] content) @trusted {
+	immutable save = p.pos;
+
+	size_t n;
+	while (!eof(p) && peek(p) == '"') { advance(p); ++n; }
+	if (n < 3) { p.pos = save; return false; }
+
+	immutable contentStart = p.pos;
+	size_t run; // quotes in the run ending at `p.pos`
+	while (!eof(p)) {
+		if (peek(p) == '"') { advance(p); ++run; continue; }
+		if (run >= n) break; // the run just ended closed the literal
+		advance(p);
+		run = 0;
+	}
+
+	if (run < n) { p.pos = save; return false; } // unterminated: the caller reports it
+	content = p.source[contentStart .. p.pos - n];
+	return true;
+}
+
 /// `IntegerConstant <- ('0x' HexDigit+) / ('0b' [01]*) / ('0' [0-7]*) / ([1-9][0-9]*)`
 private bool integerConstant(ref Parser p) {
 	immutable save = p.pos;
@@ -551,7 +589,7 @@ private bool identifier(ref Parser p, out InternedString result) @trusted {
 // ---------------------------------------------------------------------------
 
 /// Parses `Constant`, filling `value`. The choice order is the grammar's:
-/// float, integer, string, char. `FloatConstant` only matches a token carrying
+/// float, integer, raw string, string, char. `FloatConstant` only matches a token carrying
 /// a `.` or an exponent, so every other number - `1234`, `0x1F`, `0b1011`,
 /// `0755` - falls through to `IntegerConstant` and its own four bases.
 private bool constant(ref Parser p, ref ParsedValue value) @trusted {
@@ -565,6 +603,14 @@ private bool constant(ref Parser p, ref ParsedValue value) @trusted {
 	if (integerConstant(p)) {
 		value.kind = ValueKind.number;
 		value.number = tokenToNumber(p.source[save .. p.pos]);
+		return true;
+	}
+	// Before the quoted alternative below, which would otherwise take the
+	// first two quotes of `"""..."""` as an empty string and leave the rest.
+	const(char)[] raw;
+	if (rawString(p, raw)) {
+		value.kind = ValueKind.str;
+		value.str = internIn(*p.mod, raw);
 		return true;
 	}
 	if (peek(p) == '"') {
@@ -2049,6 +2095,60 @@ unittest { // an escape the *lexer* rejects ends the string early, so it fails
 	assert(!parses("s : compiler.byte_pointer = \"\\U0000\"\n", errors));
 	assert(!parses("s : compiler.byte_pointer = \"unterminated\n", errors));
 	assert(!parses("s : compiler.byte_pointer = \"trailing\\", errors));
+}
+
+unittest { // a raw string keeps its bytes - nothing inside it is an escape
+	auto f = makeParseFixture();
+	scope(exit) f.free();
+	diagnostics().clear();
+	assert(parseSource(f.mod, f.builders,
+		`s : compiler.byte_pointer = """a\tb\\ "not a delimiter" """` ~ "\n", "raw.doir"));
+	assert(!diagnostics().hasErrors());
+
+	immutable s = resolveLookupName(f.mod, internIn(f.mod, "s"), f.root);
+	assert(getComponent!DString(f.mod, s).value == `a\tb\\ "not a delimiter" `);
+	diagnostics().clear();
+}
+
+unittest { // a longer delimiter carries shorter runs of quotes, and newlines
+	auto f = makeParseFixture();
+	scope(exit) f.free();
+	diagnostics().clear();
+	assert(parseSource(f.mod, f.builders,
+		`a : compiler.byte_pointer = """""x """ y """""` ~ "\n"
+		~ `b : compiler.byte_pointer = """line one` ~ "\n" ~ `line two"""` ~ "\n",
+		"raw.doir"));
+	assert(!diagnostics().hasErrors());
+
+	immutable a = resolveLookupName(f.mod, internIn(f.mod, "a"), f.root);
+	assert(getComponent!DString(f.mod, a).value == `x """ y `);
+	immutable b = resolveLookupName(f.mod, internIn(f.mod, "b"), f.root);
+	assert(getComponent!DString(f.mod, b).value == "line one\nline two");
+	diagnostics().clear();
+}
+
+unittest { // the close is the *last* n quotes of the run, so content may end in one
+	auto f = makeParseFixture();
+	scope(exit) f.free();
+	diagnostics().clear();
+	assert(parseSource(f.mod, f.builders,
+		`s : compiler.byte_pointer = """a""""; ` ~ "\n", "raw.doir"));
+	assert(!diagnostics().hasErrors());
+
+	immutable s = resolveLookupName(f.mod, internIn(f.mod, "s"), f.root);
+	assert(getComponent!DString(f.mod, s).value == `a"`);
+	diagnostics().clear();
+}
+
+unittest { // what a raw string does not accept
+	bool errors;
+	// No close, so the rule gives every quote back and nothing else matches.
+	assert(!parses(`s : compiler.byte_pointer = """unterminated` ~ "\n", errors));
+	// The opener is the whole run: six quotes ask for a six-quote close rather
+	// than spelling an empty raw string.
+	assert(!parses(`s : compiler.byte_pointer = """"""` ~ "\n", errors));
+	// Two quotes are still the ordinary empty string they always were.
+	assert(parses(`s : compiler.byte_pointer = ""` ~ "\n", errors));
 }
 
 unittest { // `%"..."` quotes a name that is not a bare identifier

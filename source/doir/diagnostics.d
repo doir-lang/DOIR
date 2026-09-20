@@ -340,6 +340,46 @@ void parameterError(ref Module mod, EntityId subtree, const(char)[] name, size_t
 	pushAnnotation(*diag, annotation);
 }
 
+/// A diagnostic about the *contents* of a string constant, pointed `offset`
+/// bytes into the text that constant holds.
+///
+/// For something handed to the compiler as text and then read by a parser of
+/// its own - a schedule, so far - where the interesting position is somewhere
+/// inside the string rather than anywhere in the call that was given it.
+///
+/// `offset` is into the string's value, and the caret goes that many bytes past
+/// the literal's opening quote. Those are the same place for a raw (`"""`)
+/// literal and for any literal that escapes nothing; where a literal does
+/// escape something the caret lands that many bytes early, since the value is
+/// shorter than the text that produced it. The message stays right either way,
+/// which is why this is worth doing rather than printing a byte offset and
+/// leaving the reader to count.
+void stringContentsError(ref Module mod, EntityId stringEntity, char* message,
+	size_t offset) @trusted
+{
+	auto location = findSourceLocation(mod, stringEntity);
+	auto source = sourceOf(mod, location);
+	auto diag = &pushDiagnostic(DiagnosticType.InvalidFunctionCall, location, source,
+		location.file);
+
+	// The entity's span covers its whole declaration (`name : type = "..."`),
+	// so find where the literal starts inside it and step over the quote.
+	auto span = spanOf(source, location);
+	size_t quote = size_t.max;
+	foreach (i; 0 .. span.length)
+		if (span[i] == '"') { quote = i; break; }
+	if (quote != size_t.max) {
+		immutable raw = quote + 3 <= span.length
+			&& span[quote + 1] == '"' && span[quote + 2] == '"';
+		location.startByte += quote + (raw ? 3 : 1) + offset;
+	}
+
+	Diagnostic.Annotation annotation;
+	annotation.message = message;
+	annotation.position = location.start(source);
+	pushAnnotation(*diag, annotation);
+}
+
 /// `Entity <target> doesn't have an associated register`.
 void noAssociatedRegister(ref Module mod, EntityId subtree, EntityId target) @trusted {
 	auto location = findDetailedSourceLocation(mod, subtree);
