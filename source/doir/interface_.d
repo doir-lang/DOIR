@@ -68,9 +68,11 @@ mixin template RelationBody(size_t N = dynamicExtent) {
 // Tags and simple payloads
 // ---------------------------------------------------------------------------
 
-/// Bit flags describing an entity. Mirrors `doir::flags`; note that the C++
-/// original gives `Flatten` and `Tail` the same bit (1 << 11), which this
-/// port preserves rather than quietly fixing.
+/// Bit flags describing an entity. Mirrors `doir::flags`, except for `Tail`:
+/// the C++ original gives `Flatten` and `Tail` the same bit (1 << 11), so a
+/// `tail` call was indistinguishable from a `flatten` one - it printed as
+/// both, and a block carrying `Flatten` tripped `verify.structure`'s
+/// "no `Tail` on a value" check. `Tail` gets its own bit here.
 struct Flags {
 	enum : ushort {
 		None = 0,
@@ -86,7 +88,7 @@ struct Flags {
 		Pure = (1 << 9),
 		Inline = (1 << 10),
 		Flatten = (1 << 11),
-		Tail = (1 << 11),
+		Tail = (1 << 12),
 	}
 
 	ushort flags = None;

@@ -913,8 +913,25 @@ private bool functionType(ref Parser p, ref BlockBuilder* blocks, ref FunctionTy
 
 	if (peek(p) != ')') { result.free(); p.pos = save; return false; }
 	advance(p);
+	// Where the type ends if there is no `-> Type`. `skipWhitespace` crosses
+	// newlines, so looking for the arrow past it must not be allowed to eat
+	// the assignment's terminator when the arrow turns out not to be there.
+	immutable afterParameters = p.pos;
 	skipWhitespace(p);
-	if (!literal(p, "->")) { result.free(); p.pos = save; return false; }
+
+	// `-> Type` is optional: omitting it means the function returns nothing,
+	// which is spelled `void`. Attaching `void` rather than leaving the
+	// return type off keeps every function type shaped the same for the rest
+	// of the compiler - `verify.structure` requires a type to carry a block,
+	// a return type or a pointer, and a parameter list alone is none of those.
+	if (!literal(p, "->")) {
+		p.pos = afterParameters;
+		result.hasReturnType = true;
+		result.returnType = Lookup(internIn(*p.mod, "void"));
+		result.start = save;
+		result.end = p.pos;
+		return true;
+	}
 	skipWhitespace(p);
 
 	ParsedType returnType;
@@ -1666,9 +1683,9 @@ unittest {
 }
 
 
-// --- doir.spec syntax -------------------------------------------------------
+// --- doir.spec.typ syntax -------------------------------------------------------
 //
-// The seven core assignment forms doir.spec (lines 1-14) lists as the
+// The seven core assignment forms doir.spec.typ (Part I) lists as the
 // language's basic building blocks, using real source text driven through the
 // exact pipeline the driver uses. `language "..." { ... }` blocks (the
 // asterisked eighth form) are intentionally not covered: changing languages is
@@ -2299,6 +2316,45 @@ unittest { // a function type as a return type is materialised into an entity
 	assert(parses("f : type = (a: compiler.byte) -> (b: compiler.byte) -> compiler.byte\n"));
 }
 
+unittest { // `-> Type` is optional, and omitting it means the function returns `void`
+	// `doir.spec.typ` specifies this ("Omitting the return implies void"), and
+	// `standard.doir` relies on it for `halt : ()`, `label : (name)`,
+	// `defer : (body)` and the three `diagnostic` functions.
+	auto r = compile("f : type = (a: compiler.byte)\n");
+	scope(exit) freeModule(r.mod);
+	assert(r.ok);
+
+	immutable f = find(r.mod, r.root, "f");
+	assert(f != invalidEntity);
+	assert(hasComponent!FunctionInputs(r.mod, f));
+	assert(hasComponent!FunctionReturnType(r.mod, f));
+	immutable void_ = resolveLookupName(r.mod, internIn(r.mod, "void"), r.root);
+	assert(getComponent!FunctionReturnType(r.mod, f).related[0] == void_);
+}
+
+unittest { // looking for the optional `->` must not swallow the terminator
+	// `skipWhitespace` crosses newlines, so a naive implementation consumed the
+	// newline ending the assignment and the *next* line failed to parse.
+	assert(parses("f : type = (a: compiler.byte)\ng : type = (b: compiler.byte)\n"));
+}
+
+unittest { // a declaration whose type is a named function type, with no body
+	// `f : some_t` is a function declared but not defined. `sema.materialize`
+	// copies the return type off `some_t`, and the parser has already set
+	// `Valueless` for the missing `=`, so this used to trip `verify.structure`.
+	auto r = compile(
+		"some_t : type = (a: compiler.byte) -> compiler.byte\n"
+		~ "f : some_t\n");
+	scope(exit) freeModule(r.mod);
+	assert(r.ok);
+
+	immutable f = find(r.mod, r.root, "f");
+	assert(f != invalidEntity);
+	assert(flagsSet(r.mod, f, Flags.Valueless));
+	assert(hasComponent!FunctionReturnType(r.mod, f));
+	assert(!hasComponent!Block(r.mod, f));
+}
+
 unittest { // a trailing comma is not a parameter, so it ends the list
 	bool errors;
 	assert(!parses("f : type = (a: compiler.byte,) -> compiler.byte\n", errors));
@@ -2331,12 +2387,27 @@ unittest { // ...and so does a valueless function declared with the same default
 unittest { // a `(` that never closes is not a function type, and not an identifier
 	bool errors;
 	assert(!parses("f : type = (a: compiler.byte\n", errors));
-	assert(!parses("f : type = (a: compiler.byte) compiler.byte\n", errors)); // no `->`
-	assert(!parses("f : type = (a: compiler.byte) ->\n", errors));            // no return type
+	// `(a: compiler.byte)` is now a complete function type (returning void), so
+	// this fails on the trailing `compiler.byte` having no terminator before it
+	// rather than on the missing `->`.
+	assert(!parses("f : type = (a: compiler.byte) compiler.byte\n", errors));
+	assert(!parses("f : type = (a: compiler.byte) ->\n", errors));            // `->` with no return type
 }
 
 
 // --- Calls ------------------------------------------------------------------
+
+unittest { // `flatten` and `tail` are different flags, not the same bit
+	// The C++ gave both `1 << 11`, so `tail f(x)` was indistinguishable from
+	// `flatten f(x)` and printed as both.
+	assert(Flags.Flatten != Flags.Tail);
+
+	auto r = compile("%0 : compiler.byte = 1\n%1 : compiler.byte = tail compiler.emit(%0)\n");
+	scope(exit) freeModule(r.mod);
+	immutable call = find(r.mod, r.root, "%1");
+	assert(flagsSet(r.mod, call, Flags.Tail));
+	assert(!flagsSet(r.mod, call, Flags.Flatten));
+}
 
 unittest { // each of the three call modifiers sets its flag
 	static immutable string[3] keywords = ["inline", "flatten", "tail"];

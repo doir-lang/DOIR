@@ -12,3 +12,6 @@ res.bin
 /doir
 /*.a
 /dub.selections.json
+
+# Built by `typst compile doir.spec.typ`
+*.pdf

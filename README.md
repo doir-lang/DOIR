@@ -1,5 +1,22 @@
 # DOIR3
 
+## The specification
+
+[`doir.spec.typ`](doir.spec.typ) is the language reference, built with
+[Typst](https://typst.app):
+
+```sh
+typst compile doir.spec.typ      # -> doir.spec.pdf
+typst watch doir.spec.typ        # ... while editing
+```
+
+Part I states the language -- the seven assignment forms, types, comptime,
+deduction, modules and the PEG grammar. Part II gives its formal semantics as
+inference rules over the entity store, each marked with whether the compiler
+implements it, and closes with the divergences between the spec, the standard
+interface and this implementation. `standard.doir` carries the part of it you
+need in order to read `standard.doir` as a header comment.
+
 ## Style
 
 Types are plain data; everything that operates on them is a module-level free

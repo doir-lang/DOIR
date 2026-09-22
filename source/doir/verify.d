@@ -179,7 +179,17 @@ bool structure(ref Manager diags, ref Module mod, EntityId subtree, bool topLeve
 				// Do Nothing we are good :)
 				break;
 			case 2:
-				if (!((functionDef && block) || (functionDefLookup && block)))
+				// A function with a body carries both its return type and that
+				// body. A function *declared* but not defined - `f : some_t`
+				// where `some_t` is a function type - carries the return type
+				// `sema.materializeFunctionTypesAndParameters` copied off its
+				// type, plus the `Valueless` the parser set for the missing
+				// `=`. Both facts are true of it, and every declaration in
+				// `standard.doir` has that shape, so it is not an error. (The
+				// builtin block reaches the same state without the flag, via
+				// `attachValuelessFunction`, which is why this went unnoticed.)
+				if (!((functionDef && block) || (functionDefLookup && block)
+					|| ((functionDef || functionDefLookup) && valueless)))
 					panic("TODO: Only one value is allowed error");
 				break;
 			default:

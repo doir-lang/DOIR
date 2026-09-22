@@ -1,207 +1,384 @@
-// Assumes the assembler provides types: u1, u8, pointer_sized
+// The standard interface.
+//
+// Assumes the assembler layer provides: u1, u8, pointer_sized
 // Likely will get: u1, u/i8, u/i16, u/i32, u/i64, f32, f64 (from a standard amd64 processor)
+//
+// ---------------------------------------------------------------------------
+// The semantics this file is written against
+// ---------------------------------------------------------------------------
+// The full account lives at the bottom of `doir.spec.typ`; what follows is the
+// part you need in order to read this file. Rule names below (M-Flag, R-Unqual,
+// ...) are that document's.
+//
+// A module is an entity-component store, not a syntax tree. Every line binds
+// one virtual register, assigned exactly once (SSA) - which is why there is no
+// `const`, why only pointers can be marked immutable, and why naming a register
+// is not copying it (V-NoImplicitCopy: `x : T = y` is an error, you must call
+// `copy` or `move`; `x : alias = y` is how you make a second name).
+//
+// Modifier functions MUTATE THEIR ARGUMENT IN PLACE and collapse into an alias
+// to it (M-Flag). So the idiom throughout this file is: declare the type once
+// under its real name, then modify it in place on the following line.
+//
+//     some_t : type = (a: T) -> U      // declare
+//     _ : type = comptime(some_t)      // modify in place; `_` discards the alias
+//
+// Consequences worth keeping in mind while editing:
+//   P1  Modifiers are idempotent - flags are a set, applying twice is applying once.
+//   P2  Their effect runs from where they are written, not from the enclosing
+//       block: packing a type here changes every use BELOW this line and leaves
+//       the ones above it alone. Hence the declare-then-modify-next-line idiom -
+//       it closes the window in which the unmodified form is visible.
+//   P3  Modifiers act THROUGH aliases. `pack(byte)` packs `u8` itself, and so
+//       changes `index`, `byte_pointer`, and everything else reached through it.
+//       `unique` is the sole exception - see its declaration below.
+//   P4  Flag modifiers commute; layout modifiers (`pack`, `union`) do not, so
+//       lexical order decides between them (C-Order).
+//
+// Execution runs top to bottom. Name lookup does not care (R-Order below), but
+// everything that edits the store does: modifiers, and extending an overload
+// set, apply at their own lexical position.
+//
+// Name resolution (R-Unqual/R-Qual): a bare name is looked up in the enclosing
+// block, then its parent, out to the root - declarations within a block are
+// mutually visible regardless of order (R-Order), which is what lets a type be
+// named before the line that declares it. A dotted path walks the scope chain
+// for its FIRST segment only; everything after it is looked up exactly, in that
+// namespace, with no fallback. That is why `meta` below must spell out
+// `std.types.comptime`: inside `meta`, a bare `types.` finds `meta.types`.
+//
+// `export` marks what survives an `import` (D-Export). It does not affect
+// lookup within this module, where everything is visible to everything.
 
-type : namespace = {
-	set_attribute_id_t_nocomp : type = (T: type, attribute_id: index) -> type
-	set_attribute_id_t : type = comptime(set_attribute_id_t_nocomp)
-	export set_attribute_id : set_attribute_id_t
+std : namespace = {
+	// -----------------------------------------------------------------------
+	// Operations on types
+	// -----------------------------------------------------------------------
+	types : namespace = {
+		// A modifier edits the type it is handed and yields an alias to it
+		// (M-Flag). Never marked `pure` (P5): the effect on the store is the
+		// whole point, so eliding or reordering a call is not sound.
+		export modifier_function : type = (in: type) -> type
+		_ : type = comptime(modifier_function)
 
-	modifier_function_nocomp : type = (in: type) -> type
-	modifier_function : type = comptime(modifier_function_nocomp) // NOTE: If lookup can be out of order then this works...
-	export comptime : modifier_function // Marks the provided type as being a compile time constant
+		// A constructor ALLOCATES a new type and leaves its argument untouched
+		// (M-Ctor). `pointer` and `array` cannot be modifiers: a type cannot be
+		// edited into a pointer to itself.
+		export constructor_function : type = (in: type) -> type
+		_ : type = comptime(constructor_function)
 
-	array_t_nocomp : type = (in: type, size: pointer_sized) -> entity
-	array_t : type = type.comptime(array_t_nocomp)
-	export array : array_t // Adds a sized pointer (array) to the given type
-	export pointer : modifier_function // Adds a pointer to the given type
-	export union : modifier_function // Converts a C "struct" to a C "union"
-	export pack : modifier_function // Reorganizes the type to be as tightly packed as possible
-	export unique : modifier_function // Forces a type alias to be a completely unique type
+		set_attribute_id_t : type = (T: type, attribute_id: index) -> type
+		_ : type = comptime(set_attribute_id_t)
+		export set_attribute_id : set_attribute_id_t // Records which component slot stores this type
 
-	size_function_nocomp : type = (in: type) -> pointer_sized
-	size_function : type = comptime(size_function_nocomp)
-	export size_bits : size_function
-	export align_bits : size_function
+		array_t : type = (in: type, size: pointer_sized) -> type
+		_ : type = comptime(array_t)
+		export array : array_t // A pointer that knows its length
 
-	export self : type = byte // Stores the value of whatever type we are currently inside of
-}
-
-export byte : alias = u8
-export byte_pointer : type = type.pointer(byte)
-export null_terminated_byte_pointer : alias = byte_pointer // NOTE: Indicates that the function expects a null terminated `c-string`
-export index : alias = pointer_sized
-
-import_t_nocomp : type = (path: null_terminated_byte_pointer)
-import_t : type = type.comptime(import_t_nocomp)
-export import : import_t
-
-meta : namespace = {
-	export entity : alias = compiler.pointer_sized
-
-	reflect_t_nocomp : (T: deduced type, register: T) -> entity
-	reflect_t : type = type.comptime(reflect_t_nocomp)
-	export reflect : reflect_t
-	unreflect_t_nocomp : (e: entity) -> _
-	unreflect_t : type = type.comptime(unreflect_t_nocomp)
-	export unreflect : unreflect_t
-	unreflect_alias_t_nocomp : (e: entity) -> alias
-	unreflect_alias_t : type = type.comptime(unreflect_t_nocomp)
-	export unreflect_alias : unreflect_alias_t
-
-	// reflect versions of the functions in top level type namespace
-	type : namespace = {
-		is_t_nocomp : type = (e: entity) -> u1
-		is_t : type.comptime(is_t_nocomp)
-		is : is_t
-
-		set_attribute_id_t_nocomp : type = (e: entity, attribute_id: index) -> entity
-		set_attribute_id_t : type = type.comptime(set_attribute_id_t_nocomp)
-		export set_attribute_id : set_attribute_id_t
-
-		modifier_function_nocomp : type = (e: entity) -> entity
-		modifier_function : type = type.comptime(modifier_function_nocomp) // TODO: Need a way to specify global type not meta.type
-		export comptime : modifier_function // Marks the provided type as being a compile time constant
-
-		array_t_nocomp : type = (e: entity, size: pointer_sized) -> entity
-		array_t : type = type.comptime(array_t_nocomp)
-		export array : array_t // Adds a sized pointer (array) to the given type
-		export pointer : modifier_function // Adds a pointer to the given type
-		export union : modifier_function // Converts a C "struct" to a C "union"
+		export comptime : modifier_function // Marks the type as compile time known
+		export pointer : constructor_function // A new pointer-to-`in` type
+		export union : modifier_function // Makes a type's fields overlap
 		export pack : modifier_function // Reorganizes the type to be as tightly packed as possible
-		export unique : modifier_function // Forces a type alias to be a completely unique type
 
-		size_function_nocomp : type = (e: entity) -> pointer_sized
-		size_function : type = comptime(size_function_nocomp)
+		// The one modifier that does NOT act through aliases (M-Unique, P3). It
+		// edits the entity you NAME: severs its alias link and gives it a type
+		// definition of its own - same layout, fresh discriminator - so it stops
+		// implicitly converting to what it used to be. Following aliases here
+		// would modify the target and invert the purpose:
+		//
+		//     my_handle : alias = index
+		//     _ : type = unique(my_handle)   // my_handle is now its own type
+		//                                    // `index` is untouched
+		export unique : modifier_function
+
+		size_function : type = (in: type) -> pointer_sized
+		_ : type = comptime(size_function)
 		export size_bits : size_function
 		export align_bits : size_function
+
+		// Placeholder. `self` is meant to denote the type currently being
+		// constructed (T-Self), which no enclosing-scope rule reaches - inside a
+		// type-returning function there is no enclosing type definition yet.
+		// Until that is resolved it is an alias, so that it at least names a type.
+		export self : alias = byte
 	}
 
-	source_location : namespace = {
-		%0 : type = {
-			file : null_terminated_byte_pointer
-			start_byte : index
-			end_byte : index
+	export byte : alias = u8
+	export byte_pointer : type = types.pointer(byte)
+	export null_terminated_byte_pointer : alias = byte_pointer // NOTE: Indicates that the function expects a null terminated `c-string`
+	// NOTE: an alias is checked nowhere (A-Transparent). To make the above a
+	// distinction the compiler enforces, follow it with `types.unique`.
+	export index : alias = pointer_sized
+
+	// Returns the number of symbols brought in. Placement matters (I-Import):
+	// an import never overwrites an existing symbol, so importing at the end of
+	// a file lets local declarations win silently, while importing at the top
+	// makes a conflict an error.
+	import_t : type = (path: null_terminated_byte_pointer) -> index
+	_ : type = types.comptime(import_t)
+	export import : import_t
+
+	// -----------------------------------------------------------------------
+	// Reflection: the entity store, exposed to the program
+	// -----------------------------------------------------------------------
+	// Everything here is comptime, so this is staging rather than runtime
+	// reflection - nothing below survives into the emitted binary.
+	//
+	// NOTE ON QUALIFICATION: every `comptime` in this namespace must be spelled
+	// `std.types.comptime`. By R-Qual a dotted path resolves its first segment
+	// outward through the scope chain and everything after it exactly - so a
+	// bare `types.` written anywhere inside `meta` finds `meta.types` below, whose
+	// `comptime` takes an `entity`, not a `type`.
+	meta : namespace = {
+		export entity : alias = compiler.pointer_sized
+
+		reflect_t : type = (T: deduced type, register: T) -> entity
+		_ : type = std.types.comptime(reflect_t)
+		export reflect : reflect_t // A value -> the entity holding it
+
+		unreflect_t : type = (e: entity) -> _
+		_ : type = std.types.comptime(unreflect_t)
+		export unreflect : unreflect_t // An entity -> its value
+
+		// As `unreflect`, but yields a NAME for the entity rather than its
+		// value, so nothing is copied.
+		unreflect_alias_t : type = (e: entity) -> _
+		_ : type = std.types.comptime(unreflect_alias_t)
+		export unreflect_alias : unreflect_alias_t
+
+		// The operations of the top level `type` namespace, over `entity`
+		// instead of `type` - the same work, unchecked. These must agree with
+		// their checked counterparts (R-Square):
+		//
+		//     meta.types.M(reflect(T))  =  reflect(std.types.M(T))
+		//
+		// Under in-place modification that holds trivially: both sides edit the
+		// same entity, so there is nothing for the two paths to disagree about.
+		types : namespace = {
+			is_t : type = (e: entity) -> u1
+			_ : type = std.types.comptime(is_t)
+			export is : is_t // Whether the entity is a type at all
+
+			set_attribute_id_t : type = (e: entity, attribute_id: index) -> entity
+			_ : type = std.types.comptime(set_attribute_id_t)
+			export set_attribute_id : set_attribute_id_t
+
+			export modifier_function : type = (e: entity) -> entity
+			_ : type = std.types.comptime(modifier_function)
+
+			export constructor_function : type = (e: entity) -> entity
+			_ : type = std.types.comptime(constructor_function)
+
+			array_t : type = (e: entity, size: pointer_sized) -> entity
+			_ : type = std.types.comptime(array_t)
+			export array : array_t
+
+			export comptime : modifier_function
+			export pointer : constructor_function
+			export union : modifier_function
+			export pack : modifier_function
+			export unique : modifier_function
+
+			size_function : type = (e: entity) -> pointer_sized
+			_ : type = std.types.comptime(size_function)
+			export size_bits : size_function
+			export align_bits : size_function
 		}
-		%1 : index = 1 // This needs to stay in sync with source_location in core compiler!
-		export location : type = meta.type.set_attribute_id(%0, %1)
 
-		get_t_nocomp : type = (e: entity) -> location
-		get_t : type = type.comptime(get_t_nocomp)
-		export get : get_t
-		export get_start_line : (location: location) -> index
-		export get_start_column : (location: location) -> index
-		export get_end_line : (location: location) -> index
-		export get_end_column : (location: location) -> index
+		source_location : namespace = {
+			// Declared once under its real name, then pinned to a component
+			// slot in place (M-Attr) - the in-place idiom, and the reason this
+			// does not need a second `%0`-style name for the unpinned version.
+			export location : type = {
+				file : null_terminated_byte_pointer
+				start_byte : index
+				end_byte : index
+			}
+			core_attribute_id : index = 1 // This needs to stay in sync with source_location in core compiler!
+			_ : type = std.types.set_attribute_id(location, core_attribute_id)
+
+			get_t : type = (e: entity) -> location
+			_ : type = std.types.comptime(get_t)
+			export get : get_t
+
+			export get_start_line : (loc: location) -> index
+			export get_start_column : (loc: location) -> index
+			export get_end_line : (loc: location) -> index
+			export get_end_column : (loc: location) -> index
+		}
 	}
+
+	// -----------------------------------------------------------------------
+	// Operations on functions
+	// -----------------------------------------------------------------------
+	function : namespace = {
+		// NOTE: Every function in this namespace will error if not provided a function or function type
+		export forcibly_inline : types.modifier_function // Body substituted at the call site, in a new block
+		export always_flatten : types.modifier_function // Inlined WITHOUT that new block
+
+		// A modifier on the set (M-Flag): edits `overload_set` in place and
+		// returns an alias to it, so a set is an extension point later code
+		// grows rather than a value that gets rebuilt. Return type is the
+		// (flattened) union of Tset and Tnew. A call against the set picks the
+		// unique member whose parameters match; ambiguity or no match is an
+		// error (T-Overload).
+		add_overload_t : type = (Tset : deduced type, Tnew : deduced type, overload_set: Tset, function: Tnew) -> _
+		_ : type = types.comptime(add_overload_t)
+		export add_overload : add_overload_t
+
+		abi_rename_t : type = (T: deduced type, function: T, new_name: null_terminated_byte_pointer) -> T
+		_ : type = types.comptime(abi_rename_t)
+		export abi_rename : abi_rename_t
+	}
+
+	diagnostic : namespace = {
+		// Exported individually rather than by exporting the namespace: the rule
+		// that an exported namespace exports its contents (D-ExportNS) is not
+		// implemented, so relying on it would strip these names.
+		export info : (message: null_terminated_byte_pointer, help: null_terminated_byte_pointer, location: meta.source_location.location)
+		export warning : (message: null_terminated_byte_pointer, help: null_terminated_byte_pointer, location: meta.source_location.location)
+		export error : (message: null_terminated_byte_pointer, help: null_terminated_byte_pointer, location: meta.source_location.location)
+	}
+
+	attribute : namespace = {
+		get_id_of_type_t : type = (T: type) -> index
+		_ : type = types.comptime(get_id_of_type_t)
+		get_id_of_type : get_id_of_type_t
+
+		get_id_of_name_t : type = (name: null_terminated_byte_pointer) -> index
+		_ : type = types.comptime(get_id_of_name_t)
+		get_id_of_name : get_id_of_name_t
+
+		export get_id : _ = function.add_overload(get_id_of_type, get_id_of_name)
+
+		// Attaching an attribute to a value is attaching a component to an
+		// entity - the store, spelled in the source language.
+		attribute_function_t : type = (T: deduced type, register: T, attribute_id: index) -> _
+		_ : type = types.comptime(attribute_function_t)
+		export get : attribute_function_t
+		export add : attribute_function_t
+		export get_or_add : attribute_function_t
+	}
+
+	// -----------------------------------------------------------------------
+	// Values
+	// -----------------------------------------------------------------------
+	// Both type parameters are solved, not supplied (D-Deduce): `Tin` forwards
+	// from `in`, `Tout` backwards from the declared type of the register being
+	// assigned. So a cast is written `cast(v)`, and what it casts to is whatever
+	// the left hand side says.
+	export cast : (Tin: deduced type, in: Tin, Tout: deduced type) -> Tout
+
+	// Registers are SSA, so there is no assignment - only a new register. A bare
+	// `x : T = y` is rejected (V-NoImplicitCopy); say which one you meant.
+	//
+	// Both are OVERLOAD SETS (T-Overload), not single functions: these members
+	// are the defaults every POD type uses, and a type that owns something
+	// attaches its own with `function.add_overload`, which edits the set in
+	// place. This is where a copy constructor lives. By C-Order the set grows
+	// from the line the overload is added, so calls above it resolve to the
+	// default and calls below it to the new member.
+	export copy : (T: type, v: T) -> T // Copies v into a new register
+	export move : (T: type, v: T) -> T = {
+		// `move` invalidates `v` (V-Copy / V-Move). Not enforced yet - that
+		// needs a liveness analysis - and not observable yet either, because
+		// every type is POD, which makes this body indistinguishable from
+		// `copy`. Both change together the first time a type owns something.
+		%0 : T = inline copy(T, v)
+		_ : _  = return(%0)
+	}
+
+	// -----------------------------------------------------------------------
+	// Control flow
+	// -----------------------------------------------------------------------
+	// A `block` is a comptime value holding unexecuted code, and by WF-Arg it
+	// must be named before it can be passed - arguments are register names, so
+	// there are no inline block literals and no subexpressions anywhere.
+	export execute : (body: block) -> _ // returns type yielded by `body`
+	export defer : (body: block) // executes `body` at each exit point from the current block
+
+	// Returns pointer(meta.types.get(execute(body))). A pointer because the body
+	// may never run, so there may be no value: null encodes that.
+	export while : (condition : u1, body: block) -> _
+
+	// Returns union(type{a: meta.types.get(execute(then)) b: meta.types.get(execute(else))}).
+	// The union is UNTAGGED - nothing records which branch ran - so either both
+	// branches yield the same type or the result is discarded.
+	export if : (condition: u1, then: block, else: block) -> _
+
+	// Every function must end in one of these (WF-Term). Blocks yield, functions
+	// return, and `halt` ends the program.
+	export return : (T: deduced type, value: T) -> T
+	export yield : (T: deduced type, value: T) -> T
+
+	// -----------------------------------------------------------------------
+	// Mizu Core
+	// -----------------------------------------------------------------------
+	export label : (name: null_terminated_byte_pointer)
+	export find_label : (name: null_terminated_byte_pointer) -> byte_pointer // returns address of label
+
+	export halt : ()
+
+	export debug_print : (value : index)
+	export debug_print_binary : (value : index)
+
+	// load_immediate handled by assembly layer
+	// convert_* handled by cast
+
+	export load : (T : deduced type, stack_offset : index) -> T
+	export store : (T : deduced type, value : T, stack_offset : index) -> T
+
+	pointer : namespace = {
+		export load : (Tptr : deduced type, Tvalue : deduced type, pointer : Tptr) -> Tvalue // NOTE: Errors if Tptr != pointer(Tvalue)
+		export store : (Tptr : deduced type, Tvalue : deduced type, pointer : Tptr, value : Tvalue) -> Tvalue
+
+		// Registers are already immutable (SSA); memory reached through a
+		// pointer is the only thing that is not, so this is the only place a
+		// mutability marker means anything.
+		export immutable : types.modifier_function
+	}
+
+	stack : namespace = {
+		export push : (amount : index) -> byte_pointer
+		export pop : (amount : index) -> byte_pointer
+		export allocate : (T : type) -> byte_pointer
+		export bottom : () -> byte_pointer
+	}
+
+	// Both return a pointer to the next instruction, which is how a call gets
+	// its return address without a separate instruction for it.
+	export jump_relative : (instructions_to_jump: index) -> byte_pointer
+	export jump_to : (target: byte_pointer) -> byte_pointer
+
+	export branch_relative : (condition: u1, instructions_to_jump: index) -> byte_pointer
+	export branch_to : (condition: u1, target: byte_pointer) -> byte_pointer
+
+	// Four comparisons, not six: the set is closed under swapping operands, so
+	// `a > b` is is_less(b, a) and `a <= b` is is_greater_equal(b, a).
+	export is_equal : (T: deduced type, a: T, b: T) -> u1
+	export is_not_equal : (T: deduced type, a: T, b: T) -> u1
+	export is_less : (T: deduced type, a: T, b: T) -> u1
+	export is_greater_equal : (T: deduced type, a: T, b: T) -> u1
+
+	export add : (T: deduced type, a: T, b: T) -> T
+	export subtract : (T: deduced type, a: T, b: T) -> T
+	export divide : (T: deduced type, a: T, b: T) -> T
+	export multiply : (T: deduced type, a: T, b: T) -> T
+	export modulus : (T: deduced type, a: T, b: T) -> T
+
+	export max : (T: deduced type, a: T, b: T) -> T
+	export min : (T: deduced type, a: T, b: T) -> T
+	export sqrt : (T: deduced type, v: T) -> T
+
+	export shift_left : (T: deduced type, a: T, b: T) -> T
+	export shift_right : (T: deduced type, a: T, b: T) -> T
+	export bitwise_xor : (T: deduced type, a: T, b: T) -> T
+	export bitwise_or : (T: deduced type, a: T, b: T) -> T
+	export bitwise_and : (T: deduced type, a: T, b: T) -> T
+	// No bitwise_not: it is bitwise_xor against an all-ones register.
+
+	export is_negative : (T: deduced type, v: T) -> u1
+	export is_positive : (T: deduced type, v: T) -> u1
+	export is_infinity : (T: deduced type, v: T) -> u1
+	export is_nan : (T: deduced type, v: T) -> u1
 }
-
-function : namespace = {
-	// NOTE: Every function in this namespace will error if not provided a function or function type
-	export forcibly_inline : type.modifier_function
-	export always_flatten : type.modifier_function
-
-	add_overload_t_nocomp : type = (Tset : deduced type, Tnew : deduced type, overload_set: Tset, function: Tnew) -> _
-	add_overload_t : type = type.comptime(function.add_overload_t_nocomp)
-	export add_overload : function.add_overload_t // Return type is a (flattened) union of Tset and Tnew
-
-	abi_rename_t_nocomp : type = (T: deduced type, function: T, new_name: null_terminated_byte_pointer) -> T
-	abi_rename_t : type = type.comptime(function.abi_rename_t_nocomp)
-	export abi_rename : function.abi_rename_t
-}
-
-export diagnostic : namespace = { // NOTE: Exporting a namespace exports everything inside it
-	info : (message: null_terminated_byte_pointer, help: null_terminated_byte_pointer, location: source_location)
-	warning : (message: null_terminated_byte_pointer, help: null_terminated_byte_pointer, location: source_location)
-	error : (message: null_terminated_byte_pointer, help: null_terminated_byte_pointer, location: source_location)
-}
-
-export cast : (Tin: deduced type, in: Tin, Tout: type) -> Tout
-
-export execute : (body: block) -> _ // returns type yielded by `body`
-export defer : (body: block) // executes `body` at each exit point from the current block
-export while : (condition : u1, body: block) -> _ // returns pointer(meta.type.get(execute(body)))
-export if : (condition: u1, then: block, else: block) -> _ // returns union(type{a: meta.type.get(execute(then)) b: meta.type.get(execute(else))})
-
-export copy : (T: type, v: T) -> T // Copies v into a new register
-export move : (T: type, v: T) -> T = {
-	%0 : T = inline copy(T, v)
-	_ : _  = return(%0)
-}
-
-attribute : namespace = {
-	%0 : type = (T: type) -> index
-	%1 : type = type.comptime(%0)
-	%2 : %1
-	%3 : type = (name: null_terminated_byte_pointer) -> index
-	%4 : type = type.comptime(%3)
-	%5 : %4
-	get_id : _ = function.add_overload(%2, %5)
-
-	attribute_function_t_nocomp : type = (T: deduced type, register: T, attribute_id: index) -> _
-	attribute_function_t : type = type.comptime(attribute_function_t_nocomp)
-	get : attribute_function_t
-	add : attribute_function_t
-	get_or_add : attribute_function_t
-}
-
-// Mizu Core
-label : (name: null_terminated_byte_pointer)
-find_label : (name: null_terminated_byte_pointer) -> byte_pointer // returns address of label
-
-halt : ()
-
-debug_print : (value : index)
-debug_print_binary : (value : index)
-
-// load_immediate handled by assembly layer
-// convert_* handled by cast
-
-load : (T : deduced type, stack_offset : index) -> T
-store : (T : deduced type, value : T, stack_offset : index) -> T
-
-pointer : namespace = {
-	load : (Tptr : deduced type, Tvalue : deduced type, pointer : Tptr) -> Tvalue // NOTE: Errors if Tptr != pointer(Tvalue)
-	store : (Tptr : deduced type, Tvalue : deduced type, pointer : Tptr, value : Tvalue) -> Tvalue
-
-	immutable : type.type_modifier_function // Marks the pointer as immutable (any stores to an immutable pointer become an error)
-}
-
-stack : namespace = {
-	push : (amount : index) -> byte_pointer
-	pop : (amount : index) -> byte_pointer
-	allocate : (T : type) -> byte_pointer
-	bottom : () -> byte_pointer
-}
-
-// Both return a pointer to the next instruction
-jump_relative : (instructions_to_jump: index) -> byte_pointer
-jump_to : (target: byte_pointer) -> byte_pointer
-
-branch_relative : (condition: u1, instructions_to_jump: index) -> byte_pointer
-branch_to : (condition: u1, target: byte_pointer) -> byte_pointer
-
-is_equal : (T: deduced type, a: T, b: T) -> u1
-is_not_equal : (T: deduced type, a: T, b: T) -> u1
-is_less : (T: deduced type, a: T, b: T) -> u1
-is_greater_equal : (T: deduced type, a: T, b: T) -> u1
-
-add : (T: deduced type, a: T, b: T) -> T
-subtract : (T: deduced type, a: T, b: T) -> T
-divide : (T: deduced type, a: T, b: T) -> T
-multiply : (T: deduced type, a: T, b: T) -> T
-modulus : (T: deduced type, a: T, b: T) -> T
-
-max : (T: deduced type, a: T, b: T) -> T
-min : (T: deduced type, a: T, b: T) -> T
-sqrt : (T: deduced type, a: T, b: T) -> T
-
-shift_left : (T: deduced type, a: T, b: T) -> T
-shift_right : (T: deduced type, a: T, b: T) -> T
-bitwise_xor : (T: deduced type, a: T, b: T) -> T
-bitwise_or : (T: deduced type, a: T, b: T) -> T
-bitwise_and : (T: deduced type, a: T, b: T) -> T
-
-is_negative : (T: deduced type, v: T) -> u1
-is_positive : (T: deduced type, v: T) -> u1
-is_infinity : (T: deduced type, v: T) -> u1
-is_nan : (T: deduced type, v: T) -> u1

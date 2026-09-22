@@ -9,7 +9,8 @@ enforested_content <- matching_braces / [^{}]
 
 deducible_type <- (<'deduced'> !UnicodeIdentifierContinue _)? Type _
 parameter <- Identifier _ ':'_ deducible_type ('='_ Constant _)?
-FunctionType <- '('_ (parameter (','_ parameter)*)? ')' _ <'->'>_ Type
+# `-> Type` is optional; omitting it means the function returns `void`.
+FunctionType <- '('_ (parameter (','_ parameter)*)? ')' (_ <'->'>_ Type)?
 Type <- FunctionType / Identifier
 
 Block <- block_start assignment* '}'
