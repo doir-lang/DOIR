@@ -105,10 +105,22 @@ private static immutable string[1] branchImmediateOps = ["branchRelativeImmediat
 ///
 /// Lines are relative to the `schedule` declaration's own indentation, and an
 /// empty one stays empty rather than picking up tabs.
-private static immutable string[20] scheduleBody = [
+private static immutable string[33] scheduleBody = [
 	"\tsequential(",
 	"\t\tdepthFirst(nameReuse),",
 	"\t\tdepthFirst(functionArity),",
+	"\t\t// The post-comptime half of the type system. Scheduled here rather",
+	"\t\t// than by the compiler so a backend can say something else: drop",
+	"\t\t// these two lines and nothing type checks, replace them and the",
+	"\t\t// rules change with the backend.",
+	"\t\t//",
+	"\t\t// `foldBaseTypes` first: S-Struct compares two types by their layout,",
+	"\t\t// and every builtin type is a `base_type` call until something folds",
+	"\t\t// it. Without this line `typeCheck` reads no layout on either side and",
+	"\t\t// so agrees with everything.",
+	"\t\tbreadthFirst(foldBaseTypes),",
+	"\t\tdepthFirst(typeCheck),",
+	"\t\tdepthFirst(computeTypeProperties),",
 	"\t\tdepthFirst(runSchedule),",
 	"\t\trunRegisteredSchedules,",
 	"",
@@ -122,6 +134,7 @@ private static immutable string[20] scheduleBody = [
 	"\t\tbreadthFirst(computeCompilerNamespace!false),",
 	"\t\tdepthFirst(materializeImmediates),",
 	"\t\tdepthFirst(materializeLabels),",
+	"\t\tsorted(monomorphizeFunctions, false),",
 	"\t\tbreadthFirst(inlineFunctions),",
 	"\t\tbreadthFirst(computeCompilerNamespace!true),",
 	"\t\tdebugPrint",
@@ -202,22 +215,22 @@ private void printName(const(char)[] name) {
 }
 
 /// The four-byte little-endian splat every immediate operand is emitted as:
-/// mask off a byte, shift, repeat. `source` is the register holding the value.
+/// truncate a byte off the bottom, shift, repeat. `source` is the register
+/// holding the value.
 private void emitImmediateSplat(const(char)* source) {
-	line("mask : compiler.pointer_sized = 0xFF");
-	tabs(); printf("lowest : compiler.byte = compiler.bitwise_and(%s, mask)\n", source);
+	tabs(); printf("lowest : compiler.byte = compiler.truncate_to_byte(%s)\n", source);
 	line("_ : compiler.byte = compiler.emit(lowest)");
 	line("%8 : compiler.pointer_sized = 8");
 	tabs(); printf("shift_8 : compiler.pointer_sized = compiler.shift_right(%s, %%8)\n", source);
-	line("low : compiler.byte = compiler.bitwise_and(shift_8, mask)");
+	line("low : compiler.byte = compiler.truncate_to_byte(shift_8)");
 	line("_ : compiler.byte = compiler.emit(low)");
 	line("%16 : compiler.pointer_sized = 16");
 	tabs(); printf("shift_16 : compiler.pointer_sized = compiler.shift_right(%s, %%16)\n", source);
-	line("high : compiler.byte = compiler.bitwise_and(shift_16, mask)");
+	line("high : compiler.byte = compiler.truncate_to_byte(shift_16)");
 	line("_ : compiler.byte = compiler.emit(high)");
 	line("%24 : compiler.pointer_sized = 24");
 	tabs(); printf("shift_24 : compiler.pointer_sized = compiler.shift_right(%s, %%24)\n", source);
-	line("highest : compiler.byte = compiler.bitwise_and(shift_24, mask)");
+	line("highest : compiler.byte = compiler.truncate_to_byte(shift_24)");
 	line("_ : compiler.byte = compiler.emit(highest)");
 }
 
@@ -225,6 +238,7 @@ private void emitImmediateSplat(const(char)* source) {
 private void emitInstruction(const(char)[] name) {
 	if (name == "findLabel") {
 		tabs(); printName(name); printf("_t : type = (label: compiler.assembler.register) -> u64\n");
+		tabs(); printf("_ : type = compiler.never_monomorphize("); printName(name); printf("_t)\n");
 		tabs(); printf("_ : type = compiler.always_inline("); printName(name); printf("_t)\n");
 		tabs(); printName(name); printf(" : "); printName(name); printf("_t = {\n");
 		++indent;
@@ -296,12 +310,11 @@ private void emitInstruction(const(char)[] name) {
 		// Two bytes rather than `emitImmediateSplat`'s four: an instruction is
 		// a fixed 16 bytes, and this one already spends two of them on a second
 		// register.
-		line("mask : compiler.pointer_sized = 0xFF");
-		line("low : compiler.byte = compiler.bitwise_and(immediate, mask)");
+		line("low : compiler.byte = compiler.truncate_to_byte(immediate)");
 		line("_ : compiler.byte = compiler.emit(low)");
 		line("%8 : compiler.pointer_sized = 8");
 		line("shift_8 : compiler.pointer_sized = compiler.shift_right(immediate, %8)");
-		line("high : compiler.byte = compiler.bitwise_and(shift_8, mask)");
+		line("high : compiler.byte = compiler.truncate_to_byte(shift_8)");
 		line("_ : compiler.byte = compiler.emit(high)");
 		emitU16(0);
 		line("_ : u64 = compiler.indicate_return(u64)");
@@ -373,28 +386,41 @@ extern(C) int main(int argc, char** argv) @trusted {
 	line("_ : type = compiler.always_inline(one_parameters_t)");
 	line("two_parameters_t : type = (a : u64, b : u64) -> u64");
 	line("_ : type = compiler.always_inline(two_parameters_t)");
+	line("// These three take a comptime parameter but have nothing to gain from a body");
+	line("// of their own for each value of it: every copy would emit the same");
+	line("// instruction with one immediate changed, and there are 2^64 immediates and");
+	line("// 256 registers. `always_inline` already gives the call site the copy it");
+	line("// wants; monomorphizing first would only make a declaration to inline from.");
 	line("immediate_t : type = (immediate: comptime.u64) -> u64");
 	line("_ : type = compiler.always_inline(immediate_t)");
+	line("_ : type = compiler.never_monomorphize(immediate_t)");
 	line("branch_immediate_t : type = (a: u64, immediate: comptime.u64) -> u64");
 	line("_ : type = compiler.always_inline(branch_immediate_t)");
+	line("_ : type = compiler.never_monomorphize(branch_immediate_t)");
 	blank();
 
+	line("// The block is comptime, but it is not decoration: `execute` and");
+	line("// `execute_if` hand it to the VM's own instruction, so it has to stay an");
+	line("// argument of the call. A comptime parameter that the callee *passes on* is");
+	line("// exactly the case for this marker.");
 	line("execute_t : type = (blk: block) -> u64");
 	line("_ : type = compiler.always_inline(execute_t)");
+	line("_ : type = compiler.never_monomorphize(execute_t)");
 	line("execute_if_t : type = (blk: block, condition: u64) -> u64");
 	line("_ : type = compiler.always_inline(execute_if_t)");
+	line("_ : type = compiler.never_monomorphize(execute_if_t)");
 	blank();
 
 	line("emit_register_t : type = (r : compiler.assembler.register) -> compiler.assembler.register");
 	line("_ : type = compiler.always_inline(emit_register_t)");
+	line("_ : type = compiler.never_monomorphize(emit_register_t)");
 	line("emit_register : emit_register_t = {");
 	++indent;
 	line("%8 : compiler.pointer_sized = 8");
-	line("mask : compiler.pointer_sized = 0xFF");
 	line("shift : compiler.pointer_sized = compiler.shift_right(r, %8)");
-	line("low : compiler.byte = compiler.bitwise_and(r, mask)");
+	line("low : compiler.byte = compiler.truncate_to_byte(r)");
 	line("_ : compiler.byte = compiler.emit(low)");
-	line("high : compiler.byte = compiler.bitwise_and(shift, mask)");
+	line("high : compiler.byte = compiler.truncate_to_byte(shift)");
 	line("_ : compiler.byte = compiler.emit(high)");
 	line("_ : compiler.assembler.register = compiler.indicate_return(compiler.assembler.register)");
 	--indent;
@@ -402,19 +428,29 @@ extern(C) int main(int argc, char** argv) @trusted {
 	blank();
 	blank();
 
-	line("load_immediate : (T : type, v : T) -> T = {}");
-	line("load_upper_immediate : (T : type, v : T) -> T = {}");
+	line("// Named rather than written inline at each declaration, so that");
+	line("// `never_monomorphize` has something to be applied to: `T` is a comptime");
+	line("// parameter, and every copy of these would emit the same instruction with");
+	line("// one immediate changed.");
+	line("load_immediate_t : type = (T : type, v : T) -> T");
+	line("_ : type = compiler.never_monomorphize(load_immediate_t)");
+	line("immediate_op_t : type = (T : type) -> void");
+	line("_ : type = compiler.never_monomorphize(immediate_op_t)");
+	blank();
+
+	line("load_immediate : load_immediate_t = {}");
+	line("load_upper_immediate : load_immediate_t = {}");
 	line("label : () -> compiler.assembler.register = {}");
 	blank();
 
-	line("load_immediate_op : (T : type) -> void = {");
+	line("load_immediate_op : immediate_op_t = {");
 	++indent;
 	emitOpcodeId("loadImmediate");
 	line("_ : T = compiler.indicate_return(T)");
 	--indent;
 	line("}");
 
-	line("load_upper_immediate_op : (T : type) -> void = {");
+	line("load_upper_immediate_op : immediate_op_t = {");
 	++indent;
 	emitOpcodeId("loadUpperImmediate");
 	line("_ : T = compiler.indicate_return(T)");

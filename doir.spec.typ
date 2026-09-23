@@ -336,7 +336,7 @@ export print : namespace = {
 
 DOIR also supports changing to another available language. That language is
 parsed inline, contributing its IR to that of the surrounding code -- so there
-is no boundary object and no marshalling, just more entities in the same module.
+is no boundary object and no marshaling, just more entities in the same module.
 
 ```doir
 language "C" {   // assuming a C language doir implementation can be found
@@ -360,7 +360,7 @@ change_language <- 'language'_ '"' < StringChar* > '"'_ matching_braces _
 matching_braces <- '{' enforested_content* '}'
 enforested_content <- matching_braces / [^{}]
 
-deducible_type <- ('deduced'_)? Type _
+deducible_type <- ('deduced'_ 'type'_) / (Type _)
 parameter <- Identifier _ ':'_ deducible_type ('='_ Constant _)?
 # `-> Type` is optional; omitting it means the function returns `void`.
 FunctionType <- '('_ (parameter (','_ parameter)*)? ')' (_ <'->'>_ Type)?
@@ -607,24 +607,70 @@ $B_(i+1) = "Parent"(B_i)$, terminating at the root.
   happens to carry it, and not the name it was declared under.
 ]
 
-#rule("A-Ident", "The compiler compares entities instead", "broke",
-  $ "as implemented:" quad T_1 equiv T_2 space <==> space alpha(T_1) = alpha(T_2) $,
-  kind: "bad",
-)[
-  The compiler compares types by entity, and every `compiler.base_type` call
-  draws a fresh discriminator from a per-$⟨"size", "alignment"⟩$ counter, so two
-  independently declared 64-bit types come out *distinct* -- precisely what
-  S-Struct forbids. *This is a defect, not a design alternative:* the `unique`
-  field is doing nominal work when it exists to be the opt-out from structural
-  comparison.
+#note("The kinds are not structural; `void` is")[
+  `type` and `block` are not value types -- one is the meta-language's types,
+  the other its quoted syntax -- so there is no layout for S-Struct to compare
+  them by, and under the rule alone they would be each other, and every empty
+  aggregate a program declares would be both. They are therefore given
+  *reserved* discriminators, which is M-Unique used on the compiler's own behalf
+  rather than a program's.
 
-  The fix has two halves. `nextUnique` must stop handing out a discriminator per
-  `base_type` call and leave it $0$, reserving non-zero values for `type.unique`
-  (which is how M-Unique is already written); and type comparison must compare
-  $⟨"size", "alignment", "unique"⟩$ rather than $alpha$-equality of entities.
-  Until then `equiv` is strictly finer than $tilde.equiv$, so every type is its
-  own -- which no program notices yet only because nothing implements implicit
-  conversion either.
+  `void` is deliberately left structural. It is a value with no bits rather than
+  a non-value, so a function returning `void` and one returning an empty
+  aggregate return the same thing, and saying so is what S-Struct is for.
+
+  `type` and `deduced_type` share their discriminator, so they agree with each
+  other and with nothing else. That is the one pairing the standard interface
+  needs: a `deduced` parameter *is* a `type` parameter solved by the call site
+  (D-Deduce), so an elaborated call hands it an ordinary type -- and inside a
+  deduced function, `T` itself is a `type` that may be passed on. Reserving from
+  one leaves $0$ meaning "did not ask", which is what keeps every
+  `compiler.base_type` structural.
+]
+
+#rule("S-Assign", "A register is what was assigned to it", "impl",
+  $ (e tack.r f ⇓ phi quad "ret"(phi, c) = rho quad "TypeOf"(c) = tau)
+   / (⟨c : tau = f(...)⟩ "well-typed" <==> rho tilde.equiv tau) $,
+)[
+  By SSA a declaration *is* the register a call's result lands in, so what it
+  declares has to be what the call hands back -- compared by S-Struct, like any
+  other pair of types. $"ret"(phi, c)$ is the return type read *at the call
+  site*, so a `-> T` means the argument in `T`'s position rather than the
+  parameter declaration every call through $phi$ shares (D-Deduce).
+
+  Nothing used to perform this comparison, and each half had a reason not to:
+  `sema.deduceTypes` reads a return type only to *fill* a `_`, and
+  `canonicalize.materializeFunctionType` copies one onto a call site only when
+  there is none there. An explicit annotation therefore reached the backend
+  unexamined, and a wrong one silently retyped the register --
+  `_ : void = mizu.halt()` against `halt : () -> u64` compiled clean.
+  `sema.typeCheck` now performs it, next to the argument comparison it is the
+  other half of.
+]
+
+#rule("A-Ident", "Comparison reads the layout, not the entity", "impl",
+  $ T_1 equiv T_2 space <==> space ⟨"size", "align", "unique"⟩(T_1) = ⟨"size", "align", "unique"⟩(T_2) $,
+)[
+  This was the defect the section was written around: the compiler compared
+  types by entity, and every `compiler.base_type` call drew a fresh
+  discriminator from a per-$⟨"size", "alignment"⟩$ counter, so two independently
+  declared 64-bit types came out *distinct* -- the `unique` field doing nominal
+  work when it exists to be the opt-out from structural comparison.
+
+  Both halves are now done. `nextUnique` returns $0$, reserving non-zero for
+  `type.unique` and the kinds (@identity), and `sema.typesAgree` compares the
+  triple rather than $alpha$-equality. What is left of the gap is the other
+  half of S-Struct: two types of one layout *agree*, but nothing yet performs
+  the implicit conversion the rule also promises, which is invisible only for
+  as long as agreement is all anything asks for.
+
+  Comparison is one-sided about ignorance: a type it cannot read -- an unfolded
+  `base_type` call, a function type, an unsolved variable -- is reported as
+  agreeing. That is deliberate, since the other direction turns every gap
+  elsewhere in the compiler into a diagnostic against the user's program, but it
+  means a check is only as strong as what has been folded before it runs.
+  `opt.foldBaseTypes` is scheduled ahead of `sema.typeCheck` for exactly that
+  reason.
 ]
 
 #rule("A-Transparent", "Aliases are not objects", "impl",
@@ -672,6 +718,8 @@ a name for the type it just edited.
     [`type.union`], [$Phi := Phi union {"Union"}$ -- the aggregate's fields overlap], [#status("spec")],
     [`type.pack`], [Recomputes size/alignment to the tightest layout], [#status("spec")],
     [`function.forcibly_inline`], [$Phi := Phi union {"Inline"}$], [#status("impl")],
+    [`never_monomorphize`], [$Phi := Phi union {"NeverMonomorphize"}$ -- calls through this
+     function type are not specialized], [#status("impl")],
     [`function.always_flatten`], [$Phi := Phi union {"Flatten"}$], [#status("spec")],
     [`pointer.immutable`], [$Phi := Phi union {"Constant"}$ -- stores through it become errors], [#status("spec")],
     [`function.abi_rename`], [Rewrites the emitted symbol name], [#status("spec")],
@@ -710,18 +758,48 @@ a name for the type it just edited.
   generative reading would produce two distinct types.
 ]
 
-#rule("P2", "Modifiers take effect from where they are written", "impl",
-  $ "after" ⟨c : "type" = mu(a)⟩ "at lexical position" k, quad f_mu in Phi(t)
-   "for every reference to" t "at a position" > k $,
+#rule("P2", "Modifiers take effect when they run", "impl",
+  $ Phi(t) "grows in lexical order during comptime; a comptime read at position" k
+   "sees the flags written before" k \
+   "once the comptime fixpoint terminates," quad Phi(t) "is final" $,
   kind: "mut",
 )[
-  A modifier is not scoped to a block, but it is not retroactive either: it
-  applies from its own position onward, in lexical order (C-Order). Packing a
-  type on line 200 leaves line 5 alone and changes every use below it. So the
-  unit a modifier attaches to is *the rest of the program*, not the enclosing
-  block and not the whole module -- which is why the idiom is to declare a type
-  and modify it on the line immediately after, before anything can refer to the
-  unmodified form.
+  A modifier is not scoped to a block. Its write lands at its own lexical
+  position (C-Order), so a comptime call that *reads* the type -- a `size_of`
+  folded to a constant, an overload selected in order to fold a call -- captures
+  $Phi$ as of where that read is written. Two `size_of(T)` either side of a
+  `type.pack(T)` fold to two different constants. That is C-Order doing its
+  ordinary work on a read, not a separate rule about modifiers.
+
+  What a modifier does *not* do is leave an earlier *reference* standing on the
+  unmodified type. Under M-Flag there is one entity and one $Phi$: nothing is
+  allocated and nothing is versioned, so there is no older state for a reference
+  above the modifier to denote. A reference that survives comptime -- an
+  allocation waiting to be laid out, a parameter waiting for an ABI -- names
+  that same entity, and reads whatever $Phi$ settled on.
+
+  So the unit a modifier attaches to is *the type*, and the window in which its
+  absence is observable is *the comptime reads above it*. The
+  declare-then-modify-next-line idiom closes that window; it is hygiene about
+  staged reads, not a layout guarantee.
+]
+
+#rule("M-Freeze", "Comptime is the only writer", "spec",
+  $ "after the comptime fixpoint terminates," quad Phi(t) "and the layout of" t
+   "are fixed for the rest of the compilation" $,
+)[
+  Every modifier is a comptime call, so once comptime has reached its fixpoint
+  no flag is added or removed again. This is what makes a type's properties
+  *phase-separable*: size, alignment, ABI, uniqueness and mutability can each be
+  computed once per type in a single pass after comptime rather than recomputed
+  per use site, because there is exactly one answer per type and every consumer
+  of it runs later.
+
+  Two caveats. The freeze is only well-defined if the fixpoint terminates, which
+  @comptime notes is not currently guaranteed. And the compiler's real freeze
+  point is later than this rule's -- `computeCompilerNamespace` folds
+  `always_inline` and `always_comptime` inside the *lowering* schedule, writing
+  type flags after comptime has already settled; see @divergences.
 ]
 
 #rule("P3", "Aliases transmit modification", "impl",
@@ -742,7 +820,7 @@ a name for the type it just edited.
   layout and need a defined order -- packing a union is not unioning a packed
   aggregate -- and C-Order supplies it: lexical position decides, so the one
   written first applies first. The order is part of the language, not an
-  artefact of how the passes happen to walk the store.
+  artifact of how the passes happen to walk the store.
 ]
 
 #rule("P5", "Modifiers are impure", "spec",
@@ -825,7 +903,7 @@ There is one per level, and the value-level one is already enforced.
 #note("The generative and in-place readings agree")[
   Part I's `unique` is generative: `int_list` survives
   `unique_int_list : type = type.unique(int_list)` unchanged. The in-place
-  discipline reproduces that behaviour exactly; it only changes the spelling,
+  discipline reproduces that behavior exactly; it only changes the spelling,
   because the new type must be *named* before it can be modified:
 
   #raw(block: true, lang: "doir",
@@ -899,8 +977,15 @@ There is one per level, and the value-level one is already enforced.
   resolves against exactly the members added above it. Two calls written either
   side of an `add_overload` can therefore select different functions, and that
   is the intended mechanism rather than an accident -- it is how a type
-  declared later in a file attaches its own behaviour to a name declared
+  declared later in a file attaches its own behavior to a name declared
   earlier.
+
+  An overload set stays position-sensitive where a modifier flag does not
+  (M-Freeze), and the difference is *when the reader runs*. Selection is
+  consumed during comptime, in order to fold the call, so it reads the set as of
+  the call's own position. A flag is consumed after comptime, by layout and
+  codegen, so it reads the final set. Neither is a special case: both are
+  C-Order applied to the point of the read.
 ]
 
 == Comptime <comptime>
@@ -954,22 +1039,38 @@ of this type is". The `type` and `block` builtins carry both.
   Execution runs top to bottom. Name resolution does not care (R-Order) -- a
   name means the same thing wherever it is written -- but *everything that
   mutates the store does*: adding or removing a modifier, and extending an
-  overload set, take effect at their own lexical position and hold from there
-  onward (P2). So order decides *what a modifier does* and not *what a name
-  means*, and that is the language's rule rather than a consequence of how the
-  passes happen to walk the store.
+  overload set, take effect at their own lexical position. What that position
+  decides is what each *comptime read* sees (P2), not what the store holds once
+  comptime is done (M-Freeze). So order decides *what a modifier does* and not
+  *what a name means*, and that is the language's rule rather than a consequence
+  of how the passes happen to walk the store.
 ]
 
 == Deduced parameters
 
-#note("Status", kind: "stop")[
+#note("Status")[
   `deduced` appears in 36 positions in `standard.doir` -- every arithmetic,
-  comparison and memory primitive. The parser recognises the keyword and emits
-  "Deducible types not yet supported". These are the only diagnostics
-  `standard.doir` still raises.
+  comparison and memory primitive -- and is implemented: `sema.deduceTypes`
+  solves each call's variables and writes the solutions in as arguments, which
+  is what elaboration means here. The file compiles clean under
+  `test_standard.doir`, the assembler layer its header assumes. One line is
+  commented out and is not about `deduced`:
+  `get_id : _ = function.add_overload(...)` reads its type off a return type
+  declared `_`, so the hole has nothing to take.
 ]
 
-#rule("D-Deduce", "Bidirectional solving", "spec",
+#note("Representation")[
+  `deduced` is *not* stored. `deduced type` parses to a builtin type of its own,
+  `deduced_type`, and a parameter of that type is one the call site solves --
+  which is the same move C-Type already makes, where how an argument arrives is
+  said by whether its type is always-comptime. So the keyword is a spelling and
+  the rest of the compiler reads an ordinary parameter type: nothing extra is
+  copied when a function type is, and nothing extra is renumbered by
+  `canonicalize.sort`. What it costs is that `deduced` cannot be written on
+  anything else, which the grammar now says.
+]
+
+#rule("D-Deduce", "Bidirectional solving", "impl",
   $ (f : (T_r: "deduced type", T: "deduced type", v: T) -> T_r quad "typeof"(x) = tau quad "expected"(c) = rho)
    / (⟨c : rho = f(x)⟩ ⇝ f(rho, tau, x)) $,
 )[
@@ -980,6 +1081,14 @@ of this type is". The `type` and `block` builtins carry both.
   unification, each variable fixed by its first solution; a later argument
   disagreeing with that solution makes the call ill-formed, which is what gives
   `is_equal(a, b)` its implicit same-type constraint without a where-clause.
+
+  Solving and checking are separate passes, and deliberately. The unifier runs
+  inside the comptime fixpoint, where half the types in the module are still
+  unfolded `base_type` calls and S-Struct cannot yet be asked; it therefore only
+  *substitutes* -- `v : T` becomes the argument in `T`'s position -- and
+  `sema.typeCheck` compares the arguments against that substitution afterwards,
+  when M-Freeze says every type has settled. What is ill-formed is decided once,
+  where every other argument mismatch is decided.
 
   Deduction interacts with @identity: unification compares types, so a `unique`
   type will *not* unify with the type it was derived from. That is the point --
@@ -1049,7 +1158,7 @@ named before it can be passed.
 Three keywords may prefix a call, and each has a type-level counterpart applying
 the same flag permanently via M-Flag: `inline` with
 `function.forcibly_inline`, `flatten` with `function.always_flatten`, and
-`tail`, which has none -- functions are tail-optimised automatically whenever
+`tail`, which has none -- functions are tail-optimized automatically whenever
 possible, and the annotation only raises a diagnostic when this call cannot be.
 
 #note("Untagged unions", kind: "warn")[
@@ -1097,9 +1206,9 @@ possible, and the annotation only raises a diagnostic when this call cannot be.
 
 Where the spec, `standard.doir` and the compiler disagree, *the spec is right
 and the disagreement is a defect* -- there are no three-way design questions
-left open in this section, only work. Two defects were confirmed by running the
-compiler and are now fixed, a batch in `standard.doir` likewise; the rest are
-outstanding.
+left open in this section, only work. The defects below were confirmed by
+running the compiler and are now fixed, a batch in `standard.doir` likewise; the
+rest are outstanding.
 
 === Fixed in the compiler
 
@@ -1122,6 +1231,71 @@ outstanding.
      the `FunctionReturnType` that `sema.materialize` copies off its type.
      `verify.structure` rejected that pair, aborting the compiler. It is a
      legitimate shape: a function declared but not defined.],
+    [`canon/materialize.d`],
+    [A function type that refers to its own parameters -- `(T : type, v : T)` --
+     resolved only when it was written *inline on a function with a body*,
+     because the body was the only place the parameter declarations were ever
+     created. Lifted out to a name of its own, or declared without a body, `T`
+     named nothing and the compile stopped at "Type `T` appears to not exist".
+     Such a type now carries its own parameters, and a return type naming one is
+     resolved against the type rather than against whatever declared it. This is
+     the prerequisite D-Deduce was waiting on: a `deduced` parameter is a
+     parameter other parameters refer to.],
+    [`opt/compute_compiler_namespace.d`],
+    [`nextUnique` counted, handing each `compiler.base_type(s, a)` call a
+     different discriminator than the last one of the same shape. That made
+     comparison nominal by accident and contradicted S-Struct: `pointer_sized`
+     and `compiler.assembler.register` are both 64/64 and could never have been
+     the same type. It returns $0$, and non-zero is reserved for `type.unique`
+     -- the other half of the fix that @divergences said was wanted with it.],
+    [`parser.d`, `interface_.d`, `sema/type_deduction.d`],
+    [`deduced` was parsed and then rejected -- "Deducible types not yet
+     supported" -- which was every `deduced` position in `standard.doir`. It is
+     now the builtin type `deduced_type`, and `sema.deduceTypes` solves a
+     call's parameters of that type and writes the solutions in as arguments
+     before solving any hole that reads a return type off it.
+     `sema.functionArity` accepts the count the author actually writes, and a
+     `-> T` read at a call site now means the argument in `T`'s position rather
+     than the parameter declaration every call through the type shares.
+     D-Deduce.],
+    [`sema/type_check.d`],
+    [Nothing compared a call's return type against the declaration it was
+     assigned to, so an annotation that disagreed with the callee was taken on
+     trust -- `_ : void = mizu.halt()` against `halt : () -> u64` compiled
+     clean, and the register was silently retyped. `sema.typeCheck` now checks
+     it beside the argument comparison. S-Assign.],
+    [`pipeline/package.d`, `mizu.doir`, `opt/compute_compiler_namespace.d`],
+    [S-Struct was unenforceable on the builtin types: `compiler.byte` and
+     `mizu.u64` are `compiler.base_type` calls, and the pass that folds them ran
+     *after* `sema.typeCheck`, so neither side of a comparison had a layout and
+     `sema.typesAgree` -- which reports what it cannot read as agreeing -- said
+     yes to everything. `opt.foldBaseTypes` is the `base_type` half of
+     `computeCompilerNamespace` on its own, scheduled ahead of `typeCheck` in
+     both the compiler's `mizuSchedule` and the one `mizu.doir` overrides it
+     with. Only that half: running the whole pass this early would fold register
+     requests before registers are allocated.],
+    [`interface_.d`],
+    [`pin_register_t` was declared `-> return_register_t` -- the *function type*
+     declared two lines above it, rather than the `register` the call hands
+     back. Nothing had read a return type closely enough to notice.],
+    [`interface_.d`],
+    [`compiler.pointer`, `always_inline`, `always_comptime` and
+     `never_monomorphize` shared `return_t`'s `(T : type) -> T`, so each was
+     declared to return a *value of* its argument instead of a type. A
+     constructor hands back the type it allocated and a modifier a name for the
+     one it edited; both now return `type`, in two function types rather than
+     one, which is what @modifiers asks for. M-Ctor, M-Flag.],
+    [`interface_.d`, `tools/mizu_gen.d`],
+    [The assembler layer narrowed without saying so: arithmetic is
+     `pointer_sized` end to end, `compiler.emit` writes a byte, and the
+     instruction encoders crossed between them with a type annotation -- which
+     is not a conversion S-Struct offers, only one nothing checked.
+     `compiler.truncate_to_byte : (pointer_sized) -> byte` makes the narrowing
+     a call the program makes. The emitted bytes are unchanged. It subsumed the
+     masking that preceded it: every `compiler.bitwise_and` in the repository
+     was `x and 0xFF` feeding the narrowing, so the masks and the builtin both
+     went with it. `std.bitwise_and` is a separate, runtime declaration and
+     stays.],
     [`interface_.d`],
     [`Flatten` and `Tail` shared bit `1 << 11`, inherited from the C++, so
      `tail f(x)` was indistinguishable from `flatten f(x)`, printed as both, and
@@ -1166,7 +1340,8 @@ outstanding.
     [`move`], [Called `return`, which was never declared. `return` and `yield`
       are now declared.], [WF-Term],
     [`cast`], [`Tout` was a value parameter with a dependent return type. Both
-      type parameters are now `deduced`, matching Part I's `cast(x)`.], [D-Deduce],
+      type parameters are now `deduced`, matching Part I's `cast(x)` -- `Tin`
+      forwards from the argument, `Tout` backwards from the register.], [D-Deduce],
     [`attribute.*`, Mizu core], [Nothing in either was exported, so importing
       the standard interface gave no arithmetic. The public surface is now
       exported; `_t` helper types stay internal.], [D-Export],
@@ -1174,18 +1349,27 @@ outstanding.
       overloads. Now named after what they take.], [--],
     table.hline(stroke: 0.6pt + hair),
   ),
-  caption: [`standard.doir` now compiles clean apart from `deduced`.],
+  caption: [`standard.doir` now compiles clean, under `test_standard.doir`.],
 )
 
 === Outstanding
 
-/ Type comparison is nominal (@identity): S-Struct is the rule; the compiler
-  compares entities and hands every `base_type` call a discriminator. Two
-  halves to fix -- `nextUnique` leaving the discriminator $0$ and reserving
-  non-zero for `type.unique`, and comparison on
-  $⟨"size", "alignment", "unique"⟩$ rather than $alpha$-equality. Nothing
-  implements implicit conversion yet either, so no program can currently
-  observe the difference; both wanted together.
+/ Implicit conversion is unimplemented (@identity): the two halves of the
+  comparison itself are done -- `nextUnique` returns $0$ and
+  `sema.typesAgree` compares $⟨"size", "alignment", "unique"⟩$ rather than
+  $alpha$-equality -- but S-Struct also says two types of the same layout
+  *implicitly convert*, and nothing performs that conversion. Today agreement
+  is all the check asks for, so the gap is invisible; it stops being invisible
+  the moment a conversion has to emit anything.
+
+/ Specialization has no cost model (`sema.monomorphizeFunctions`): the pass
+  declines two cases -- a body that declares nothing but its own parameters,
+  which is every builtin and where a copy *is* the original, and a function
+  type carrying `NeverMonomorphize`. Everything else gets a copy. `mizu.doir`
+  marks eight of its function types by hand, either because the comptime
+  argument is handed straight to a VM instruction (so it is in the ABI after
+  all) or because the copies would differ in one immediate. A rule that read
+  the body would not need the markers.
 
 / `type.self` has no resolution rule (T-Self): the recursive-type example needs
   the type under construction, which no enclosing-scope rule reaches. Needs
@@ -1196,8 +1380,21 @@ outstanding.
   compiler as "is not a function", and there is no other spelling for aggregate
   construction.
 
-/ `deduced` is unimplemented: 36 positions in `standard.doir`, and the only
-  diagnostics that file still raises. Blocks D-Deduce, and with it `cast`.
+/ `add_overload` does not say what it returns (`standard.doir`):
+  `add_overload_t` is declared `-> _`, so `get_id : _ = add_overload(...)` reads
+  a hole off a hole and nothing can solve it. D-Deduce solves *parameters*, not
+  return types, and an overload set is a value of some type the file has never
+  named. The line is commented out until there is one; that is the only thing
+  in `standard.doir` that does not compile.
+
+/ Two modifiers are applied after comptime (M-Freeze):
+  `computeCompilerNamespace` folds `compiler.always_inline` and
+  `compiler.always_comptime` inside the lowering schedule, so `Flags.Inline` and
+  `Flags.AlwaysComptime` land on types after the comptime fixpoint has settled.
+  Harmless today -- nothing between the two points reads either flag -- but it
+  puts the real freeze point mid-lowering rather than at the end of comptime,
+  and a property pass that trusted M-Freeze would run too early. Folding both
+  inside the comptime fixpoint restores the rule as stated.
 
 / The comptime fixpoint is not monotone (@comptime): C-Call both sets and
   clears, so termination rests on the call graph being acyclic and nothing

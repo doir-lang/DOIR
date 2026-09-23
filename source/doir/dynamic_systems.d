@@ -12,7 +12,7 @@
 /// fixture), because a template argument cannot be a runtime string.
 ///
 /// The split here keeps both: *registration* stays at compile time, so every
-/// walk is still the specialised, inlinable one the templates generate, and
+/// walk is still the specialized, inlinable one the templates generate, and
 /// only *selection* happens at runtime. `passModules` below is enumerated with
 /// `__traits(allMembers)`, every member with a pass-shaped signature is
 /// instantiated into all three walkers, and the parser picks among the
@@ -105,8 +105,13 @@ private enum string[] passModules = [
 	"doir.pipeline.canon.sort",
 	"doir.pipeline.canon.strip_freestanding_blocks",
 	"doir.pipeline.sema.function_arity",
+	"doir.pipeline.sema.monomorphize",
 	"doir.pipeline.sema.name_reuse",
 	"doir.pipeline.sema.strip_names",
+	"doir.pipeline.sema.type_check",
+	"doir.pipeline.sema.type_deduction",
+	"doir.pipeline.sema.type_properties",
+	"doir.pipeline.sema.type_variables",
 	"doir.pipeline.opt.allocate_registers",
 	"doir.pipeline.opt.compute_compiler_namespace",
 	"doir.pipeline.opt.inline_functions",
@@ -784,7 +789,7 @@ private bool parseSystemNode(ref Parser parser, out size_t index) @trusted {
 	if (name.length == 0)
 		return parser.fail("expected a system", parser.position);
 
-	// Combinators are recognised by name and by the '(' that has to follow, so
+	// Combinators are recognized by name and by the '(' that has to follow, so
 	// a pass could in principle share one of their spellings.
 	immutable isCall = parser.peek() == '(';
 

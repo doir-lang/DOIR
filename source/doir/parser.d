@@ -805,30 +805,51 @@ private bool type(ref Parser p, ref BlockBuilder* blocks, ref ParsedType result)
 	return true;
 }
 
-/// `deducible_type <- (<'deduced'>_)? Type _`
+/// `deducible_type <- (<'deduced'>_ <'type'>) / (Type _)`
+///
+/// `deduced` is only ever written on `type`, and the pair is one word: it
+/// parses to the builtin `deduced_type`, which is the entire representation of
+/// a parameter that is solved rather than supplied (D-Deduce). The keyword on
+/// anything else has nothing to mean - a value cannot be deduced, because
+/// nothing a value could be deduced *from* can be written in parameter
+/// position - so it is diagnosed rather than parsed into something the rest of
+/// the compiler would have to have an opinion about.
 private bool deducibleType(ref Parser p, ref BlockBuilder* blocks, ref ParsedType result) @trusted {
 	immutable save = p.pos;
-	auto mod = p.mod;
 
-	bool deduced = false;
-	if (lookingAtKeyword(p, "deduced")) {
-		advance(p, "deduced".length);
+	if (!lookingAtKeyword(p, "deduced")) {
+		if (!type(p, blocks, result)) { p.pos = save; return false; }
 		skipWhitespace(p);
-		deduced = true;
+		return true;
 	}
+
+	advance(p, "deduced".length);
+	skipWhitespace(p);
 
 	if (!type(p, blocks, result)) { p.pos = save; return false; }
 	skipWhitespace(p);
 
-	if (deduced) {
-		auto diag = &pushDiagnostic(DiagnosticType.InvalidType, spanLocation(p, save, p.pos),
-			mod.source, p.path);
-		Diagnostic.Annotation annotation;
-		annotation.message = text(DoirAnsi.type, "Deducible", Ansi.reset, " types not yet supported");
-		annotation.position = diag.location.start;
-		pushAnnotation(*diag, annotation);
+	// Diagnosed and then parsed as though the keyword were not there: failing
+	// the rule instead would end the parameter list here and report the rest of
+	// it as a second, unrelated syntax error.
+	if (result.isFunctionType || result.name.view != "type") {
+		deducedNotOnType(p, save);
+		return true;
 	}
+
+	result.name = internIn(*p.mod, "deduced_type");
 	return true;
+}
+
+/// `deduced` written on anything but `type`.
+private void deducedNotOnType(ref Parser p, size_t save) @trusted {
+	auto diag = &pushDiagnostic(DiagnosticType.InvalidType, spanLocation(p, save, p.pos),
+		p.mod.source, p.path);
+	Diagnostic.Annotation annotation;
+	annotation.message = text(DoirAnsi.type, "deduced", Ansi.reset,
+		" is only written on ", DoirAnsi.type, "type", Ansi.reset);
+	annotation.position = diag.location.start;
+	pushAnnotation(*diag, annotation);
 }
 
 /// `parameter <- Identifier _ ':'_ deducible_type ('='_ Constant _)?`
@@ -924,7 +945,7 @@ private bool functionType(ref Parser p, ref BlockBuilder* blocks, ref FunctionTy
 	if (returnType.isFunctionType) {
 		// NOTE: the C++ `any_cast<ecrs::entity_t>` here would throw on a
 		// function-type return type (the value it holds is a `function_type_t`).
-		// Materialising it into an entity is what that cast was reaching for,
+		// Materializing it into an entity is what that cast was reaching for,
 		// and is what the sibling `parameter` handler already does.
 		immutable e = pushFunctionTypeEntity(p, blocks, returnType.functionType, InternedString("_"));
 		returnType.free();
@@ -1783,7 +1804,7 @@ unittest { // ...and the other five are usable as names again, not syntax errors
 	}
 }
 
-unittest { // a real `export` keyword is still recognised
+unittest { // a real `export` keyword is still recognized
 	auto r = compile("export y : compiler.byte = 2\n");
 	scope(exit) freeModule(r.mod);
 	assert(r.ok);
@@ -2268,7 +2289,19 @@ unittest { // a trailing comma is not a parameter, so it ends the list
 	rejected("f : type = (a: compiler.byte,) -> compiler.byte\n");
 }
 
-unittest { // `deduced` parses but is reported as unsupported
+unittest { // `deduced type` is the builtin `deduced_type`, and only that position
+	auto r = compile("f : type = (T: deduced type, v: T) -> T\n");
+	scope(exit) freeModule(r.mod);
+	assert(r.ok);
+
+	immutable ft = find(r.mod, r.root, "f");
+	assert(ft != invalidEntity);
+	assert(deducedParameterCount(r.mod, ft) == 1);
+	assert(isDeducedParameter(r.mod, ft, 0));
+	assert(!isDeducedParameter(r.mod, ft, 1));
+}
+
+unittest { // ...and `deduced` on anything else is rejected, not reinterpreted
 	diagnosed("f : type = (a: deduced compiler.byte) -> compiler.byte\n");
 }
 
@@ -2333,7 +2366,7 @@ unittest { // each of the three call modifiers sets its flag
 	}
 }
 
-unittest { // a call through a declared function type materialises the type
+unittest { // a call through a declared function type materializes the type
 	assert(parses("f : (a: compiler.byte) -> compiler.byte = compiler.emit(a)\n"));
 }
 
@@ -2446,7 +2479,7 @@ unittest { // a function *with a body* whose parameters carry no default value
 }
 
 unittest {
-	// A parameter whose own type is a function type is materialised into an
+	// A parameter whose own type is a function type is materialized into an
 	// entity before the function is built, so its `Lookup` arrives at
 	// `pushFunctionFromType` already resolved - the other half of each of the
 	// three parameter cases.

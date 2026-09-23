@@ -20,19 +20,24 @@ import doir.print : printModule;
 @nogc nothrow:
 
 
-/// The `(size_bits, align_bits) -> next unique id` counter behind
-/// `compiler.base_type`. A dynarray rather than the C++ function-local
-/// `unordered_map`, but with the same process-wide lifetime.
-private struct UniqueCounterEntry {
-	size_t sizeBits, alignBits, count;
-}
-private __gshared UniqueCounterEntry* uniqueCounter = null;
-
-private size_t nextUnique(size_t sizeBits, size_t alignBits) @trusted {
-	foreach (i; 0 .. daLength(uniqueCounter))
-		if (uniqueCounter[i].sizeBits == sizeBits && uniqueCounter[i].alignBits == alignBits)
-			return uniqueCounter[i].count++;
-	fp.dynarray.pushBack(uniqueCounter, UniqueCounterEntry(sizeBits, alignBits, 1));
+/// The uniqueness discriminator a `compiler.base_type` call gets: zero, always.
+///
+/// DOIR types are structural (S-Struct) - same layout, same type - and
+/// `type.unique` is the one thing that opts a type out of that. So the
+/// discriminator has to be zero for every type that did *not* ask, and non-zero
+/// is reserved for M-Unique to hand out; that is the pairing
+/// `sema.typeCheck`'s $⟨"size", "alignment", "unique"⟩$ comparison rests on.
+///
+/// The low values are spoken for: `interface_.BuiltinUnique` keeps `type` and
+/// `block` out of the structural relation, since neither is a value and so
+/// neither has a layout to be compared by.
+///
+/// The C++ counted instead, handing each `base_type(s, a)` call a different id
+/// than the last one with the same shape, which made comparison nominal by
+/// accident: `compiler.assembler.register` and `compiler.pointer_sized` are both
+/// 64/64 and would never have compared equal, so `mizu.doir` passing a register
+/// to `compiler.shift_right` was a type error nothing could see.
+private size_t nextUnique(size_t sizeBits, size_t alignBits) {
 	return 0;
 }
 
@@ -137,7 +142,7 @@ private bool computeTypeMarker(ref Module mod, EntityId subtree, EntityId functi
 	return true;
 }
 
-/// `compiler.bitwise_and` / `compiler.shift_right`, folded at compile time.
+/// `compiler.shift_right`, folded at compile time.
 ///
 /// The fold is recorded as a `ComptimeNumber` left on the call rather than by
 /// replacing the call with a `Number`: a `Number` would make the entity *be*
@@ -147,20 +152,18 @@ private bool computeTypeMarker(ref Module mod, EntityId subtree, EntityId functi
 /// works out to - which is all this pass ever learned - and leaves the IR
 /// alone, so `verify.structure` still sees exactly one value component and the
 /// pass can run again over its own output (`mizu`'s schedule runs it twice).
-private bool computeBinaryFold(ref Module mod, EntityId subtree,
-	const(char)[] name, const(char)[] arity, bool isShift) @trusted
-{
+private bool computeShiftRight(ref Module mod, EntityId subtree) @trusted {
 	if (findFunctionInsideOf(mod, subtree))
 		return true;
 
 	if (!hasComponent!FunctionInputs(mod, subtree)) {
-		expectsXInputs(mod, subtree, name, arity);
+		expectsXInputs(mod, subtree, "shift_right", "two");
 		return false;
 	}
 	auto inputs = resolvedInputs(mod, subtree);
 	scope(exit) fp.dynarray.free(inputs);
 	if (daLength(inputs) != 2) {
-		expectsXInputs(mod, subtree, name, arity);
+		expectsXInputs(mod, subtree, "shift_right", "two");
 		return false;
 	}
 
@@ -169,23 +172,56 @@ private bool computeBinaryFold(ref Module mod, EntityId subtree,
 	foreach (i; 0 .. 2) {
 		auto n = comptimeNumber(mod, inputs[i]);
 		if (n.isNull) {
-			parameterError(mod, subtree, name, i, " must evaluate to a numeric constant");
+			parameterError(mod, subtree, "shift_right", i, " must evaluate to a numeric constant");
 			valid = false;
 		} else operands[i] = cast(size_t) n.get;
 	}
 	if (!valid) return false;
 
-	immutable v = operands[0];
-	immutable rhs = operands[1];
+	getOrAddComponent!ComptimeNumber(mod, subtree).value = operands[0] >> operands[1];
 
-	getOrAddComponent!ComptimeNumber(mod, subtree).value = isShift ? (v >> rhs) : (v & rhs);
+	return true;
+}
 
+/// `compiler.truncate_to_byte`: the assembler layer's narrowing, and the only one.
+///
+/// Every arithmetic builtin is `pointer_sized` in and `pointer_sized` out, but
+/// `compiler.emit` writes a byte, so the instruction encoders in `mizu.doir`
+/// have to get from one to the other. S-Struct gives them no implicit way -
+/// $⟨64, 64⟩$ and $⟨8, 8⟩$ are not the same type and do not convert - so the
+/// narrowing is a call the program makes rather than a type annotation the
+/// compiler used to take on trust.
+///
+/// Folds like `computeShiftRight`, leaving the answer on the call as a
+/// `ComptimeNumber` rather than replacing the entity.
+private bool computeTruncateToByte(ref Module mod, EntityId subtree) @trusted {
+	if (findFunctionInsideOf(mod, subtree))
+		return true;
+
+	if (!hasComponent!FunctionInputs(mod, subtree)) {
+		expectsXInputs(mod, subtree, "truncate_to_byte", "one");
+		return false;
+	}
+	auto inputs = resolvedInputs(mod, subtree);
+	scope(exit) fp.dynarray.free(inputs);
+	if (daLength(inputs) != 1) {
+		expectsXInputs(mod, subtree, "truncate_to_byte", "one");
+		return false;
+	}
+
+	auto n = comptimeNumber(mod, inputs[0]);
+	if (n.isNull) {
+		parameterError(mod, subtree, "truncate_to_byte", 0, " must evaluate to a numeric constant");
+		return false;
+	}
+
+	getOrAddComponent!ComptimeNumber(mod, subtree).value = cast(size_t) n.get & 0xFF;
 	return true;
 }
 
 /// `compiler.assembler.register_for` / `.yield_register`: the register `target`
 /// was assigned, left on the call as a `ComptimeNumber` for the same reasons
-/// `computeBinaryFold` does. Rerunning it is how the second
+/// `computeShiftRight` does. Rerunning it is how the second
 /// `computeCompilerNamespace` pass picks up a register assigned since the
 /// first, so the answer is overwritten rather than added once.
 private bool computeRegisterFor(ref Module mod, EntityId subtree, EntityId target,
@@ -207,11 +243,12 @@ bool computeCompilerNamespace(ref Module mod, EntityId subtree, bool forceRegist
 	immutable pointer = resolveCached(mod, "compiler.pointer", 1);
 	immutable baseTypeE = resolveCached(mod, "compiler.base_type", 1);
 	immutable comptimeBaseType = resolveCached(mod, "compiler.comptime_base_type", 1);
-	immutable bitwiseAnd = resolveCached(mod, "compiler.bitwise_and", 1);
+	immutable truncateToByte = resolveCached(mod, "compiler.truncate_to_byte", 1);
 	immutable shiftRight = resolveCached(mod, "compiler.shift_right", 1);
 	immutable debugPrint = resolveCached(mod, "compiler.debug_print", 1);
 	immutable alwaysInline = resolveCached(mod, "compiler.always_inline", 1);
 	immutable alwaysComptime = resolveCached(mod, "compiler.always_comptime", 1);
+	immutable neverMonomorphize = resolveCached(mod, "compiler.never_monomorphize", 1);
 	immutable assemblerRegisterFor = resolveCached(mod, "compiler.assembler.register_for", 1);
 	immutable assemblerReturnRegister = resolveCached(mod, "compiler.assembler.return_register", 1);
 	immutable assemblerYieldRegister = resolveCached(mod, "compiler.assembler.yield_register", 1);
@@ -230,14 +267,18 @@ bool computeCompilerNamespace(ref Module mod, EntityId subtree, bool forceRegist
 	if (function_ == alwaysComptime)
 		return computeTypeMarker(mod, subtree, alwaysComptime, "always_comptime", Flags.AlwaysComptime);
 
+	if (function_ == neverMonomorphize)
+		return computeTypeMarker(mod, subtree, neverMonomorphize, "never_monomorphize",
+			Flags.NeverMonomorphize);
+
 	else if (function_ == pointer)
 		return computePointer(mod, subtree, pointer);
 
-	else if (function_ == bitwiseAnd)
-		return computeBinaryFold(mod, subtree, "bitwise_and", "one", false);
+	else if (function_ == truncateToByte)
+		return computeTruncateToByte(mod, subtree);
 
 	else if (function_ == shiftRight)
-		return computeBinaryFold(mod, subtree, "shift_right", "two", true);
+		return computeShiftRight(mod, subtree);
 
 	else if (function_ == debugPrint) {
 		if (!hasComponent!FunctionInputs(mod, subtree)) {
@@ -289,6 +330,32 @@ bool computeCompilerNamespace(ref Module mod, EntityId subtree, bool forceRegist
 	}
 
 	return true;
+}
+
+/// `opt.foldBaseTypes`: the `compiler.base_type` half of the pass above, on its
+/// own and ahead of the rest of it.
+///
+/// `sema.typeCheck` compares two types by the layout each one has, and reports
+/// what it cannot read as agreeing. Every builtin type is a `base_type` call
+/// until something folds it, so with the fold left where it is - after
+/// `typeCheck` in `mizuSchedule` - `compiler.byte` and `mizu.u64` reach the
+/// comparison with no layout at all and S-Struct decides nothing. @divergences
+/// recorded that as an ordering question in the backend's schedule; this is the
+/// answer to it.
+///
+/// Only `base_type`. Running the whole pass this early would fold register
+/// requests before registers are allocated and print every `debug_print` a
+/// second time.
+bool foldBaseTypes(ref Module mod, EntityId subtree) @trusted {
+	if (!hasComponent!Call(mod, subtree)) return true;
+
+	immutable baseTypeE = resolveCached(mod, "compiler.base_type", 1);
+	immutable comptimeBaseType = resolveCached(mod, "compiler.comptime_base_type", 1);
+
+	immutable function_ = resolveAlias(mod, getComponent!Call(mod, subtree).related[0]);
+	if (function_ != baseTypeE && function_ != comptimeBaseType) return true;
+
+	return computeBaseType(mod, subtree, function_, comptimeBaseType);
 }
 
 /// Visitor adaptor for `doir.systems`, with `forceRegisterValues` bound at
@@ -483,9 +550,11 @@ unittest { // `compiler.pointer` turns a type into a pointer to it
 	cast(void) byte_;
 }
 
-unittest { // `always_inline` and `always_comptime` mark the type they are given
-	static immutable string[2] callees = ["compiler.always_inline", "compiler.always_comptime"];
-	static immutable ushort[2] flags = [Flags.Inline, Flags.AlwaysComptime];
+unittest { // each type marker sets its flag on the type it is given
+	static immutable string[3] callees = [
+		"compiler.always_inline", "compiler.always_comptime", "compiler.never_monomorphize"];
+	static immutable ushort[3] flags = [
+		Flags.Inline, Flags.AlwaysComptime, Flags.NeverMonomorphize];
 
 	foreach (i, callee; callees) {
 		auto f = makeComputeFixture();
@@ -521,47 +590,73 @@ unittest { // `always_inline` and `always_comptime` mark the type they are given
 	}
 }
 
-unittest { // `bitwise_and` and `shift_right` fold their two constants
-	static immutable string[2] callees = ["compiler.bitwise_and", "compiler.shift_right"];
-	// `0b1100 & 0b0110 == 0b0100`, and `0b1100 >> 2 == 0b0011`.
-	static immutable size_t[2] rhsValues = [0b0110, 2];
-	static immutable size_t[2] expected = [0b0100, 0b0011];
+unittest { // `shift_right` folds its two constants
+	auto f = makeComputeFixture();
+	scope(exit) freeModule(f.mod);
+	auto block = f.openRoot();
 
-	foreach (i, callee; callees) {
-		auto f = makeComputeFixture();
-		scope(exit) freeModule(f.mod);
-		auto block = f.openRoot();
+	immutable pointerSized = builtin(f, "compiler.pointer_sized");
+	immutable lhs = pushNumber(block, internIn(f.mod, "lhs"), pointerSized, 0b1100);
+	immutable rhs = pushNumber(block, internIn(f.mod, "rhs"), pointerSized, 2);
+	immutable notANumber = pushValueless(block, internIn(f.mod, "nan"), pointerSized);
 
-		immutable pointerSized = builtin(f, "compiler.pointer_sized");
-		immutable lhs = pushNumber(block, internIn(f.mod, "lhs"), pointerSized, 0b1100);
-		immutable rhs = pushNumber(block, internIn(f.mod, "rhs"), pointerSized, rhsValues[i]);
-		immutable notANumber = pushValueless(block, internIn(f.mod, "nan"), pointerSized);
+	EntityId[2] args = [lhs, rhs];
+	EntityId[1] one = [lhs];
+	EntityId[2] nonNumeric = [lhs, notANumber];
+	pushBuiltinCall(f, block, "folded", "compiler.shift_right", args[]);
+	pushBuiltinCall(f, block, "argless", "compiler.shift_right", args[]);
+	pushBuiltinCall(f, block, "wrong_count", "compiler.shift_right", one[]);
+	pushBuiltinCall(f, block, "bad_type", "compiler.shift_right", nonNumeric[]);
+	canonicalize(f);
 
-		EntityId[2] args = [lhs, rhs];
-		EntityId[1] one = [lhs];
-		EntityId[2] nonNumeric = [lhs, notANumber];
-		pushBuiltinCall(f, block, "folded", callee, args[]);
-		pushBuiltinCall(f, block, "argless", callee, args[]);
-		pushBuiltinCall(f, block, "wrong_count", callee, one[]);
-		pushBuiltinCall(f, block, "bad_type", callee, nonNumeric[]);
-		canonicalize(f);
+	// The call stays put; what the fold learned rides along beside it.
+	immutable folded = named(f, "folded");
+	assert(computeCompilerNamespace(f.mod, folded, false));
+	assert(hasComponent!Call(f.mod, folded));
+	assert(!hasComponent!Number(f.mod, folded));
+	assert(cast(size_t) getComponent!ComptimeNumber(f.mod, folded).value == 0b0011);
+	assert(!diagnostics().hasErrors());
 
-		// The call stays put; what the fold learned rides along beside it.
-		immutable folded = named(f, "folded");
-		assert(computeCompilerNamespace(f.mod, folded, false));
-		assert(hasComponent!Call(f.mod, folded));
-		assert(!hasComponent!Number(f.mod, folded));
-		assert(cast(size_t) getComponent!ComptimeNumber(f.mod, folded).value == expected[i]);
-		assert(!diagnostics().hasErrors());
+	immutable argless = named(f, "argless");
+	removeComponent!FunctionInputs(f.mod, argless);
+	assert(!computeCompilerNamespace(f.mod, argless, false));
+	assert(!computeCompilerNamespace(f.mod, named(f, "wrong_count"), false));
+	assert(!computeCompilerNamespace(f.mod, named(f, "bad_type"), false));
+	assert(diagnostics().hasErrors());
+	diagnostics().clear();
+}
 
-		immutable argless = named(f, "argless");
-		removeComponent!FunctionInputs(f.mod, argless);
-		assert(!computeCompilerNamespace(f.mod, argless, false));
-		assert(!computeCompilerNamespace(f.mod, named(f, "wrong_count"), false));
-		assert(!computeCompilerNamespace(f.mod, named(f, "bad_type"), false));
-		assert(diagnostics().hasErrors());
-		diagnostics().clear();
-	}
+unittest { // `truncate_to_byte` keeps the low byte of its constant
+	auto f = makeComputeFixture();
+	scope(exit) freeModule(f.mod);
+	auto block = f.openRoot();
+
+	immutable pointerSized = builtin(f, "compiler.pointer_sized");
+	immutable wide = pushNumber(block, internIn(f.mod, "wide"), pointerSized, 0xDEAD_BEEF);
+	immutable notANumber = pushValueless(block, internIn(f.mod, "nan"), pointerSized);
+
+	EntityId[1] args = [wide];
+	EntityId[2] two = [wide, wide];
+	EntityId[1] nonNumeric = [notANumber];
+	pushBuiltinCall(f, block, "folded", "compiler.truncate_to_byte", args[]);
+	pushBuiltinCall(f, block, "argless", "compiler.truncate_to_byte", args[]);
+	pushBuiltinCall(f, block, "wrong_count", "compiler.truncate_to_byte", two[]);
+	pushBuiltinCall(f, block, "bad_type", "compiler.truncate_to_byte", nonNumeric[]);
+	canonicalize(f);
+
+	immutable folded = named(f, "folded");
+	assert(computeCompilerNamespace(f.mod, folded, false));
+	assert(hasComponent!Call(f.mod, folded));
+	assert(cast(size_t) getComponent!ComptimeNumber(f.mod, folded).value == 0xEF);
+	assert(!diagnostics().hasErrors());
+
+	immutable argless = named(f, "argless");
+	removeComponent!FunctionInputs(f.mod, argless);
+	assert(!computeCompilerNamespace(f.mod, argless, false));
+	assert(!computeCompilerNamespace(f.mod, named(f, "wrong_count"), false));
+	assert(!computeCompilerNamespace(f.mod, named(f, "bad_type"), false));
+	assert(diagnostics().hasErrors());
+	diagnostics().clear();
 }
 
 unittest { // `compiler.debug_print` renders its second argument

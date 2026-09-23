@@ -26,9 +26,12 @@
 // Consequences worth keeping in mind while editing:
 //   P1  Modifiers are idempotent - flags are a set, applying twice is applying once.
 //   P2  Their effect runs from where they are written, not from the enclosing
-//       block: packing a type here changes every use BELOW this line and leaves
-//       the ones above it alone. Hence the declare-then-modify-next-line idiom -
-//       it closes the window in which the unmodified form is visible.
+//       block - but what that decides is what a COMPTIME READ above this line
+//       sees (a folded `size_of`, an overload selection), not what the type
+//       finally is. There is one entity and one flag set: once comptime is done
+//       it is final, and layout/ABI/checking all read that (M-Freeze). Hence the
+//       declare-then-modify-next-line idiom - it closes the window in which a
+//       staged read can observe the unmodified form.
 //   P3  Modifiers act THROUGH aliases. `pack(byte)` packs `u8` itself, and so
 //       changes `index`, `byte_pointer`, and everything else reached through it.
 //       `unique` is the sole exception - see its declaration below.
@@ -76,6 +79,14 @@ std : namespace = {
 		export array : array_t // A pointer that knows its length
 
 		export comptime : modifier_function // Marks the type as compile time known
+
+		// On a FUNCTION type. A comptime parameter is a reason to give a call
+		// its own copy of the function, not an obligation to: a function whose
+		// comptime parameter is load-bearing at the call - passed straight on to
+		// something that wants it there - or whose copies would differ only in
+		// one immediate says so here, and calls to it are left alone.
+		export never_monomorphize : modifier_function
+
 		export pointer : constructor_function // A new pointer-to-`in` type
 		export union : modifier_function // Makes a type's fields overlap
 		export pack : modifier_function // Reorganizes the type to be as tightly packed as possible
@@ -249,7 +260,12 @@ std : namespace = {
 		_ : type = types.comptime(get_id_of_name_t)
 		get_id_of_name : get_id_of_name_t
 
-		export get_id : _ = function.add_overload(get_id_of_type, get_id_of_name)
+		// TODO: undeducible as written. `add_overload_t` returns `_`, so the
+		// hole on the left has nothing to read a type off (D-Deduce solves
+		// parameters, not return types), and `get_id` is left unsolved. It
+		// needs `add_overload` to declare what it returns - an overload set is
+		// a value of *some* type - before this line can come back.
+		// export get_id : _ = function.add_overload(get_id_of_type, get_id_of_name)
 
 		// Attaching an attribute to a value is attaching a component to an
 		// entity - the store, spelled in the source language.

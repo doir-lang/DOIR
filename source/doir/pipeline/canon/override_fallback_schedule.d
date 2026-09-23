@@ -55,7 +55,7 @@ private struct Nomination {
 	size_t depth = size_t.max;
 	DynamicSystem system;
 	/// The schedule as the source wrote it, interned, so that a block which
-	/// claimed this same schedule can recognise it as the one already running.
+	/// claimed this same schedule can recognize it as the one already running.
 	/// See `doir.systems.isCurrentSchedule`.
 	const(char)[] source;
 }
@@ -247,7 +247,7 @@ unittest {
 		~ "}\n");
 	scope(exit) freeModule(r.mod);
 	// The nested call is still replaced - it just loses. A losing nomination is
-	// never parsed, so the unparseable one inside the block costs nothing.
+	// never parsed, so the unparsable one inside the block costs nothing.
 	assert(r.ok);
 	assert(hasFallbackScheduleOverride());
 	clearFallbackScheduleOverride();

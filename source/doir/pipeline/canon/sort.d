@@ -113,7 +113,8 @@ EntityId sort(ref Module mod, EntityId root) @trusted {
 
 	reorderEntities!(
 		Block, Parent, Pointer, FunctionReturnType, FunctionInputs,
-		Alias, TypeOf, Call, PrintAsCall, LookupFunctionReturnType,
+		Alias, TypeOf, Call, PrintAsCall, Monomorphizations, MonomorphizedFor,
+		LookupFunctionReturnType,
 		LookupFunctionInputs, LookupAlias, LookupTypeOf, LookupCall
 	)(mod.ctx, widened[0 .. daLength(widened)]);
 
@@ -136,6 +137,17 @@ EntityId sort(ref Module mod, EntityId root) @trusted {
 /// since the throwaway block was just built an entity at a time and is already
 /// in the order it was built in.
 bool sortSuspended;
+
+/// The same flag under the name the passes that are not the sort want to ask it
+/// by: whether the schedule currently running is lowering one of the comptime
+/// evaluator's throwaway blocks rather than the module itself.
+///
+/// It is one condition, so it stays one flag. A pass that only holds over the
+/// program the author wrote - `sema.typeCheck` is the example - asks here,
+/// because lowering manufactures shapes such a pass would reject: a body copied
+/// in by `opt.inlineFunctions` has its parameters replaced by the caller's
+/// values, so a `block` parameter is a `u64` by the time it is inlined.
+bool loweringThrowawayBlock() { return sortSuspended; }
 
 /// `canonicalize.sort` packaged as a system, for use in a schedule.
 bool sortSystem(ref Module mod, EntityId root = currentCanonicalizeRoot) {

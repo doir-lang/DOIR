@@ -1,0 +1,18 @@
+// Compiles `standard.doir`, which is the end-to-end test of `deduced`: 36
+// positions, every arithmetic, comparison and memory primitive in the file.
+//
+// The standard interface assumes the assembler layer provides `u1`, `u8` and
+// `pointer_sized` (its own header comment says so), so it cannot be compiled
+// alone. This is the smallest layer that satisfies that assumption:
+// `compiler.pointer_sized` is the builtin block's own, and the other two are
+// base types of the width their names claim.
+
+%1 : compiler.pointer_sized = 1
+%8 : compiler.pointer_sized = 8
+
+pointer_sized : alias = compiler.pointer_sized
+u1 : type = compiler.base_type(%1, %1)
+u8 : type = compiler.base_type(%8, %8)
+
+path : compiler.byte_pointer = "./standard.doir"
+_ : compiler.byte = early_include(path)

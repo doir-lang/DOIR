@@ -7,7 +7,8 @@ change_language <- 'language' !UnicodeIdentifierContinue _ '"' < StringChar* > '
 matching_braces <- '{' enforested_content* '}'
 enforested_content <- matching_braces / [^{}]
 
-deducible_type <- (<'deduced'> !UnicodeIdentifierContinue _)? Type _
+# `deduced` is only written on `type`, and the pair names one builtin.
+deducible_type <- (<'deduced'> !UnicodeIdentifierContinue _ <'type'> !UnicodeIdentifierContinue _) / (Type _)
 parameter <- Identifier _ ':'_ deducible_type ('='_ Constant _)?
 # `-> Type` is optional; omitting it means the function returns `void`.
 FunctionType <- '('_ (parameter (','_ parameter)*)? ')' (_ <'->'>_ Type)?

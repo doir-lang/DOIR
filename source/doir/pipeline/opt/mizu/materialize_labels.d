@@ -7,8 +7,8 @@
 /// also what `mizu.find_label(l)` searches the program for, so the two have to
 /// agree - hence the counter here, and the `ComptimeNumber` left behind on the
 /// call, which is what `find_label`'s body
-/// (`compiler.bitwise_and(label, mask)` and the shifts beside it) folds into
-/// the immediate it emits.
+/// (`compiler.truncate_to_byte(label)` and the shifts beside it) folds into the
+/// immediate it emits.
 module doir.pipeline.opt.mizu.materialize_labels;
 
 

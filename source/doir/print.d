@@ -58,6 +58,13 @@ char* printFunctionType(ref Module mod, EntityId type, bool debug_) @trusted {
 		else appendText(out_, defaultParameterName(mod, i).view);
 
 		appendText(out_, ":");
+		// Spelled the way it is written rather than by the builtin's name: what
+		// `deduced_type` says is that the call site solves this parameter
+		// (D-Deduce), and `deduced type` is how a program says that.
+		if (isDeducedParameter(mod, type, i)) {
+			appendText(out_, "deduced type");
+			continue;
+		}
 		char* name = printLookupName(mod, inputs[i], debug_);
 		appendText(out_, name);
 		strFree(name);
@@ -512,7 +519,7 @@ unittest { // a parsed-but-unlowered module renders its *unresolved* lookups
 
 unittest { // a fully lowered module renders registers and comptime values
 	auto r = compile(
-		"u : alias = compiler.pointer_sized\n"
+		"u : alias = compiler.byte\n"
 		~ "a : u = 5\n"
 		~ "b : u = 6\n"
 		~ "%1 : compiler.byte = compiler.emit(a)\n");

@@ -36,7 +36,15 @@ bool functionArity(ref Module mod, EntityId subtree) @trusted {
 	immutable callCount = daLength(getComponent!FunctionInputs(mod, subtree).related);
 	immutable declCount = daLength(getComponent!FunctionInputs(mod, ft).related);
 
-	if (callCount != declCount) {
+	// D-Deduce: a `deduced` parameter is solved, not supplied, so what the
+	// author writes is short by exactly as many as there are - and
+	// `sema.deduceTypes` has since made it up to `declCount`. Both are
+	// legal counts here; a call still at the short one is one deduction failed
+	// on, which `sema.typeCheck` reports against the parameter that stayed
+	// unsolved rather than as a miscount the author can do nothing about.
+	immutable suppliedCount = declCount - deducedParameterCount(mod, ft);
+
+	if (callCount != declCount && callCount != suppliedCount) {
 		auto location = findSourceLocation(mod, subtree);
 		auto source = sourceOf(mod, location);
 		auto diag = &pushDiagnostic(DiagnosticType.InvalidFunctionCall, location, source,
@@ -44,7 +52,7 @@ bool functionArity(ref Module mod, EntityId subtree) @trusted {
 
 		Diagnostic.Annotation annotation;
 		annotation.message = text("Number of function parameters ", DoirAnsi.info, callCount, Ansi.reset,
-			" differs from expected number ", DoirAnsi.info, declCount, Ansi.reset);
+			" differs from expected number ", DoirAnsi.info, suppliedCount, Ansi.reset);
 
 		auto range = parseParameterRange(spanOf(source, location),
 			callCount > 0 ? callCount - 1 : 0);

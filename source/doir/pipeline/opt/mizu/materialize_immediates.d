@@ -36,7 +36,7 @@ bool materializeImmediates(ref Module mod, EntityId subtree) @trusted {
 	// compared *equal* here. A module that never included mizu.doir (so every
 	// `mizu.*` above is 0) and holds a call whose target is 0 was therefore
 	// treated as a `load_immediate`, and reported "load_immediate expects two
-	// inputs" against a synthesised entity, which aborts in
+	// inputs" against a synthesized entity, which aborts in
 	// `findSourceLocation`. An unresolved callee is not any of these.
 	if (function_ == invalidEntity) return true;
 	if (!(function_ == loadImmediate || function_ == loadUpperImmediate)) return true;
@@ -255,7 +255,7 @@ unittest {
 	// A module with no mizu backend loaded resolves every `mizu.*` name to
 	// `invalidEntity`, which is also what an unresolved callee is - so a call
 	// with no target compared *equal* to `load_immediate` and was reported
-	// against a synthesised entity, which aborts in `findSourceLocation`.
+	// against a synthesized entity, which aborts in `findSourceLocation`.
 	auto f = makeModuleWithBuiltins();
 	scope(exit) freeModule(f.mod);
 	diagnostics().clear();

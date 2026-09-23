@@ -25,7 +25,12 @@ import doir.pipeline.canon.sort;
 import doir.pipeline.canon.strip_freestanding_blocks;
 
 import doir.pipeline.sema.function_arity;
+import doir.pipeline.sema.monomorphize;
 import doir.pipeline.sema.name_reuse;
+import doir.pipeline.sema.type_check;
+import doir.pipeline.sema.type_deduction;
+import doir.pipeline.sema.type_properties;
+import doir.pipeline.sema.type_variables;
 
 import doir.pipeline.opt.allocate_registers;
 import doir.pipeline.opt.compute_compiler_namespace;
@@ -102,6 +107,20 @@ bool mizuSchedule(ref Module mod) {
 	return sequential(
 		depthFirst!nameReuse(),
 		depthFirst!functionArity(),
+		// The type system's post-comptime half. Here rather than in
+		// `canonicalizeSchedule` for the same reason as the two above - what
+		// counts as a type mismatch, and how an aggregate is laid out, are a
+		// backend's to say - and *after* comptime because that is what M-Freeze
+		// licenses: every modifier is a comptime call, so by this point each
+		// type has exactly one answer rather than one per lexical position (P2).
+		// Before `typeCheck`, so that `compiler.byte` and `mizu.u64` have a
+		// layout for S-Struct to compare rather than being the `base_type` calls
+		// they are written as. Only the `base_type` half of
+		// `computeCompilerNamespace`; the rest of it still runs below, after
+		// registers are allocated.
+		breadthFirst!foldBaseTypes(),
+		depthFirst!typeCheck(),
+		depthFirst!computeTypeProperties(),
 		// The one place a schedule a user wrote in their source can see what the
 		// lowering is about to do: after it, but before any of it has run. See
 		// `doir.pipeline.opt.run_schedule` on why it is not one of the
@@ -115,6 +134,15 @@ bool mizuSchedule(ref Module mod) {
 		breadthFirst!(computeCompilerNamespaceVisitor!false)(),
 		depthFirst!materializeImmediates(),
 		depthFirst!materializeLabels(),
+		// Before inlining, which would otherwise copy the unspecialized body in
+		// and leave nothing to specialize. `sorted` rather than `depthFirst`
+		// because it splices declarations into the block it is walking - and
+		// *without* its re-sort, which renumbers every entity in the module and
+		// so cannot happen part way through a lowering schedule that is holding
+		// ids of its own. The copies are parented and listed either way; all the
+		// sort would restore is the contiguous-id invariant, which nothing below
+		// here asks for.
+		sorted!monomorphizeFunctions(currentCanonicalizeRoot, false),
 		breadthFirst!inlineFunctions(),
 		breadthFirst!(computeCompilerNamespaceVisitor!true)(),
 	)(mod);
@@ -167,6 +195,12 @@ bool canonicalizeSchedule(ref Module mod, EntityId root, ref BlockBuilder* build
 		// We may have materialized some function parameters which can now be found
 		depthFirst!(resolveLookupsVisitor!false)(),
 		depthFirst!lookupsResolved(),
+		// `_` in type position resolves like any other name, to the one builtin
+		// entity named `_`; this is what makes two holes in a module two
+		// variables rather than one shared placeholder. Pure syntax - it reads
+		// no value and folds nothing - so it runs once, here, rather than in the
+		// fixpoint below that solves what it introduces.
+		depthFirst!introduceTypeVariables(),
 		fixedPoint(depthFirst!bubbleComptime()),
 		// Not moved out to the backend with `nameReuse` and `functionArity`,
 		// though it was meant to be. It reports a compile time call handed a
@@ -180,7 +214,17 @@ bool canonicalizeSchedule(ref Module mod, EntityId root, ref BlockBuilder* build
 
 		// sortSystem,
 
-		fixedPoint(depthFirst!comptimeEvaluateVisitor()),
+		// Solving and evaluating are interleaved rather than ordered, because
+		// each needs the other: a type is a comptime value, so the type a hole
+		// should take is usually a call that has not been folded yet - and by
+		// D-Deduce a solved `deduced` parameter becomes a comptime argument to
+		// the call it was solved for. One fixpoint over the pair settles both,
+		// a level per round. `deduceTypes` is the monotone half, deliberately;
+		// see its module comment and @comptime's note on the other one.
+		fixedPoint(sequential(
+			depthFirst!deduceTypes(),
+			depthFirst!comptimeEvaluateVisitor(),
+		)),
 		breadthFirst!stripFreestandingBlocks(),
 		// Pass one of `compiler.override_fallback_schedule`, and it has to be
 		// here: `comptimeEvaluateVisitor` below lowers with whatever this
@@ -303,6 +347,56 @@ unittest {
 	auto bytes = emitAll(mod, newRoot);
 	scope(exit) fp.dynarray.free(bytes);
 	assert(fp.dynarray.slice(bytes) == cast(const(ubyte)[]) "Hello World");
+	diagnostics().clear();
+}
+
+unittest {
+	// ...and `test_standard.doir`, which is the assembler layer `standard.doir`
+	// assumes plus an `early_include` of it. The standard interface is where
+	// `deduced` actually lives - 36 positions, every arithmetic, comparison and
+	// memory primitive - so this is the end-to-end test of D-Deduce, and the
+	// only thing in the repository that compiles the file the language is
+	// specified against.
+	diagnostics().clear();
+	auto mod = createModule();
+	scope(exit) freeModule(mod);
+
+	auto builders = createBuilderStack(mod);
+	scope(exit) fp.dynarray.free(builders);
+
+	assert(parseFile(mod, builders, "test_standard.doir"));
+	assert(!diagnostics().hasErrors());
+
+	immutable root = runPipeline(mod, builders);
+	assert(root != invalidEntity);
+	assert(!diagnostics().hasErrors());
+
+	// `move`'s body is the file's one call through a deduced parameter:
+	// `_ : _ = return(%0)`, which is short an argument as written. It compiles
+	// only if `T` was solved from `%0` and spliced in - and the hole on the left
+	// only if the `-> T` was then read back through that solution.
+	immutable move = resolveLookupName(mod, internIn(mod, "std.move"), root);
+	assert(move != invalidEntity);
+
+	immutable return_ = resolveLookupName(mod, internIn(mod, "std.return"), root);
+	bool elaborated = false;
+	auto body_ = &getComponent!Block(mod, move);
+	foreach (i; 0 .. fp.dynarray.length(body_.related)) {
+		immutable child = body_.related[i];
+		if (!hasComponent!Call(mod, child)) continue;
+		if (resolveAlias(mod, getComponent!Call(mod, child).related[0]) != return_) continue;
+
+		auto args = &getComponent!FunctionInputs(mod, child);
+		assert(fp.dynarray.length(args.related) == 2);
+		// Solved forward from the value: `move`'s own `T`, which is also what
+		// the hole on the left ends up with.
+		assert(resolveAlias(mod, args.related[0])
+			== resolveAlias(mod, getComponent!TypeOf(mod, args.related[1]).related[0]));
+		assert(resolveAlias(mod, args.related[0])
+			== resolveAlias(mod, getComponent!TypeOf(mod, child).related[0]));
+		elaborated = true;
+	}
+	assert(elaborated);
 	diagnostics().clear();
 }
 

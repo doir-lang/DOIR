@@ -15,7 +15,66 @@ import doir.module_;
 @nogc nothrow:
 
 
+/// Whether `ft`'s own parameter list refers to itself - `(T : type, v : T)`,
+/// where `v`'s type is the parameter `T` rather than anything in scope.
+private bool refersToOwnParameters(ref Module mod, EntityId ft) @trusted {
+	if (!hasComponent!FunctionParameterNames(mod, ft)) return false;
+	auto names = getComponent!FunctionParameterNames(mod, ft).slice;
+	if (names.length == 0) return false;
+
+	bool namesAParameter(Lookup lookup) {
+		if (lookup.resolved()) return false;
+		foreach (name; names)
+			if (name.view == lookup.name().view) return true;
+		return false;
+	}
+
+	auto inputs = inputsOf(mod, ft);
+	scope(exit) fp.dynarray.free(inputs);
+	foreach (i; 0 .. daLength(inputs))
+		if (namesAParameter(inputs[i])) return true;
+
+	if (hasComponent!LookupFunctionReturnType(mod, ft))
+		return namesAParameter(getComponent!LookupFunctionReturnType(mod, ft).lookup);
+
+	return false;
+}
+
+/// Gives a *standalone* function type a block holding its own parameters.
+///
+/// `f : (T : type, v : T) -> T = { }` works without this, because the function
+/// has a body and `materializeFunctionTypesAndParameters` below fills that body
+/// with the parameter declarations `v : T` then resolves against. Lift the type
+/// out to a name of its own -
+///
+///     load_immediate_t : type = (T : type, v : T) -> T
+///
+/// - and there is no body left: `T` names nothing in any enclosing scope, and
+/// `canon.lookupsResolved` reports "Type `T` appears to not exist". The type is
+/// the same type either way, so the difference was never the language's.
+///
+/// Only a type that *does* refer to its own parameters gets the block. That is
+/// not an optimization - a function type carrying a `Block` otherwise looks
+/// like an aggregate to everything that walks types, and there is no reason to
+/// make every function type in a program answer that question differently than
+/// it did.
+private bool materializeFunctionTypeParameters(ref Module mod, EntityId ft) @trusted {
+	if (hasComponent!Block(mod, ft)) return false;
+	if (!hasComponent!TypeDefinition(mod, ft)) return false;
+	if (!hasAnyInputs(mod, ft)) return false;
+	if (!refersToOwnParameters(mod, ft)) return false;
+
+	addComponent!Block(mod, ft);
+	FunctionBuilder builder;
+	builder.builder = BlockBuilder(ft, &mod);
+	pushParameters(builder, ft);
+	return true;
+}
+
+
 bool materializeFunctionTypesAndParameters(ref Module mod, EntityId subtree) @trusted {
+	materializeFunctionTypeParameters(mod, subtree);
+
 	if (!(hasComponent!TypeOf(mod, subtree) || hasComponent!LookupTypeOf(mod, subtree))) return true;
 
 	auto lookup = typeOfLookup(mod, subtree);
@@ -33,6 +92,21 @@ bool materializeFunctionTypesAndParameters(ref Module mod, EntityId subtree) @tr
 		if (hasComponent!LookupFunctionReturnType(mod, ft))
 			addComponent!LookupFunctionReturnType(mod, subtree).lookup =
 				getComponent!LookupFunctionReturnType(mod, ft).lookup;
+	}
+
+	// `-> T`, where `T` is one of the function type's own parameters. What
+	// `subtree` was handed - here, or eagerly by `attachValuelessFunction` at
+	// parse time - is the *name*, and `subtree` is not inside the function type,
+	// so resolving it in `subtree`'s scope asks somewhere `T` has never been.
+	// Resolve it against the type instead, which is where it was written. Only a
+	// type carrying its own parameters can have named one, so this is inert for
+	// every other declaration in the program.
+	if (hasComponent!Block(mod, ft) && hasComponent!LookupFunctionReturnType(mod, subtree)) {
+		auto slot = &getComponent!LookupFunctionReturnType(mod, subtree);
+		if (!slot.lookup.resolved()) {
+			immutable resolved = resolveLookupName(mod, slot.lookup.name(), ft);
+			if (resolved != invalidEntity) slot.lookup = resolved;
+		}
 	}
 
 	if (!hasComponent!Block(mod, subtree)) return true;

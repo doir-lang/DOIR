@@ -42,7 +42,7 @@ enum EntityId currentCanonicalizeRoot = cast(EntityId)(-2);
 
 /// The builtin names `verify.identifierStructure` refuses outside the
 /// builtin block (the C++ `DOIR_BUILTIN_NAMES`).
-static immutable string[3] builtinNames = ["type", "alias", "namespace"];
+static immutable string[4] builtinNames = ["type", "alias", "namespace", "deduced_type"];
 
 
 /// Gives a component a relation's `related` storage plus the two static
@@ -88,6 +88,16 @@ struct Flags {
 		Inline = (1 << 10),
 		Flatten = (1 << 11),
 		Tail = (1 << 12),
+		/// On a *function type*: `sema.monomorphizeFunctions` leaves calls
+		/// through it alone, however comptime their arguments are.
+		///
+		/// A comptime parameter earns a specialization because the copy can be
+		/// better for knowing the value. Sometimes it cannot: the assembler's
+		/// register functions take a `compiler.assembler.register`, which is a
+		/// `comptime_base_type` and so comptime by C-Type, but a copy per
+		/// register is 256 bodies that emit the same bytes with one immediate
+		/// changed. This is how such a function says so.
+		NeverMonomorphize = (1 << 13),
 	}
 
 	ushort flags = None;
@@ -155,8 +165,72 @@ struct FunctionParameter {
 /// A type. Also expects a `Block` attached (or `Pointer`, or function
 /// inputs/return type for a function type).
 struct TypeDefinition {
-	size_t size, alignment;
+	size_t size = 0, alignment = 0;
 	size_t unique = 0;
+}
+
+/// The uniqueness discriminators the builtin types reserve (M-Unique).
+///
+/// S-Struct compares $⟨"size", "alignment", "unique"⟩$, and `type` and `block`
+/// are zero-sized - so without these they are the same type as each other, and
+/// as every empty aggregate a program declares. They are not values: one is the
+/// meta-language's types and the other its quoted syntax, so neither has a
+/// layout for S-Struct to compare them by, and a reserved discriminator is what
+/// says so.
+///
+/// `void` is deliberately *not* one of them. It is a value with no bits rather
+/// than a non-value, so a function returning `void` and one returning an empty
+/// struct return the same thing, and S-Struct is right to say so.
+///
+/// `type` and `deducedType` share theirs. A `deduced` parameter *is* a `type`
+/// parameter, solved by the call site rather than passed by it (D-Deduce), so a
+/// `T : type` in hand is exactly what may be passed for one - which is what
+/// `move`'s `return(%0)` does once it is elaborated.
+///
+/// Zero stays "did not ask": `opt.nextUnique` hands it to every
+/// `compiler.base_type`, so structural comparison is what a program gets unless
+/// it says otherwise. These start at one, and `type.unique` has the rest.
+enum BuiltinUnique : size_t {
+	structural = 0,
+	type = 1,
+	deducedType = type,
+	block = 2,
+}
+
+/// Every specialization `sema.monomorphizeFunctions` has made from this
+/// function, in the order it made them.
+///
+/// It lives on the *original* so that one lookup answers both questions a call
+/// asks - has this function been specialized for these arguments before, and
+/// what else has it been specialized for - without a scan of the module. A
+/// function nothing has specialized has no component at all rather than an
+/// empty one, so the presence of it is itself the answer to "is this generic in
+/// practice".
+struct Monomorphizations {
+	mixin RelationBody!();
+}
+
+/// The comptime arguments one specialization was made for: its key, in
+/// parameter order, and what marks an entity as a specialization rather than
+/// something somebody wrote.
+///
+/// Positions are the *comptime* parameters only, in the order they appear in
+/// the function type - a call matches a specialization by comparing this list
+/// against its own arguments at those same positions.
+struct MonomorphizedFor {
+	mixin RelationBody!();
+}
+
+/// A hole: `_` written in type position, whose type is unknown and is solved
+/// forward from whatever the entity is assigned.
+///
+/// A tag, deliberately - the solution is written straight into `TypeOf` and the
+/// tag dropped, so there is nothing to store here and nothing for
+/// `canonicalize.sort` to renumber. The other kind of unsolved type, a
+/// `deduced` parameter, is not one of these: it is said by the parameter's type
+/// being `deduced_type`, and its solution belongs to the call site rather than
+/// to the parameter declaration every call through the type shares (D-Deduce).
+struct TypeVariable {
 }
 
 /// A pointer (or, with a non-zero `size`, an array) to `related[0]`.
@@ -420,9 +494,49 @@ EntityId* resolvedInputs(ref Module mod, EntityId e) @trusted {
 	return out_;
 }
 
-/// True if `e` carries either flavour of function inputs.
+/// True if `e` carries either flavor of function inputs.
 bool hasAnyInputs(ref Module mod, EntityId e) {
 	return hasComponent!FunctionInputs(mod, e) || hasComponent!LookupFunctionInputs(mod, e);
+}
+
+/// The builtin `deduced` parameters are declared with: the type of a parameter
+/// that is *solved, not supplied* (D-Deduce).
+///
+/// `deduced` is a keyword, not a modifier - `T : deduced type` parses to a
+/// parameter of this type, and that is the whole representation. Which is the
+/// same move C-Type already makes: how an argument arrives is said by the
+/// parameter's type, there because the type is always-comptime, here because it
+/// is this one. Nothing extra is stored, so nothing extra has to be copied when
+/// a function type is, or renumbered when `canonicalize.sort` runs.
+///
+/// Cached per module (`resolveCached`), since every call asks per parameter.
+EntityId deducedType(ref Module mod, EntityId scope_) {
+	return resolveCached(mod, "deduced_type", scope_);
+}
+
+/// Whether `ft`'s parameter number `index` is `deduced`.
+bool isDeducedParameter(ref Module mod, EntityId ft, size_t index) @trusted {
+	if (ft == invalidEntity) return false;
+	if (!hasComponent!FunctionInputs(mod, ft)) return false;
+
+	auto inputs = &getComponent!FunctionInputs(mod, ft);
+	if (index >= daLength(inputs.related)) return false;
+
+	return resolveAlias(mod, inputs.related[index]) == deducedType(mod, ft);
+}
+
+/// How many of `ft`'s parameters are solved rather than supplied - what a call
+/// site is short by.
+size_t deducedParameterCount(ref Module mod, EntityId ft) @trusted {
+	if (ft == invalidEntity) return 0;
+	if (!hasComponent!FunctionInputs(mod, ft)) return 0;
+
+	immutable deduced = deducedType(mod, ft);
+	size_t count = 0;
+	auto inputs = &getComponent!FunctionInputs(mod, ft);
+	foreach (i; 0 .. daLength(inputs.related))
+		if (resolveAlias(mod, inputs.related[i]) == deduced) ++count;
+	return count;
 }
 
 /// The call target of `e`, resolved or not.
@@ -534,6 +648,46 @@ EntityId* associatedParameters(ref Module mod, size_t inputCount, EntityId block
 			}
 		}
 	return parameters;
+}
+
+/// `returnTypeOf` as an entity, resolving the name form against `ft` itself.
+///
+/// A function type built from names - which every builtin is until
+/// `canon.lookupsResolved` promotes it - still carries an unresolved lookup
+/// here, and a `-> T` naming one of `ft`'s own parameters only resolves inside
+/// `ft`. `invalidEntity` when there is no return type, or none that resolves.
+EntityId resolvedReturnTypeOf(ref Module mod, EntityId ft) @trusted {
+	if (ft == invalidEntity) return invalidEntity;
+
+	auto type = returnTypeOf(mod, ft);
+	if (type.isNull) return invalidEntity;
+	if (type.get.resolved()) return type.get.entity();
+	return resolveLookupName(mod, type.get.name(), ft);
+}
+
+/// What a type written inside a function type means at one of that type's call
+/// sites.
+///
+/// `(T: type, v: T) -> T` names its own parameter three times over; what each
+/// of those names at a *call* is the argument in that position - which for a
+/// `deduced` parameter is what `sema.deduceTypes` solved, since the
+/// solution belongs to the call site rather than to the one parameter
+/// declaration every call through the type shares (D-Deduce). Anything that is
+/// not one of `ft`'s own parameters is already what it means.
+EntityId typeAtCallSite(ref Module mod, EntityId call, EntityId ft, EntityId type) @trusted {
+	if (type == invalidEntity) return type;
+
+	immutable parameter = resolveAlias(mod, type);
+	if (!hasComponent!FunctionParameter(mod, parameter)) return type;
+	if (!hasComponent!Parent(mod, parameter)) return type;
+	if (getComponent!Parent(mod, parameter).related[0] != ft) return type;
+	if (!hasComponent!FunctionInputs(mod, call)) return type;
+
+	auto arguments = &getComponent!FunctionInputs(mod, call);
+	immutable index = getComponent!FunctionParameter(mod, parameter).index;
+	if (index >= daLength(arguments.related)) return type;
+
+	return resolveAlias(mod, arguments.related[index]);
 }
 
 /// Strips whatever value `root` carries, leaving the declaration behind.
@@ -825,8 +979,8 @@ Lookup toLookup(T)(T v) {
 
 /// `func_t : type = (a: i32) -> f32`
 ///
-/// Which flavour of return-type component gets attached follows the
-/// *parameter* flavour, exactly as the C++ overload pair does: a `Lookup`
+/// Which flavor of return-type component gets attached follows the
+/// *parameter* flavor, exactly as the C++ overload pair does: a `Lookup`
 /// parameter list always pairs with `LookupFunctionReturnType`, even when the
 /// return type handed in is an already-resolved entity.
 EntityId attachFunctionType(TParam, TReturn)(ref Module mod, EntityId to, const(TParam)[] parameterTypes,
@@ -1325,7 +1479,7 @@ private void copyDynamicRelation(T)(ref Module mod, EntityId to, EntityId from, 
 
 /// Copies a single-`Lookup` component. Note the `if (subs)` guard: the C++
 /// only assigns the destination when a substitution table was supplied, and
-/// this port keeps that (surprising) behaviour rather than changing what
+/// this port keeps that (surprising) behavior rather than changing what
 /// callers passing `null` observe.
 private void copyLookup(T)(ref Module mod, EntityId to, EntityId from, EntityMap* subs) {
 	auto lookup = getComponent!T(mod, from);
@@ -1611,15 +1765,33 @@ ref BlockBuilder buildBuiltinBlock(return ref BlockBuilder self) @trusted {
 	auto typeBuilder = pushType(self, internIn(*mod, "type"));
 	immutable type = typeBuilder.end();
 	orFlags(*mod, type, Flags.Comptime | Flags.AlwaysComptime);
+	getComponent!TypeDefinition(*mod, type).unique = BuiltinUnique.type;
 
 	auto blockBuilder = pushType(self, internIn(*mod, "block"));
 	immutable blk = blockBuilder.end();
 	orFlags(*mod, blk, Flags.Comptime | Flags.AlwaysComptime);
+	getComponent!TypeDefinition(*mod, blk).unique = BuiltinUnique.block;
 
 	auto voidBuilder = pushType(self, internIn(*mod, "void"));
 	voidBuilder.end();
 
-	// TODO: Should we replace this with something in the parser that makes type variables?
+	// What `deduced type` parses to. A distinct entity from `type` because that
+	// distinction *is* the representation of D-Deduce: a parameter of this type
+	// is solved by the call site rather than passed by it. Always-comptime for
+	// the same reason `type` is (C-Type) - a solved one becomes a comptime
+	// argument.
+	auto deducedBuilder = pushType(self, internIn(*mod, "deduced_type"));
+	immutable deduced = deducedBuilder.end();
+	orFlags(*mod, deduced, Flags.Comptime | Flags.AlwaysComptime);
+	// Agreeing with `type` is the point: what a call passes for a solved
+	// parameter is an ordinary type, and inside a deduced function `T` itself
+	// is a `type` that may be passed on.
+	getComponent!TypeDefinition(*mod, deduced).unique = BuiltinUnique.deducedType;
+
+	// What `_` in type position resolves to. It is a single shared entity, so it
+	// is a placeholder rather than an answer: `sema.introduceTypeVariables`
+	// replaces every reference to it with a `TypeVariable` of that site's own,
+	// which is what makes two holes in one module solvable to two types.
 	auto autoBuilder = pushType(self, _Interned);
 	addComponent!Name(*mod, autoBuilder.block).value = _Interned;
 	autoBuilder.end();
@@ -1686,11 +1858,20 @@ ref BlockBuilder buildBuiltinBlock(return ref BlockBuilder self) @trusted {
 
 	Lookup[2] pointerSizedPair = [Lookup(pointerSized), Lookup(pointerSized)];
 	InternedString[2] valueArgNames = [valueInterned, internIn(*mod, "arg")];
-	immutable bitwiseT = pushFunctionType(compiler, internIn(*mod, "bitwise_t"),
+	immutable shiftRightT = pushFunctionType(compiler, internIn(*mod, "shift_right_t"),
 		pointerSizedPair[], pointerSized, true, valueArgNames[]);
-	orFlags(*mod, bitwiseT, Flags.Comptime);
-	pushValuelessFunction(compiler, internIn(*mod, "bitwise_and"), bitwiseT);
-	pushValuelessFunction(compiler, internIn(*mod, "shift_right"), bitwiseT);
+	orFlags(*mod, shiftRightT, Flags.Comptime);
+	pushValuelessFunction(compiler, internIn(*mod, "shift_right"), shiftRightT);
+
+	// The assembler layer's one narrowing. Arithmetic is `pointer_sized` end to
+	// end and `emit` writes a byte, so without this the encoders in `mizu.doir`
+	// would have to say the difference with a type annotation - which is not a
+	// conversion S-Struct offers, only one nothing used to check.
+	Lookup[1] pointerSizedOnly = [Lookup(pointerSized)];
+	immutable truncateToByteT = pushFunctionType(compiler, internIn(*mod, "truncate_to_byte_t"),
+		pointerSizedOnly[], byte_, true, valueArgNames[0 .. 1]);
+	orFlags(*mod, truncateToByteT, Flags.Comptime);
+	pushValuelessFunction(compiler, internIn(*mod, "truncate_to_byte"), truncateToByteT);
 
 	Lookup[1] typeOnly = [Lookup(type)];
 	InternedString[1] tOnlyNames = [tInterned];
@@ -1699,12 +1880,22 @@ ref BlockBuilder buildBuiltinBlock(return ref BlockBuilder self) @trusted {
 	pushFunction(compiler, internIn(*mod, "indicate_return"), returnT, true).end();
 	pushFunction(compiler, internIn(*mod, "indicate_yield"), returnT, true).end();
 
+	// `-> type`, not `-> T` as `return_t` above has it: a constructor hands back
+	// the type it allocated and a modifier a name for the one it edited, so both
+	// return a type rather than a value of their argument (M-Ctor, M-Flag). Two
+	// types rather than one because @modifiers asks that a declaration say which
+	// of the two calling it will do.
 	immutable pointerT = pushFunctionType(compiler, internIn(*mod, "pointer_t"),
-		typeOnly[], tInterned, true, tOnlyNames[]);
+		typeOnly[], Lookup(type), true, tOnlyNames[]);
 	orFlags(*mod, pointerT, Flags.Comptime);
 	pushFunction(compiler, internIn(*mod, "pointer"), pointerT, true).end();
-	pushFunction(compiler, internIn(*mod, "always_inline"), pointerT, true).end();
-	pushFunction(compiler, internIn(*mod, "always_comptime"), pointerT, true).end();
+
+	immutable modifierT = pushFunctionType(compiler, internIn(*mod, "modifier_t"),
+		typeOnly[], Lookup(type), true, tOnlyNames[]);
+	orFlags(*mod, modifierT, Flags.Comptime);
+	pushFunction(compiler, internIn(*mod, "always_inline"), modifierT, true).end();
+	pushFunction(compiler, internIn(*mod, "always_comptime"), modifierT, true).end();
+	pushFunction(compiler, internIn(*mod, "never_monomorphize"), modifierT, true).end();
 
 	Lookup[2] typeAndT = [Lookup(type), Lookup(tInterned)];
 	InternedString[2] tValueNames = [tInterned, valueInterned];
@@ -1732,8 +1923,15 @@ ref BlockBuilder buildBuiltinBlock(return ref BlockBuilder self) @trusted {
 
 	Lookup[3] pinRegisterInputs = [Lookup(type), Lookup(tInterned), Lookup(register)];
 	InternedString[3] pinRegisterNames = [tInterned, valueInterned, internIn(*mod, "register")];
+	// `register`, not `returnRegisterT` - what it returns is the register it
+	// pinned, not the function type declared two lines up.
 	immutable pinRegisterT = pushFunctionType(assembler, internIn(*mod, "pin_register_t"),
-		pinRegisterInputs[], returnRegisterT, true, pinRegisterNames[]);
+		pinRegisterInputs[], Lookup(register), true, pinRegisterNames[]);
+	// Both of its first two parameters are comptime - a `type` and a value of
+	// it - so without this every `pin_register(u64, a, x1)` in a program would
+	// earn a body of its own. There is nothing in one to specialize: it pins a
+	// register and emits nothing.
+	orFlags(*mod, pinRegisterT, Flags.NeverMonomorphize);
 	pushFunction(assembler, internIn(*mod, "pin_register"), pinRegisterT, true).end();
 
 	Lookup[0] noInputs;
@@ -2322,7 +2520,7 @@ unittest { // an entity nothing in its chain can locate points at the file's top
 
 // --- Scope walking and type resolution --------------------------------------
 
-unittest { // findFunctionInsideOf recognises a function by its *type* too
+unittest { // findFunctionInsideOf recognizes a function by its *type* too
 	auto f = makeModuleWithBuiltins();
 	scope(exit) freeModule(f.mod);
 
@@ -2556,7 +2754,7 @@ unittest { // inlineInto splices a block's children in and reparents them
 }
 
 unittest {
-	// `attachValuelessFunction` copies whichever flavour of return type the
+	// `attachValuelessFunction` copies whichever flavor of return type the
 	// function type carries, the same way `attachFunction` does.
 	auto f = makeModuleWithBuiltins();
 	scope(exit) freeModule(f.mod);

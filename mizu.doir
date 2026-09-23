@@ -12,40 +12,62 @@ mizu : namespace = {
 	_ : type = compiler.always_inline(one_parameters_t)
 	two_parameters_t : type = (a : u64, b : u64) -> u64
 	_ : type = compiler.always_inline(two_parameters_t)
+	// These three take a comptime parameter but have nothing to gain from a body
+	// of their own for each value of it: every copy would emit the same
+	// instruction with one immediate changed, and there are 2^64 immediates and
+	// 256 registers. `always_inline` already gives the call site the copy it
+	// wants; monomorphizing first would only make a declaration to inline from.
 	immediate_t : type = (immediate: comptime.u64) -> u64
 	_ : type = compiler.always_inline(immediate_t)
+	_ : type = compiler.never_monomorphize(immediate_t)
 	branch_immediate_t : type = (a: u64, immediate: comptime.u64) -> u64
 	_ : type = compiler.always_inline(branch_immediate_t)
+	_ : type = compiler.never_monomorphize(branch_immediate_t)
 
+	// The block is comptime, but it is not decoration: `execute` and
+	// `execute_if` hand it to the VM's own instruction, so it has to stay an
+	// argument of the call. A comptime parameter that the callee *passes on* is
+	// exactly the case for this marker.
 	execute_t : type = (blk: block) -> u64
 	_ : type = compiler.always_inline(execute_t)
+	_ : type = compiler.never_monomorphize(execute_t)
 	execute_if_t : type = (blk: block, condition: u64) -> u64
 	_ : type = compiler.always_inline(execute_if_t)
+	_ : type = compiler.never_monomorphize(execute_if_t)
 
 	emit_register_t : type = (r : compiler.assembler.register) -> compiler.assembler.register
 	_ : type = compiler.always_inline(emit_register_t)
+	_ : type = compiler.never_monomorphize(emit_register_t)
 	emit_register : emit_register_t = {
 		%8 : compiler.pointer_sized = 8
-		mask : compiler.pointer_sized = 0xFF
 		shift : compiler.pointer_sized = compiler.shift_right(r, %8)
-		low : compiler.byte = compiler.bitwise_and(r, mask)
+		low : compiler.byte = compiler.truncate_to_byte(r)
 		_ : compiler.byte = compiler.emit(low)
-		high : compiler.byte = compiler.bitwise_and(shift, mask)
+		high : compiler.byte = compiler.truncate_to_byte(shift)
 		_ : compiler.byte = compiler.emit(high)
 		_ : compiler.assembler.register = compiler.indicate_return(compiler.assembler.register)
 	}
 
 
-	load_immediate : (T : type, v : T) -> T = {}
-	load_upper_immediate : (T : type, v : T) -> T = {}
+	// Named rather than written inline at each declaration, so that
+	// `never_monomorphize` has something to be applied to: `T` is a comptime
+	// parameter, and every copy of these would emit the same instruction with
+	// one immediate changed.
+	load_immediate_t : type = (T : type, v : T) -> T
+	_ : type = compiler.never_monomorphize(load_immediate_t)
+	immediate_op_t : type = (T : type) -> void
+	_ : type = compiler.never_monomorphize(immediate_op_t)
+
+	load_immediate : load_immediate_t = {}
+	load_upper_immediate : load_immediate_t = {}
 	label : () -> compiler.assembler.register = {}
 
-	load_immediate_op : (T : type) -> void = {
+	load_immediate_op : immediate_op_t = {
 		%0 : compiler.byte_pointer = "\x06\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%0)
 		_ : T = compiler.indicate_return(T)
 	}
-	load_upper_immediate_op : (T : type) -> void = {
+	load_upper_immediate_op : immediate_op_t = {
 		%1 : compiler.byte_pointer = "\x07\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%1)
 		_ : T = compiler.indicate_return(T)
@@ -57,26 +79,26 @@ mizu : namespace = {
 	}
 
 	find_label_t : type = (label: compiler.assembler.register) -> u64
+	_ : type = compiler.never_monomorphize(find_label_t)
 	_ : type = compiler.always_inline(find_label_t)
 	find_label : find_label_t = {
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 		%3 : compiler.byte_pointer = "\x02\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%3)
 		_ : compiler.assembler.register = inline emit_register(regret)
-		mask : compiler.pointer_sized = 0xFF
-		lowest : compiler.byte = compiler.bitwise_and(label, mask)
+		lowest : compiler.byte = compiler.truncate_to_byte(label)
 		_ : compiler.byte = compiler.emit(lowest)
 		%8 : compiler.pointer_sized = 8
 		shift_8 : compiler.pointer_sized = compiler.shift_right(label, %8)
-		low : compiler.byte = compiler.bitwise_and(shift_8, mask)
+		low : compiler.byte = compiler.truncate_to_byte(shift_8)
 		_ : compiler.byte = compiler.emit(low)
 		%16 : compiler.pointer_sized = 16
 		shift_16 : compiler.pointer_sized = compiler.shift_right(label, %16)
-		high : compiler.byte = compiler.bitwise_and(shift_16, mask)
+		high : compiler.byte = compiler.truncate_to_byte(shift_16)
 		_ : compiler.byte = compiler.emit(high)
 		%24 : compiler.pointer_sized = 24
 		shift_24 : compiler.pointer_sized = compiler.shift_right(label, %24)
-		highest : compiler.byte = compiler.bitwise_and(shift_24, mask)
+		highest : compiler.byte = compiler.truncate_to_byte(shift_24)
 		_ : compiler.byte = compiler.emit(highest)
 		%4 : compiler.byte_pointer = "\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%4)
@@ -283,20 +305,19 @@ mizu : namespace = {
 		%37 : compiler.byte_pointer = "\x15\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%37)
 		_ : compiler.assembler.register = inline emit_register(regret)
-		mask : compiler.pointer_sized = 0xFF
-		lowest : compiler.byte = compiler.bitwise_and(immediate, mask)
+		lowest : compiler.byte = compiler.truncate_to_byte(immediate)
 		_ : compiler.byte = compiler.emit(lowest)
 		%8 : compiler.pointer_sized = 8
 		shift_8 : compiler.pointer_sized = compiler.shift_right(immediate, %8)
-		low : compiler.byte = compiler.bitwise_and(shift_8, mask)
+		low : compiler.byte = compiler.truncate_to_byte(shift_8)
 		_ : compiler.byte = compiler.emit(low)
 		%16 : compiler.pointer_sized = 16
 		shift_16 : compiler.pointer_sized = compiler.shift_right(immediate, %16)
-		high : compiler.byte = compiler.bitwise_and(shift_16, mask)
+		high : compiler.byte = compiler.truncate_to_byte(shift_16)
 		_ : compiler.byte = compiler.emit(high)
 		%24 : compiler.pointer_sized = 24
 		shift_24 : compiler.pointer_sized = compiler.shift_right(immediate, %24)
-		highest : compiler.byte = compiler.bitwise_and(shift_24, mask)
+		highest : compiler.byte = compiler.truncate_to_byte(shift_24)
 		_ : compiler.byte = compiler.emit(highest)
 		%38 : compiler.byte_pointer = "\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%38)
@@ -320,20 +341,19 @@ mizu : namespace = {
 		%41 : compiler.byte_pointer = "\x17\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%41)
 		_ : compiler.assembler.register = inline emit_register(regret)
-		mask : compiler.pointer_sized = 0xFF
-		lowest : compiler.byte = compiler.bitwise_and(immediate, mask)
+		lowest : compiler.byte = compiler.truncate_to_byte(immediate)
 		_ : compiler.byte = compiler.emit(lowest)
 		%8 : compiler.pointer_sized = 8
 		shift_8 : compiler.pointer_sized = compiler.shift_right(immediate, %8)
-		low : compiler.byte = compiler.bitwise_and(shift_8, mask)
+		low : compiler.byte = compiler.truncate_to_byte(shift_8)
 		_ : compiler.byte = compiler.emit(low)
 		%16 : compiler.pointer_sized = 16
 		shift_16 : compiler.pointer_sized = compiler.shift_right(immediate, %16)
-		high : compiler.byte = compiler.bitwise_and(shift_16, mask)
+		high : compiler.byte = compiler.truncate_to_byte(shift_16)
 		_ : compiler.byte = compiler.emit(high)
 		%24 : compiler.pointer_sized = 24
 		shift_24 : compiler.pointer_sized = compiler.shift_right(immediate, %24)
-		highest : compiler.byte = compiler.bitwise_and(shift_24, mask)
+		highest : compiler.byte = compiler.truncate_to_byte(shift_24)
 		_ : compiler.byte = compiler.emit(highest)
 		%42 : compiler.byte_pointer = "\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%42)
@@ -369,20 +389,19 @@ mizu : namespace = {
 		%47 : compiler.byte_pointer = "\x1a\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%47)
 		_ : compiler.assembler.register = inline emit_register(regret)
-		mask : compiler.pointer_sized = 0xFF
-		lowest : compiler.byte = compiler.bitwise_and(immediate, mask)
+		lowest : compiler.byte = compiler.truncate_to_byte(immediate)
 		_ : compiler.byte = compiler.emit(lowest)
 		%8 : compiler.pointer_sized = 8
 		shift_8 : compiler.pointer_sized = compiler.shift_right(immediate, %8)
-		low : compiler.byte = compiler.bitwise_and(shift_8, mask)
+		low : compiler.byte = compiler.truncate_to_byte(shift_8)
 		_ : compiler.byte = compiler.emit(low)
 		%16 : compiler.pointer_sized = 16
 		shift_16 : compiler.pointer_sized = compiler.shift_right(immediate, %16)
-		high : compiler.byte = compiler.bitwise_and(shift_16, mask)
+		high : compiler.byte = compiler.truncate_to_byte(shift_16)
 		_ : compiler.byte = compiler.emit(high)
 		%24 : compiler.pointer_sized = 24
 		shift_24 : compiler.pointer_sized = compiler.shift_right(immediate, %24)
-		highest : compiler.byte = compiler.bitwise_and(shift_24, mask)
+		highest : compiler.byte = compiler.truncate_to_byte(shift_24)
 		_ : compiler.byte = compiler.emit(highest)
 		%48 : compiler.byte_pointer = "\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%48)
@@ -422,12 +441,11 @@ mizu : namespace = {
 		_ : compiler.byte = compiler.emit_bytes(%53)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
-		mask : compiler.pointer_sized = 0xFF
-		low : compiler.byte = compiler.bitwise_and(immediate, mask)
+		low : compiler.byte = compiler.truncate_to_byte(immediate)
 		_ : compiler.byte = compiler.emit(low)
 		%8 : compiler.pointer_sized = 8
 		shift_8 : compiler.pointer_sized = compiler.shift_right(immediate, %8)
-		high : compiler.byte = compiler.bitwise_and(shift_8, mask)
+		high : compiler.byte = compiler.truncate_to_byte(shift_8)
 		_ : compiler.byte = compiler.emit(high)
 		%54 : compiler.byte_pointer = "\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%54)
@@ -1002,6 +1020,18 @@ mizu : namespace = {
 		sequential(
 			depthFirst(nameReuse),
 			depthFirst(functionArity),
+			// The post-comptime half of the type system. Scheduled here rather
+			// than by the compiler so a backend can say something else: drop
+			// these two lines and nothing type checks, replace them and the
+			// rules change with the backend.
+			//
+			// `foldBaseTypes` first: S-Struct compares two types by their layout,
+			// and every builtin type is a `base_type` call until something folds
+			// it. Without this line `typeCheck` reads no layout on either side and
+			// so agrees with everything.
+			breadthFirst(foldBaseTypes),
+			depthFirst(typeCheck),
+			depthFirst(computeTypeProperties),
 			depthFirst(runSchedule),
 			runRegisteredSchedules,
 
@@ -1015,6 +1045,7 @@ mizu : namespace = {
 			breadthFirst(computeCompilerNamespace!false),
 			depthFirst(materializeImmediates),
 			depthFirst(materializeLabels),
+			sorted(monomorphizeFunctions, false),
 			breadthFirst(inlineFunctions),
 			breadthFirst(computeCompilerNamespace!true),
 			debugPrint

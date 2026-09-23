@@ -100,7 +100,7 @@ unittest { // anything that isn't a materialisable alias is left alone
 	addComponent!Alias(f.mod, orphan).related[0] = n;
 	assert(materializeAliases(f.mod, orphan, f.root));
 
-	// An alias that names another file cannot be materialised.
+	// An alias that names another file cannot be materialized.
 	immutable crossFile = pushAlias(block, internIn(f.mod, "elsewhere"), n);
 	auto a = &getComponent!Alias(f.mod, crossFile);
 	a.file = "other.doir";

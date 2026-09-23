@@ -210,7 +210,7 @@ struct Module {
 
 	/// The text of the file parsed most recently. A location that names a
 	/// file resolves against `sourceOf` instead; this is the fallback for the
-	/// synthesised ones that do not.
+	/// synthesized ones that do not.
 	const(char)[] source;
 	const(char)[] workingFile;
 	bool hasWorkingFile = false;
@@ -289,7 +289,7 @@ void registerSource(ref Module m, const(char)[] file, const(char)[] source) @tru
 /// against `m.source` reads the wrong lines, and (once the included file is
 /// the shorter of the two) walks off the end of it.
 ///
-/// Locations that name no file at all - the synthesised ones - still have
+/// Locations that name no file at all - the synthesized ones - still have
 /// nothing better than `m.source` to resolve against, so that stays the
 /// fallback.
 const(char)[] sourceOf(ref Module m, const(char)[] file) @trusted {
@@ -487,7 +487,7 @@ void substituteEntities(ref Module m, EntityId range, ref EntityMap substitution
 	substituteEntitiesImpl(m, range, substitutions, 0, maxDepth);
 }
 
-/// Convenience wrapper for the one-or-two-pair substitutions the optimiser
+/// Convenience wrapper for the one-or-two-pair substitutions the optimizer
 /// performs inline.
 void substituteEntities(ref Module m, EntityId range, const(EntityPairLiteral)[] pairs, size_t maxDepth = size_t.max) {
 	EntityMap map;

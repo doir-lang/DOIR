@@ -2,7 +2,7 @@
 /// reach back into the module that is compiling it. Ported from
 /// mizu_doir_instructions.hpp.
 ///
-/// The C++ registered these with Mizu at static-initialisation time
+/// The C++ registered these with Mizu at static-initialization time
 /// (`MIZU_REGISTER_INSTRUCTION`), which let `mizu::from_portable` resolve
 /// them by id. The D Mizu has no runtime registration: it builds its
 /// instruction table at *compile* time, and `mizu.lookup.Lookup` lets a

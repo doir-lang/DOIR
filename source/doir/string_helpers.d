@@ -610,7 +610,7 @@ unittest {
 	// `InternedString.wildcard` is a standalone literal, never produced by
 	// `intern`. Comparing it against an interned "_" therefore fails the
 	// pointer-identity opEquals even though the text is identical - code that
-	// needs to recognise the discard name must compare content.
+	// needs to recognize the discard name must compare content.
 	auto interner = createInterner();
 	scope(exit) free(interner);
 	auto underscore = intern(interner, "_");
@@ -794,6 +794,6 @@ unittest { // replaceAll rewrites every occurrence, and ignores an empty needle
 	replaceAll(s, "-", "+");
 	assert(strSlice(s) == "a+b+c");
 
-	replaceAll(s, "", "!"); // would loop forever if it were honoured
+	replaceAll(s, "", "!"); // would loop forever if it were honored
 	assert(strSlice(s) == "a+b+c");
 }

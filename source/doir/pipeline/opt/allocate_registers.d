@@ -1,5 +1,5 @@
 /// `opt.allocateRegisters`: hands every value produced after
-/// `begin_register_allocation` the next free register, by synthesising a
+/// `begin_register_allocation` the next free register, by synthesizing a
 /// `pin_register` call right after it. Ported from opt/allocate_registers.hpp.
 module doir.pipeline.opt.allocate_registers;
 

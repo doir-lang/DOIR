@@ -25,7 +25,7 @@ private ubyte** slotFor(ref ubyte** values, EntityId e) @trusted {
 
 private void emitNumberAssign(ref ubyte** values, ref Module mod, EntityId subtree) @trusted {
 	// Either kind of constant is a byte here - `opt.computeCompilerNamespace`
-	// leaves a `ComptimeNumber` behind on a folded `compiler.bitwise_and` /
+	// leaves a `ComptimeNumber` behind on a folded `compiler.truncate_to_byte` /
 	// `shift_right` call, and `mizu`'s `emit_register` hands exactly those to
 	// `compiler.emit`.
 	auto number = comptimeNumber(mod, subtree);

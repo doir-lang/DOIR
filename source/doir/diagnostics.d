@@ -32,7 +32,7 @@ import doir.module_ : Module, sourceOf;
 /// Those throws are never caught anywhere in the C++ program, so reaching one
 /// terminates the compiler after printing the message. `-betterC` has no
 /// exceptions, so `panic` does exactly that - prints to stderr and aborts -
-/// which keeps the observable behaviour of every such site unchanged.
+/// which keeps the observable behavior of every such site unchanged.
 ///
 /// Prints `message` (plus the source position it was raised from) and aborts.
 noreturn panic(const(char)[] message, string file = __FILE__, size_t line = __LINE__) @trusted {
@@ -56,9 +56,9 @@ ref Manager diagnostics() @trusted {
 	return globalDiagnostics;
 }
 
-/// The colours DOIR paints particular kinds of thing in diagnostic text.
+/// The colors DOIR paints particular kinds of thing in diagnostic text.
 struct DoirAnsi {
-	enum string info = Ansi.cyan; // == diagnose's colour for `Kind.info`
+	enum string info = Ansi.cyan; // == diagnose's color for `Kind.info`
 	enum string file = Ansi.magenta;
 	enum string type = Ansi.cyan;
 	enum string func = Ansi.blue;
@@ -192,7 +192,7 @@ struct Range {
 
 /// The stretch of `source` a location covers, clamped to what `source`
 /// actually holds. A location and the text it is resolved against can still
-/// drift apart - a synthesised location falls back to whatever file was
+/// drift apart - a synthesized location falls back to whatever file was
 /// parsed last - and a diagnostic about that is worth printing wrong, but not
 /// worth a bounds crash inside the error reporter.
 const(char)[] spanOf(const(char)[] source, SourceLocation location) {
@@ -202,7 +202,7 @@ const(char)[] spanOf(const(char)[] source, SourceLocation location) {
 }
 
 /// Finds the byte range of argument number `parameterIndex` inside the first
-/// parenthesised argument list in `text_`, or null when there is no such
+/// parenthesized argument list in `text_`, or null when there is no such
 /// argument. Nested brackets are tracked so this keeps working for doir+'s
 /// richer call syntax.
 Nullable!Range parseParameterRange(const(char)[] text_, size_t parameterIndex) {
@@ -264,7 +264,7 @@ Nullable!Range parseParameterRange(const(char)[] text_, size_t parameterIndex) {
 // The recurring diagnostic shapes
 // ---------------------------------------------------------------------------
 //
-// The diagnostics the semantic and optimisation passes raise over and over.
+// The diagnostics the semantic and optimization passes raise over and over.
 // Ported from sema/error_helper.hpp, where they were preprocessor macros;
 // plain functions do the same job here. (They lived in their own
 // `doir.pipeline.sema.error_helper` module for a while, but more than half their
