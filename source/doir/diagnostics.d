@@ -4,7 +4,7 @@
 /// diagnostics at all. Ported from diagnostics.hpp / diagnostics.cpp.
 module doir.diagnostics;
 
-import core.stdc.stdio : fprintf, snprintf, stderr;
+import core.stdc.stdio : fprintf, stderr;
 import core.stdc.stdlib : abort;
 
 import diagnose.diagnostics : Ansi, Diagnostic, Kind, Manager, pushAnnotation;
@@ -12,11 +12,12 @@ import diagnose.source_location : Detailed, SourceLocation;
 
 import ecrs.storage : EntityId;
 
-import fp.string : concatenateSlice, strFree = free;
+import fp.string : strFree = free;
 import std.typecons : Nullable;
 
 import doir.interface_ : findDetailedSourceLocation, findSourceLocation;
-import doir.module_ : Module, sourceOf, workingFileOr;
+import doir.string_helpers : appendText, text;
+import doir.module_ : Module, sourceOf;
 
 @nogc nothrow:
 
@@ -82,46 +83,6 @@ enum DiagnosticType {
 
 	// Warnings
 	CompilerNamespaceReserved,
-}
-
-
-// ---------------------------------------------------------------------------
-// Small text helpers
-// ---------------------------------------------------------------------------
-
-/// Builds a freshly allocated libfp string out of `pieces`. Each piece is
-/// either a `const(char)[]` or a `size_t` (rendered in decimal). The caller
-/// frees the result with `fp.string.free`.
-char* text(Args...)(Args pieces) @trusted {
-	char* out_ = null;
-	static foreach (p; pieces)
-		appendPiece(out_, p);
-	return out_;
-}
-
-/// Appends one piece to an existing libfp string.
-void appendText(Args...)(ref char* out_, Args pieces) @trusted {
-	static foreach (p; pieces)
-		appendPiece(out_, p);
-}
-
-private void appendPiece(T)(ref char* out_, T piece) @trusted {
-	static if (is(T : const(char)[])) {
-		concatenateSlice(out_, piece);
-	} else static if (is(T == char*) || is(T == const(char)*)) {
-		import fp.string : strLength = length;
-		if (piece !is null) concatenateSlice(out_, piece[0 .. strLength(piece)]);
-	} else static if (is(T : real) && !is(T : long) && !is(T : ulong)) {
-		char[64] buffer;
-		immutable n = snprintf(buffer.ptr, buffer.length, "%Lg", cast(real) piece);
-		if (n > 0) concatenateSlice(out_, buffer[0 .. n]);
-	} else static if (is(T : long) || is(T : ulong)) {
-		char[32] buffer;
-		immutable n = snprintf(buffer.ptr, buffer.length, "%lld", cast(long) piece);
-		if (n > 0) concatenateSlice(out_, buffer[0 .. n]);
-	} else {
-		static assert(0, "doir.diagnostics.text: unsupported piece type " ~ T.stringof);
-	}
 }
 
 

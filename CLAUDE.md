@@ -52,6 +52,14 @@ functions take the data first, plus the two UFCS traps (no UFCS through
 pointers; a local free function hides imported ones of the same name, hence
 `freeModule`).
 
+No RAII closers. A type whose only purpose is to undo something in its
+destructor is not worth the declaration — say it with `scope(exit)` at the site
+that needs it, where the undo is visible next to the do. Where the state is
+private to another module, give it a `beginX`/`endX` pair and let the caller
+pair them; `doir.systems`' lowering filter is the worked example. Nesting order
+is unchanged either way: `scope(exit)` unwinds last-in-first-out, exactly as
+destructors did.
+
 ## Build / test
 
 ```sh

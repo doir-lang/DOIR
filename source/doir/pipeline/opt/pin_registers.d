@@ -4,6 +4,7 @@ module doir.pipeline.opt.pin_registers;
 
 import ecrs.storage : EntityId;
 
+static import fp.dynarray;
 import fp.dynarray : daLength = length;
 
 import doir.interface_;
@@ -20,18 +21,12 @@ bool pinRegisters(ref Module mod, EntityId subtree) @trusted {
 	immutable function_ = resolveAlias(mod, getComponent!Call(mod, subtree).related[0]);
 	if (function_ != pinRegister) return true;
 
-	EntityList inputs;
-	scope(exit) inputs.free();
-	{
-		auto stored = &getComponent!FunctionInputs(mod, subtree);
-		foreach (i; 0 .. daLength(stored.related))
-			inputs.push(stored.related[i]);
-	}
-	if (inputs.length != 3) {
+	auto inputs = resolvedInputs(mod, subtree);
+	scope(exit) fp.dynarray.free(inputs);
+	if (daLength(inputs) != 3) {
 		expectsXInputs(mod, subtree, "pin_register", "three");
 		return true;
 	}
-	resolveAliases(mod, inputs.slice);
 
 	auto reg = comptimeNumber(mod, inputs[2]);
 	if (reg.isNull) {
@@ -56,22 +51,16 @@ bool pinRegisters(ref Module mod, EntityId subtree) @trusted {
 // have rejected first in a real compile, so this builds the calls directly
 // rather than driving them through the pipeline.
 
-version (unittest) {
-	import ecrs.storage : invalidEntity;
-
-	import tests.pipeline_helper;
-}
+version (unittest) import tests.pipeline_helper;
 
 unittest { // a well-formed call records the register on its target
 	auto f = makeModuleWithBuiltins();
 	scope(exit) freeModule(f.mod);
 	diagnostics().clear();
 
-	auto block = BlockBuilder(f.root, &f.mod);
-	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.root);
-	immutable pinRegister = resolveLookupName(f.mod,
-		internIn(f.mod, "compiler.assembler.pin_register"), f.root);
-	assert(pinRegister != invalidEntity);
+	auto block = f.openRoot();
+	immutable byte_ = find(f.mod, f.root, "compiler.byte");
+	immutable pinRegister = find(f.mod, f.root, "compiler.assembler.pin_register");
 
 	immutable target = pushNumber(block, internIn(f.mod, "target"), byte_, 1);
 	immutable reg = pushNumber(block, internIn(f.mod, "reg"), byte_, 7);
@@ -90,10 +79,9 @@ unittest { // a call with the wrong number of arguments is reported
 	scope(exit) freeModule(f.mod);
 	diagnostics().clear();
 
-	auto block = BlockBuilder(f.root, &f.mod);
-	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.root);
-	immutable pinRegister = resolveLookupName(f.mod,
-		internIn(f.mod, "compiler.assembler.pin_register"), f.root);
+	auto block = f.openRoot();
+	immutable byte_ = find(f.mod, f.root, "compiler.byte");
+	immutable pinRegister = find(f.mod, f.root, "compiler.assembler.pin_register");
 
 	EntityId[1] args = [byte_];
 	immutable call = pushCall(block, internIn(f.mod, "pin"), byte_, pinRegister, args[]);
@@ -108,10 +96,9 @@ unittest { // a register argument the compiler only worked out still counts
 	scope(exit) freeModule(f.mod);
 	diagnostics().clear();
 
-	auto block = BlockBuilder(f.root, &f.mod);
-	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.root);
-	immutable pinRegister = resolveLookupName(f.mod,
-		internIn(f.mod, "compiler.assembler.pin_register"), f.root);
+	auto block = f.openRoot();
+	immutable byte_ = find(f.mod, f.root, "compiler.byte");
+	immutable pinRegister = find(f.mod, f.root, "compiler.assembler.pin_register");
 
 	// What a `compiler.*` call `opt.computeCompilerNamespace` folded looks
 	// like: still a call, with the value it comes to alongside it.
@@ -134,10 +121,9 @@ unittest { // ...and so is one whose register argument is not a number
 	scope(exit) freeModule(f.mod);
 	diagnostics().clear();
 
-	auto block = BlockBuilder(f.root, &f.mod);
-	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.root);
-	immutable pinRegister = resolveLookupName(f.mod,
-		internIn(f.mod, "compiler.assembler.pin_register"), f.root);
+	auto block = f.openRoot();
+	immutable byte_ = find(f.mod, f.root, "compiler.byte");
+	immutable pinRegister = find(f.mod, f.root, "compiler.assembler.pin_register");
 
 	immutable target = pushNumber(block, internIn(f.mod, "target"), byte_, 1);
 	immutable notANumber = pushValueless(block, internIn(f.mod, "reg"), byte_);
@@ -155,9 +141,9 @@ unittest { // anything that is not a call to `pin_register` is left alone
 	scope(exit) freeModule(f.mod);
 	diagnostics().clear();
 
-	auto block = BlockBuilder(f.root, &f.mod);
-	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.root);
-	immutable emit = resolveLookupName(f.mod, internIn(f.mod, "compiler.emit"), f.root);
+	auto block = f.openRoot();
+	immutable byte_ = find(f.mod, f.root, "compiler.byte");
+	immutable emit = find(f.mod, f.root, "compiler.emit");
 
 	immutable n = pushNumber(block, internIn(f.mod, "n"), byte_, 1);
 	assert(pinRegisters(f.mod, n)); // not a call

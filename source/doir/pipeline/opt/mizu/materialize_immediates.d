@@ -7,6 +7,7 @@ import core.stdc.stdio : snprintf;
 
 import ecrs.storage : EntityId, invalidEntity;
 
+static import fp.dynarray;
 import fp.dynarray : daLength = length;
 
 import doir.interface_;
@@ -45,18 +46,12 @@ bool materializeImmediates(ref Module mod, EntityId subtree) @trusted {
 		return false;
 	}
 
-	EntityList inputs;
-	scope(exit) inputs.free();
-	{
-		auto stored = &getComponent!FunctionInputs(mod, subtree);
-		foreach (i; 0 .. daLength(stored.related))
-			inputs.push(stored.related[i]);
-	}
-	if (inputs.length != 2) {
+	auto inputs = resolvedInputs(mod, subtree);
+	scope(exit) fp.dynarray.free(inputs);
+	if (daLength(inputs) != 2) {
 		expectsXInputs(mod, subtree, "load_immediate", "two");
 		return false;
 	}
-	resolveAliases(mod, inputs.slice);
 
 	auto constant = comptimeNumber(mod, inputs[1]);
 	if (constant.isNull) {
@@ -129,40 +124,11 @@ bool materializeImmediates(ref Module mod, EntityId subtree) @trusted {
 version (unittest) {
 	static import fp.dynarray;
 
-	import doir.parser : parseSource;
-	import doir.pipeline : runPipeline;
-	import tests.pipeline_helper : makeModuleWithBuiltins;
+	import tests.pipeline_helper : makeModuleWithBuiltins, PipelineResult, withMizu;
 
-	private struct ImmediateFixture {
-		Module mod;
-		EntityId root;
-	}
-
-	private ImmediateFixture makeImmediateFixture() @trusted {
-		diagnostics().clear();
-
-		ImmediateFixture f;
-		f.mod = createModule();
-
-		BlockBuilder* builders;
-		scope(exit) fp.dynarray.free(builders);
-		{
-			auto builtin = createBlockBuilder(f.mod);
-			buildBuiltinBlock(builtin);
-			fp.dynarray.pushBack(builders, builtin);
-		}
-
-		assert(parseSource(f.mod, builders,
-			"path : compiler.byte_pointer = \"./mizu.doir\"\n"
-			~ "_ : compiler.byte = early_include(path)\n", "immediates.doir"));
-		f.root = runPipeline(f.mod, builders);
-		assert(f.root != invalidEntity);
-		assert(!diagnostics().hasErrors());
-		return f;
-	}
 
 	/// `mizu.load_immediate(args...)` pushed into the fixture's root block.
-	private EntityId pushLoadImmediate(ref ImmediateFixture f, const(EntityId)[] args) {
+	private EntityId pushLoadImmediate(ref PipelineResult f, const(EntityId)[] args) {
 		auto block = BlockBuilder(f.root, &f.mod);
 		immutable u64 = resolveLookupName(f.mod, internIn(f.mod, "mizu.u64"), f.root);
 		immutable loadImmediate = resolveLookupName(f.mod,
@@ -173,7 +139,7 @@ version (unittest) {
 }
 
 unittest { // a well-formed call is expanded into the bytes that encode it
-	auto f = makeImmediateFixture();
+	auto f = withMizu("immediates.doir");
 	scope(exit) freeModule(f.mod);
 
 	auto block = BlockBuilder(f.root, &f.mod);
@@ -193,7 +159,7 @@ unittest { // a well-formed call is expanded into the bytes that encode it
 }
 
 unittest { // a value the compiler only worked out is expanded just the same
-	auto f = makeImmediateFixture();
+	auto f = withMizu("immediates.doir");
 	scope(exit) freeModule(f.mod);
 
 	auto block = BlockBuilder(f.root, &f.mod);
@@ -218,7 +184,7 @@ unittest { // a value the compiler only worked out is expanded just the same
 }
 
 unittest { // a call with the wrong number of arguments is reported
-	auto f = makeImmediateFixture();
+	auto f = withMizu("immediates.doir");
 	scope(exit) freeModule(f.mod);
 
 	auto block = BlockBuilder(f.root, &f.mod);
@@ -240,7 +206,7 @@ unittest { // a call with the wrong number of arguments is reported
 }
 
 unittest { // ...as is one whose value is not a numeric constant
-	auto f = makeImmediateFixture();
+	auto f = withMizu("immediates.doir");
 	scope(exit) freeModule(f.mod);
 
 	auto block = BlockBuilder(f.root, &f.mod);
@@ -254,7 +220,7 @@ unittest { // ...as is one whose value is not a numeric constant
 }
 
 unittest { // ...and one whose target was never assigned a register
-	auto f = makeImmediateFixture();
+	auto f = withMizu("immediates.doir");
 	scope(exit) freeModule(f.mod);
 
 	auto block = BlockBuilder(f.root, &f.mod);
@@ -269,7 +235,7 @@ unittest { // ...and one whose target was never assigned a register
 }
 
 unittest { // anything that is not a `load_immediate` call is left alone
-	auto f = makeImmediateFixture();
+	auto f = withMizu("immediates.doir");
 	scope(exit) freeModule(f.mod);
 
 	auto block = BlockBuilder(f.root, &f.mod);

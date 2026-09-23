@@ -290,7 +290,7 @@ char* canonicalPath(const(char)[] path) @trusted {
 // tears it down, which is deliberately the last word on it.
 
 version (unittest) {
-	import core.stdc.stdio : fputs, fwrite, remove;
+	import core.stdc.stdio : fwrite, remove;
 
 	/// Writes `contents` to `path`, replacing whatever was there.
 	private bool writeTestFile(const(char)* path, const(char)[] contents) @trusted {

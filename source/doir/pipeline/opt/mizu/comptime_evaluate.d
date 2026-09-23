@@ -18,7 +18,7 @@ import doir.mizu.instructions : doirLookup;
 import mizu.portable_format : fromPortable;
 import doir.module_;
 import doir.diagnostics : panic;
-import doir.pipeline.sema.sort : newRoot, sortSuspended;
+import doir.pipeline.canon.sort : newRoot, sortSuspended;
 import doir.string_helpers : InternedString, wildcardName;
 import doir.systems : SystemFunction, fixedPointChanged;
 
@@ -177,8 +177,8 @@ bool comptimeEvaluate(ref Module mod, EntityId subtree, SystemFunction mizuSched
 		pushCall(comptimeBlock, InternedString("_"), assemblerRegister, assemblerPinRegister, inputs[]);
 	}
 
-	EntityList arguments;
-	scope(exit) arguments.free();
+	EntityId* arguments;
+	scope(exit) fp.dynarray.free(arguments);
 	if (hasComponent!FunctionInputs(mod, subtree)) {
 		immutable count = daLength(getComponent!FunctionInputs(mod, subtree).related);
 		foreach (i; 0 .. count) {
@@ -221,7 +221,7 @@ bool comptimeEvaluate(ref Module mod, EntityId subtree, SystemFunction mizuSched
 				EntityId[3] inputs = [mizuU64, e, r];
 				pushCall(comptimeBlock, InternedString("_"), assemblerRegister, assemblerPinRegister, inputs[]);
 			}
-			arguments.push(e);
+			fp.dynarray.pushBack(arguments, e);
 		}
 	}
 
@@ -229,7 +229,7 @@ bool comptimeEvaluate(ref Module mod, EntityId subtree, SystemFunction mizuSched
 	auto name = hasComponent!Name(mod, subtree)
 		? getComponent!Name(mod, subtree).value
 		: wildcardName();
-	auto ret = pushCall(comptimeBlock, name, typeOfSubtree, calledFunction, arguments.slice);
+	auto ret = pushCall(comptimeBlock, name, typeOfSubtree, calledFunction, fp.dynarray.slice(arguments));
 	r = pushNumber(comptimeBlock, InternedString("_"), assemblerRegister, rValue++);
 	{
 		EntityId[3] inputs = [mizuU64, ret, r];
@@ -253,7 +253,7 @@ bool comptimeEvaluate(ref Module mod, EntityId subtree, SystemFunction mizuSched
 	newRoot = comptimeBlock.block;
 	// Every id here - `comptimeBlock.block`, `backup`, and every id the walk
 	// that reached this call is holding - is an id in the module, and a sort
-	// renumbers all of them. See `sema.sort.sortSuspended`.
+	// renumbers all of them. See `canon.sort.sortSuspended`.
 	sortSuspended = true;
 	immutable lowered = mizuSchedule(mod.ctx);
 	sortSuspended = false;
@@ -267,13 +267,11 @@ bool comptimeEvaluate(ref Module mod, EntityId subtree, SystemFunction mizuSched
 	// module before anything looked at it.
 	if (!lowered) return false;
 
-	ByteEmiter emiter;
-	scope(exit) emiter.free();
-	auto bytes = emitAll(emiter, mod, comptimeBlock.block);
-	scope(exit) bytes.free();
+	auto bytes = emitAll(mod, comptimeBlock.block);
+	scope(exit) fp.dynarray.free(bytes);
 
 	{
-		auto portable = fromPortable!doirLookup(bytes.slice);
+		auto portable = fromPortable!doirLookup(fp.dynarray.slice(bytes));
 		scope(exit) if (portable.program !is null) fp.dynarray.free(portable.program);
 
 		immutable count = daLength(portable.program);
@@ -298,44 +296,14 @@ bool comptimeEvaluate(ref Module mod, EntityId subtree, SystemFunction mizuSched
 // already-evaluated comptime string, and an argument with no name of its own.
 
 version (unittest) {
-	import doir.parser : parseSource;
-	import doir.pipeline : mizuSchedule, runPipeline;
+	import doir.pipeline : mizuSchedule;
 	import doir.diagnostics : diagnostics;
 	import doir.systems : moduleSystem;
-	import tests.pipeline_helper : compile;
+	import tests.pipeline_helper : compile, PipelineResult, withMizu;
 
-	/// A module that has `mizu.doir` loaded and has been through the pipeline,
-	/// so every `mizu.*` name the evaluator needs resolves.
-	private struct MizuFixture {
-		Module mod;
-		EntityId root;
-	}
-
-	private MizuFixture makeMizuFixture() @trusted {
-		diagnostics().clear();
-
-		MizuFixture f;
-		f.mod = createModule();
-
-		BlockBuilder* builders;
-		scope(exit) fp.dynarray.free(builders);
-		{
-			auto builtin = createBlockBuilder(f.mod);
-			buildBuiltinBlock(builtin);
-			fp.dynarray.pushBack(builders, builtin);
-		}
-
-		assert(parseSource(f.mod, builders,
-			"path : compiler.byte_pointer = \"./mizu.doir\"\n"
-			~ "_ : compiler.byte = early_include(path)\n", "comptime.doir"));
-		f.root = runPipeline(f.mod, builders);
-		assert(f.root != invalidEntity);
-		assert(!diagnostics().hasErrors());
-		return f;
-	}
 
 	/// `mizu.add(a, b)`, marked comptime, pushed into the fixture's root.
-	private EntityId pushComptimeAdd(ref MizuFixture f, const(EntityId)[] args) {
+	private EntityId pushComptimeAdd(ref PipelineResult f, const(EntityId)[] args) {
 		auto block = BlockBuilder(f.root, &f.mod);
 		immutable u64 = resolveLookupName(f.mod, internIn(f.mod, "mizu.u64"), f.root);
 		immutable add = resolveLookupName(f.mod, internIn(f.mod, "mizu.add"), f.root);
@@ -348,7 +316,7 @@ version (unittest) {
 }
 
 unittest { // a string constant is passed to the VM as the address of its bytes
-	auto f = makeMizuFixture();
+	auto f = withMizu("comptime.doir");
 	scope(exit) freeModule(f.mod);
 
 	auto block = BlockBuilder(f.root, &f.mod);
@@ -364,7 +332,7 @@ unittest { // a string constant is passed to the VM as the address of its bytes
 }
 
 unittest { // ...and so is one that an earlier round already evaluated
-	auto f = makeMizuFixture();
+	auto f = withMizu("comptime.doir");
 	scope(exit) freeModule(f.mod);
 
 	auto block = BlockBuilder(f.root, &f.mod);
@@ -381,7 +349,7 @@ unittest { // ...and so is one that an earlier round already evaluated
 }
 
 unittest { // an argument with no name of its own gets a generated one
-	auto f = makeMizuFixture();
+	auto f = withMizu("comptime.doir");
 	scope(exit) freeModule(f.mod);
 
 	auto block = BlockBuilder(f.root, &f.mod);
@@ -398,7 +366,7 @@ unittest { // an argument with no name of its own gets a generated one
 }
 
 unittest { // calls the evaluator has nothing to do with are left alone
-	auto f = makeMizuFixture();
+	auto f = withMizu("comptime.doir");
 	scope(exit) freeModule(f.mod);
 
 	auto block = BlockBuilder(f.root, &f.mod);

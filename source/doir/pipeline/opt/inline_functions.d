@@ -2,7 +2,6 @@
 /// copy of its body. Ported from opt/inline_functions.cpp.
 module doir.pipeline.opt.inline_functions;
 
-import core.stdc.stdio : snprintf;
 
 import ecrs.storage : EntityId, invalidEntity;
 
@@ -45,13 +44,8 @@ bool inlineFunctions(ref Module mod, EntityId subtree) @trusted {
 	removeComponent!Call(mod, subtree);
 
 	// Snapshot the arguments before the component goes away.
-	EntityList inputs;
-	scope(exit) inputs.free();
-	{
-		auto stored = &getComponent!FunctionInputs(mod, subtree);
-		foreach (i; 0 .. daLength(stored.related))
-			inputs.push(stored.related[i]);
-	}
+	auto inputs = inputEntities(mod, subtree);
+	scope(exit) fp.dynarray.free(inputs);
 	removeComponent!FunctionInputs(mod, subtree);
 
 	// Drop the flags that described the *call* now, before the body is copied
@@ -67,23 +61,19 @@ bool inlineFunctions(ref Module mod, EntityId subtree) @trusted {
 		getOrAddComponent!Flags(mod, subtree).flags = flags;
 	}
 
-	auto params = associatedParameters(mod, inputs.length, functionDef);
-	scope(exit) params.free();
+	auto params = associatedParameters(mod, daLength(inputs), functionDef);
+	scope(exit) fp.dynarray.free(params);
 
 	addComponent!Block(mod, subtree);
 	auto block = BlockBuilder(subtree, &mod);
 
 	EntityMap paramReplacements;
 	scope(exit) paramReplacements.free();
-	foreach (i; 0 .. inputs.length) {
+	foreach (i; 0 .. daLength(inputs)) {
 		InternedString name;
 		if (hasComponent!Name(mod, params[i]))
 			name = getComponent!Name(mod, params[i]).value;
-		else {
-			char[24] buffer;
-			immutable n = snprintf(buffer.ptr, buffer.length, "a%zu", i);
-			name = internIn(mod, buffer[0 .. n]);
-		}
+		else name = defaultParameterName(mod, i);
 		paramReplacements.set(params[i], pushAlias(block, name, inputs[i]));
 	}
 
@@ -111,7 +101,7 @@ bool inlineFunctions(ref Module mod, EntityId subtree) @trusted {
 
 version (unittest) {
 	import doir.diagnostics : diagnostics;
-	import doir.systems : LoweringBlock, LoweringSchedule;
+	import doir.systems : beginLoweringBlock, beginLoweringSchedule, endLoweringBlock, endLoweringSchedule;
 	import tests.pipeline_helper;
 }
 
@@ -237,8 +227,10 @@ unittest {
 	addComponent!ScheduleClaim(f.mod, ns.block).source = claimed;
 
 	{
-		auto running = LoweringSchedule(claimed.view);
-		auto lowering = LoweringBlock(ns.block);
+		const previousSchedule = beginLoweringSchedule(claimed.view);
+		scope(exit) endLoweringSchedule(previousSchedule);
+		immutable previousBlock = beginLoweringBlock(ns.block);
+		scope(exit) endLoweringBlock(previousBlock);
 
 		// Declared outside it: left as a call.
 		assert(inlineFunctions(f.mod, callsOuter));

@@ -1213,8 +1213,8 @@ outstanding.
 #v(0.4em)
 #text(size: 8.6pt, fill: muted)[
   Rules marked #status("impl") were read off the compiler in `source/doir/` --
-  principally `interface_.d`, `verify.d`, `parser.d`, `pipeline/sema/lookup.d`,
-  `pipeline/sema/comptime.d` and `pipeline/opt/compute_compiler_namespace.d`.
+  principally `interface_.d`, `verify.d`, `parser.d`, `pipeline/canon/lookup.d`,
+  `pipeline/canon/comptime.d` and `pipeline/opt/compute_compiler_namespace.d`.
   Rules marked #status("spec") come from Part I and `standard.doir` under the
   in-place modifier discipline.
 ]

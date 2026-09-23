@@ -16,15 +16,14 @@
 /// symbols they exclude.
 module doir.parser;
 
-import core.stdc.stdio : snprintf;
 
-import diagnose.diagnostics : Ansi, Diagnostic, Kind, Manager, pushAnnotation, pushAnnotationAtStart;
+import diagnose.diagnostics : Ansi, Diagnostic, Kind, pushAnnotation, pushAnnotationAtStart;
 import diagnose.source_location : Detailed, Pair, SourceLocation;
 import ecrs.storage : EntityId, invalidEntity;
 
 static import fp.dynarray;
 import fp.dynarray : daBack = back, daLength = length;
-import fp.string : strFree = free, strSlice = slice;
+import fp.string : isAsciiAlpha, isDigit, isHexDigit, isOctalDigit, strFree = free, strSlice = slice;
 
 import doir.diagnostics;
 import doir.file_manager : getFileString;
@@ -34,7 +33,6 @@ import doir.string_helpers;
 import doir.verify : identifierStructure;
 
 @nogc nothrow:
-
 
 
 // ---------------------------------------------------------------------------
@@ -54,10 +52,10 @@ enum ValueKind {
 struct CallInfo {
 	bool flatten, inline_, tail;
 	InternedString function_;
-	LookupList inputs;
+	Lookup* inputs;
 }
 
-void free(ref CallInfo c) { doir.interface_.free(c.inputs); }
+void free(ref CallInfo c) { fp.dynarray.free(c.inputs); }
 
 /// One declared parameter of a function type.
 struct FunctionTypeParam {
@@ -175,14 +173,6 @@ private bool lookingAt(ref Parser p, const(char)[] text_) @trusted {
 // Character classes
 // ---------------------------------------------------------------------------
 
-private bool isDigit(char c) { return c >= '0' && c <= '9'; }
-private bool isOctalDigit(char c) { return c >= '0' && c <= '7'; }
-private bool isHexDigit(char c) {
-	return isDigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
-}
-private bool isAsciiAlpha(char c) {
-	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
-}
 
 /// Decodes one UTF-8 codepoint at `i`, advancing it. Malformed bytes are
 /// returned as themselves so the parser can never stall.
@@ -267,23 +257,14 @@ private void skipSpacing(ref Parser p, bool includeNewlines) @trusted {
 	}
 }
 
-/// True if the codepoint starting at `i` may begin an identifier.
-private bool identifierStartAt(ref Parser p, size_t i, out size_t width) @trusted {
+/// True if the codepoint starting at `i` may appear in an identifier, setting
+/// `width` to its length in bytes. `continuing` distinguishes the two grammar
+/// rules, which differ only in that a digit may continue a name but not start
+/// one; every non-ASCII codepoint that is not a space does either.
+private bool identifierAt(ref Parser p, size_t i, bool continuing, out size_t width) @trusted {
 	if (i >= p.source.length) { width = 0; return false; }
 	immutable c = p.source[i];
-	if (isAsciiAlpha(c) || c == '_') { width = 1; return true; }
-	if (cast(ubyte) c < 0x80) { width = 0; return false; }
-	size_t probe = i;
-	immutable cp = decodeAt(p.source, probe);
-	width = probe - i;
-	return !isUnicodeSpace(cp);
-}
-
-/// True if the codepoint starting at `i` may continue an identifier.
-private bool identifierContinueAt(ref Parser p, size_t i, out size_t width) @trusted {
-	if (i >= p.source.length) { width = 0; return false; }
-	immutable c = p.source[i];
-	if (isAsciiAlpha(c) || isDigit(c) || c == '_') { width = 1; return true; }
+	if (isAsciiAlpha(c) || c == '_' || (continuing && isDigit(c))) { width = 1; return true; }
 	if (cast(ubyte) c < 0x80) { width = 0; return false; }
 	size_t probe = i;
 	immutable cp = decodeAt(p.source, probe);
@@ -534,7 +515,7 @@ private bool lookingAtKeyword(ref Parser p, const(char)[] text_) @trusted {
 	if (p.source[at] == '.') return false; // a dotted path continues the name
 
 	size_t width;
-	return !identifierContinueAt(p, at, width);
+	return !identifierAt(p, at, true, width);
 }
 
 /// `Keywords <- ('deduced' | 'export' | 'flatten' | 'inline' | 'language' | 'tail') !UnicodeIdentifierContinue`
@@ -569,12 +550,12 @@ private bool identifier(ref Parser p, out InternedString result) @trusted {
 
 	size_t width;
 	if (peek(p) == '%') width = 1;
-	else if (!identifierStartAt(p, p.pos, width)) return false;
+	else if (!identifierAt(p, p.pos, false, width)) return false;
 	advance(p, width);
 
 	for (;;) {
 		if (peek(p) == '.') { advance(p); continue; }
-		if (!identifierContinueAt(p, p.pos, width)) break;
+		if (!identifierAt(p, p.pos, true, width)) break;
 		advance(p, width);
 	}
 
@@ -1039,7 +1020,7 @@ private bool functionCall(ref Parser p, ref CallInfo result) @trusted {
 
 	InternedString arg;
 	if (identifier(p, arg)) {
-		result.inputs.push(Lookup(arg));
+		fp.dynarray.pushBack(result.inputs, Lookup(arg));
 		skipWhitespace(p);
 		for (;;) {
 			immutable commaSave = p.pos;
@@ -1047,7 +1028,7 @@ private bool functionCall(ref Parser p, ref CallInfo result) @trusted {
 			advance(p);
 			skipWhitespace(p);
 			if (!identifier(p, arg)) { p.pos = commaSave; break; }
-			result.inputs.push(Lookup(arg));
+			fp.dynarray.pushBack(result.inputs, Lookup(arg));
 			skipWhitespace(p);
 		}
 	}
@@ -1126,7 +1107,7 @@ private bool assignmentValue(ref Parser p, ref BlockBuilder* blocks, ref ParsedV
 			// the C++ assignment handler rewrites it.
 			result.kind = ValueKind.call;
 			result.call.function_ = internIn(*mod, "alias");
-			result.call.inputs.push(Lookup(ident));
+			fp.dynarray.pushBack(result.call.inputs, Lookup(ident));
 			return true;
 		}
 		p.pos = save;
@@ -1322,13 +1303,13 @@ private EntityId buildAssignment(ref Parser p, ref BlockBuilder* blocks, size_t 
 					// `alias` names exactly one thing. Without this check
 					// `x : alias = alias()` indexed an empty argument list and
 					// dereferenced null.
-					if (doir.interface_.length((*call).inputs) != 1) {
+					if (daLength((*call).inputs) != 1) {
 						auto diag = &pushDiagnostic(DiagnosticType.InvalidFunctionCall,
 							spanLocation(p, start, p.pos), mod.source, p.path);
 						Diagnostic.Annotation annotation;
 						annotation.message = text(DoirAnsi.func, "alias", Ansi.reset,
 							" takes exactly one argument, but was given ",
-							doir.interface_.length((*call).inputs));
+							daLength((*call).inputs));
 						annotation.position = diag.location.start;
 						pushAnnotation(*diag, annotation);
 						return invalidEntity;
@@ -1344,10 +1325,10 @@ private EntityId buildAssignment(ref Parser p, ref BlockBuilder* blocks, size_t 
 					pushAnnotation(*diag, annotation);
 				} else
 					e = pushCall(*daBack(blocks), ident, declaredType.name, call.function_,
-						call.inputs.slice);
+						fp.dynarray.slice(call.inputs));
 			} else {
 				immutable ftEntity = pushFunctionTypeEntity(p, blocks, declaredType.functionType, InternedString("_"));
-				e = pushCall(*daBack(blocks), ident, ftEntity, call.function_, call.inputs.slice);
+				e = pushCall(*daBack(blocks), ident, ftEntity, call.function_, fp.dynarray.slice(call.inputs));
 			}
 
 			if (e != invalidEntity && (call.inline_ || call.flatten || call.tail)) {
@@ -1405,15 +1386,10 @@ private EntityId buildAssignment(ref Parser p, ref BlockBuilder* blocks, size_t 
 		}
 
 		case ValueKind.functionType: {
-			if (declaredType.isFunctionType) {
-				auto diag = &pushDiagnostic(DiagnosticType.InvalidType, spanLocation(p, start, p.pos),
-					mod.source, p.path);
-				Diagnostic.Annotation annotation;
-				annotation.message = text("Function types can only be assigned to registers of type ",
-					DoirAnsi.type, "type", Ansi.reset);
-				annotation.position = diag.location.start;
-				pushAnnotation(*diag, annotation);
-			} else if (declaredType.name != typeInterned) {
+			// A function type goes in a register of type `type` and nowhere
+			// else - neither in one declared as a function type itself, nor in
+			// one declared as anything other than `type`.
+			if (declaredType.isFunctionType || declaredType.name != typeInterned) {
 				auto diag = &pushDiagnostic(DiagnosticType.InvalidType, spanLocation(p, start, p.pos),
 					mod.source, p.path);
 				Diagnostic.Annotation annotation;
@@ -1553,20 +1529,13 @@ version (unittest) {
 
 unittest { // a minimal single assignment parses and passes verify.structure
 	diagnostics().clear();
-	auto mod = createModule();
-	scope(exit) freeModule(mod);
+	auto f = makeOpenModule();
+	scope(exit) f.freeFixture();
 
-	BlockBuilder* builders;
-	scope(exit) fp.dynarray.free(builders);
-	auto builtin = createBlockBuilder(mod);
-	buildBuiltinBlock(builtin);
-	fp.dynarray.pushBack(builders, builtin);
-
-	assert(parseSource(mod, builders, "x : compiler.byte = 5\n", "minimal.doir"));
+	assert(parseSource(f.mod, f.builders, "x : compiler.byte = 5\n", "minimal.doir"));
 	assert(!diagnostics().hasErrors());
 
-	auto root = builders[0].block;
-	assert(structure(diagnostics(), mod, root));
+	assert(structure(diagnostics(), f.mod, f.root));
 	assert(!diagnostics().hasErrors());
 	diagnostics().clear();
 }
@@ -1580,27 +1549,20 @@ unittest {
 	// shorter of the two - walk off the end of it, which aborted the compiler
 	// inside `SourceLocation.findPair`.
 	diagnostics().clear();
-	auto mod = createModule();
-	scope(exit) freeModule(mod);
+	auto f = makeOpenModule();
+	scope(exit) f.freeFixture();
 
-	BlockBuilder* builders;
-	scope(exit) fp.dynarray.free(builders);
-	auto builtin = createBlockBuilder(mod);
-	buildBuiltinBlock(builtin);
-	fp.dynarray.pushBack(builders, builtin);
-
-	assert(parseSource(mod, builders,
+	assert(parseSource(f.mod, f.builders,
 		"outerA : compiler.byte = 1\nouterB : compiler.byte = 2\n", "outer.doir"));
 	// Shorter than the text above, the way an included file usually is.
-	assert(parseSource(mod, builders, "inner : compiler.byte = 3\n", "inner.doir"));
+	assert(parseSource(f.mod, f.builders, "inner : compiler.byte = 3\n", "inner.doir"));
 	assert(!diagnostics().hasErrors());
 
-	immutable root = builders[0].block;
-	auto outer = findDetailedSourceLocation(mod, find(mod, root, "outerB"));
+	auto outer = findDetailedSourceLocation(f.mod, find(f.mod, f.root, "outerB"));
 	assert(outer.file == "outer.doir");
 	assert(outer.start.line == 2);
 
-	auto inner = findDetailedSourceLocation(mod, find(mod, root, "inner"));
+	auto inner = findDetailedSourceLocation(f.mod, find(f.mod, f.root, "inner"));
 	assert(inner.file == "inner.doir");
 	assert(inner.start.line == 1);
 	diagnostics().clear();
@@ -1608,16 +1570,10 @@ unittest {
 
 unittest { // a syntactically invalid source produces a parse failure, not a crash
 	diagnostics().clear();
-	auto mod = createModule();
-	scope(exit) freeModule(mod);
+	auto f = makeOpenModule();
+	scope(exit) f.freeFixture();
 
-	BlockBuilder* builders;
-	scope(exit) fp.dynarray.free(builders);
-	auto builtin = createBlockBuilder(mod);
-	buildBuiltinBlock(builtin);
-	fp.dynarray.pushBack(builders, builtin);
-
-	assert(!parseSource(mod, builders, "this is not : : valid doir syntax !!!\n", "invalid.doir"));
+	assert(!parseSource(f.mod, f.builders, "this is not : : valid doir syntax !!!\n", "invalid.doir"));
 	diagnostics().clear();
 }
 
@@ -1792,16 +1748,10 @@ unittest {
 	// empty diagnostic set as success, so a silent false made it compile an
 	// empty module and exit 0.
 	diagnostics().clear();
-	auto mod = createModule();
-	scope(exit) freeModule(mod);
+	auto f = makeOpenModule();
+	scope(exit) f.freeFixture();
 
-	BlockBuilder* builders;
-	scope(exit) fp.dynarray.free(builders);
-	auto builtin = createBlockBuilder(mod);
-	buildBuiltinBlock(builtin);
-	fp.dynarray.pushBack(builders, builtin);
-
-	assert(!parseFile(mod, builders, "/nonexistent/does_not_exist.doir"));
+	assert(!parseFile(f.mod, f.builders, "/nonexistent/does_not_exist.doir"));
 	assert(diagnostics().hasErrors());
 	diagnostics().clear();
 }
@@ -1892,35 +1842,12 @@ unittest { // #7 undefined assignment: name : type (no value)
 // would resolve.
 
 version (unittest) {
-	/// A module with its builtin block open as `builders[0]`, the way
-	/// `parseSource`'s callers set one up.
-	private struct ParseFixture {
-		Module mod;
-		BlockBuilder* builders;
-		EntityId root;
-	}
-
-	private ParseFixture makeParseFixture() @trusted {
-		ParseFixture f;
-		f.mod = createModule();
-		auto builtin = createBlockBuilder(f.mod);
-		buildBuiltinBlock(builtin);
-		fp.dynarray.pushBack(f.builders, builtin);
-		f.root = f.builders[0].block;
-		return f;
-	}
-
-	private void free(ref ParseFixture f) @trusted {
-		fp.dynarray.free(f.builders);
-		freeModule(f.mod);
-	}
-
 	/// Parses `source` into a throwaway module and reports whether it parsed.
 	/// `errors` comes back set if anything was diagnosed along the way.
 	private bool parses(const(char)[] source, out bool errors) {
 		diagnostics().clear();
-		auto f = makeParseFixture();
-		scope(exit) f.free();
+		auto f = makeOpenModule();
+		scope(exit) f.freeFixture();
 		immutable ok = parseSource(f.mod, f.builders, source, "lexical.doir");
 		errors = diagnostics().hasErrors();
 		diagnostics().clear();
@@ -1933,14 +1860,30 @@ version (unittest) {
 		return parses(source, ignored);
 	}
 
+	/// Every source must fail to parse.
+	private void rejected(const(char)[][] sources...) {
+		bool errors;
+		foreach (src; sources)
+			assert(!parses(src, errors), src);
+	}
+
+	/// Every source must parse, but be diagnosed.
+	private void diagnosed(const(char)[][] sources...) {
+		bool errors;
+		foreach (src; sources) {
+			assert(parses(src, errors), src);
+			assert(errors, src);
+		}
+	}
+
 	/// Parses `x : compiler.byte = <literal>` and hands back what the literal
 	/// decoded to.
 	private real parsedNumber(const(char)[] literal) {
-		import doir.diagnostics : text;
+		import doir.string_helpers : text;
 
 		diagnostics().clear();
-		auto f = makeParseFixture();
-		scope(exit) f.free();
+		auto f = makeOpenModule();
+		scope(exit) f.freeFixture();
 
 		auto source = text("x : compiler.byte = ", literal, "\n");
 		scope(exit) strFree(source);
@@ -2032,10 +1975,10 @@ unittest { // float constants, decimal and hexadecimal
 	assert(parsedNumber("0x1p3") == 8);
 }
 
-unittest { // a point with no digit on either side of it is not a number
-	bool errors;
-	assert(!parses("x : compiler.byte = .\n", errors));
-	assert(!parses("x : compiler.byte = 0x.\n", errors));
+unittest { // what is not a number: a bare point, and `0x` with nothing behind it
+	rejected("x : compiler.byte = .\n",
+		"x : compiler.byte = 0x.\n",
+		"x : compiler.byte = 0x\n");
 }
 
 unittest {
@@ -2051,14 +1994,9 @@ unittest {
 	assert(parsedNumber("0x1.8P+") == 1.5);
 }
 
-unittest { // `0x` with no digits behind it is not a number at all
-	bool errors;
-	assert(!parses("x : compiler.byte = 0x\n", errors));
-}
-
 unittest { // a character literal is a one-character string
-	auto f = makeParseFixture();
-	scope(exit) f.free();
+	auto f = makeOpenModule();
+	scope(exit) f.freeFixture();
 	diagnostics().clear();
 	assert(parseSource(f.mod, f.builders, "c : compiler.byte_pointer = 'A'\n", "char.doir"));
 	assert(!diagnostics().hasErrors());
@@ -2070,15 +2008,16 @@ unittest { // a character literal is a one-character string
 	diagnostics().clear();
 }
 
-unittest { // ...and an unterminated one is a syntax error
-	bool errors;
-	assert(!parses("c : compiler.byte_pointer = 'AB'\n", errors));
-	assert(errors);
+unittest { // an unterminated literal of any kind is a syntax error
+	rejected("c : compiler.byte_pointer = 'AB'\n",        // character
+		"%\"unterminated : compiler.byte = 1\n",           // quoted identifier
+		`s : compiler.byte_pointer = """unterminated` ~ "\n", // raw string
+		"%1 : compiler.byte = compiler.emit(%0\n");        // call argument list
 }
 
 unittest { // string escapes survive the parser into the DString component
-	auto f = makeParseFixture();
-	scope(exit) f.free();
+	auto f = makeOpenModule();
+	scope(exit) f.freeFixture();
 	diagnostics().clear();
 	assert(parseSource(f.mod, f.builders,
 		"s : compiler.byte_pointer = \"a\\tb\\x41\\101\\u0041\\U00000041\\\\\"\n", "esc.doir"));
@@ -2092,8 +2031,8 @@ unittest { // string escapes survive the parser into the DString component
 unittest {
 	// An escape the lexer accepts but the decoder rejects is reported, and the
 	// name becomes `<error>` rather than aborting the parse.
-	auto f = makeParseFixture();
-	scope(exit) f.free();
+	auto f = makeOpenModule();
+	scope(exit) f.freeFixture();
 	diagnostics().clear();
 	// `\400` is three octal digits whose value overflows a byte... but what the
 	// decoder actually rejects is a surrogate, which `stringChar` happily
@@ -2115,8 +2054,8 @@ unittest { // an escape the *lexer* rejects ends the string early, so it fails
 }
 
 unittest { // a raw string keeps its bytes - nothing inside it is an escape
-	auto f = makeParseFixture();
-	scope(exit) f.free();
+	auto f = makeOpenModule();
+	scope(exit) f.freeFixture();
 	diagnostics().clear();
 	assert(parseSource(f.mod, f.builders,
 		`s : compiler.byte_pointer = """a\tb\\ "not a delimiter" """` ~ "\n", "raw.doir"));
@@ -2128,8 +2067,8 @@ unittest { // a raw string keeps its bytes - nothing inside it is an escape
 }
 
 unittest { // a longer delimiter carries shorter runs of quotes, and newlines
-	auto f = makeParseFixture();
-	scope(exit) f.free();
+	auto f = makeOpenModule();
+	scope(exit) f.freeFixture();
 	diagnostics().clear();
 	assert(parseSource(f.mod, f.builders,
 		`a : compiler.byte_pointer = """""x """ y """""` ~ "\n"
@@ -2145,8 +2084,8 @@ unittest { // a longer delimiter carries shorter runs of quotes, and newlines
 }
 
 unittest { // the close is the *last* n quotes of the run, so content may end in one
-	auto f = makeParseFixture();
-	scope(exit) f.free();
+	auto f = makeOpenModule();
+	scope(exit) f.freeFixture();
 	diagnostics().clear();
 	assert(parseSource(f.mod, f.builders,
 		`s : compiler.byte_pointer = """a""""; ` ~ "\n", "raw.doir"));
@@ -2158,19 +2097,16 @@ unittest { // the close is the *last* n quotes of the run, so content may end in
 }
 
 unittest { // what a raw string does not accept
-	bool errors;
-	// No close, so the rule gives every quote back and nothing else matches.
-	assert(!parses(`s : compiler.byte_pointer = """unterminated` ~ "\n", errors));
 	// The opener is the whole run: six quotes ask for a six-quote close rather
-	// than spelling an empty raw string.
-	assert(!parses(`s : compiler.byte_pointer = """"""` ~ "\n", errors));
+	// than spelling an empty raw string. (No-close is covered above.)
+	rejected(`s : compiler.byte_pointer = """"""` ~ "\n");
 	// Two quotes are still the ordinary empty string they always were.
-	assert(parses(`s : compiler.byte_pointer = ""` ~ "\n", errors));
+	assert(parses(`s : compiler.byte_pointer = ""` ~ "\n"));
 }
 
 unittest { // `%"..."` quotes a name that is not a bare identifier
-	auto f = makeParseFixture();
-	scope(exit) f.free();
+	auto f = makeOpenModule();
+	scope(exit) f.freeFixture();
 	diagnostics().clear();
 	assert(parseSource(f.mod, f.builders,
 		"%\"has spaces\" : compiler.byte = 1\n", "quoted.doir"));
@@ -2179,22 +2115,14 @@ unittest { // `%"..."` quotes a name that is not a bare identifier
 	diagnostics().clear();
 }
 
-unittest { // an unterminated quoted identifier is a syntax error
-	bool errors;
-	assert(!parses("%\"unterminated : compiler.byte = 1\n", errors));
-}
-
-unittest { // `\r` and `\r\n` terminate an assignment as well as `\n`
+unittest { // `\r`, `\r\n` and end of input all terminate an assignment
 	assert(parses("x : compiler.byte = 1\ry : compiler.byte = 2\r\n"));
-}
-
-unittest { // ...and so does end of input, with no terminator at all
 	assert(parses("x : compiler.byte = 1"));
 }
 
 unittest { // a semicolon separates assignments on one line
-	auto f = makeParseFixture();
-	scope(exit) f.free();
+	auto f = makeOpenModule();
+	scope(exit) f.freeFixture();
 	diagnostics().clear();
 	assert(parseSource(f.mod, f.builders,
 		"x : compiler.byte = 1;y : compiler.byte = 2\n", "semi.doir"));
@@ -2207,8 +2135,8 @@ unittest { // a semicolon separates assignments on one line
 // --- SourceInfo -------------------------------------------------------------
 
 unittest { // `<file:line:col>` attaches a Detailed location instead of a span
-	auto f = makeParseFixture();
-	scope(exit) f.free();
+	auto f = makeOpenModule();
+	scope(exit) f.freeFixture();
 	diagnostics().clear();
 	assert(parseSource(f.mod, f.builders,
 		"x : compiler.byte = 1 <other.doir:12:3>\n", "info.doir"));
@@ -2226,8 +2154,8 @@ unittest { // `<file:line:col>` attaches a Detailed location instead of a span
 }
 
 unittest { // the quoted-filename spelling, with explicit end line and column
-	auto f = makeParseFixture();
-	scope(exit) f.free();
+	auto f = makeOpenModule();
+	scope(exit) f.freeFixture();
 	diagnostics().clear();
 	assert(parseSource(f.mod, f.builders,
 		"x : compiler.byte = 1 <\"a b.doir\":1-2:3-9>\n", "info.doir"));
@@ -2241,34 +2169,20 @@ unittest { // the quoted-filename spelling, with explicit end line and column
 	diagnostics().clear();
 }
 
-unittest { // an end that comes before its start is diagnosed, on either axis
-	bool errors;
-	assert(parses("x : compiler.byte = 1 <a.doir:9-2:3>\n", errors));
-	assert(errors);
-	assert(parses("x : compiler.byte = 1 <a.doir:2:9-3>\n", errors));
-	assert(errors);
-}
-
-unittest { // lines and columns are 1-based, so a 0 on either axis is diagnosed
-	bool errors;
-	assert(parses("x : compiler.byte = 1 <a.doir:0:3>\n", errors));
-	assert(errors);
-	assert(parses("x : compiler.byte = 1 <a.doir:2:0-4>\n", errors));
-	assert(errors);
-}
-
-unittest {
-	// `column=0` with an end column of 1 means "the whole line", which is
-	// resolved by loading the named file and measuring it. A file that isn't
-	// there is reported rather than guessed at.
-	bool errors;
-	assert(parses("x : compiler.byte = 1 <does_not_exist.doir:2:0>\n", errors));
-	assert(errors);
+unittest { // a well-formed source-info suffix naming an impossible span
+	diagnosed(
+		"x : compiler.byte = 1 <a.doir:9-2:3>\n",   // end before start, by line
+		"x : compiler.byte = 1 <a.doir:2:9-3>\n",   // ...and by column
+		"x : compiler.byte = 1 <a.doir:0:3>\n",     // lines are 1-based
+		"x : compiler.byte = 1 <a.doir:2:0-4>\n",   // ...and so are columns
+		// `column=0` with an end column of 1 means "the whole line", resolved by
+		// loading the named file. One that isn't there is reported, not guessed.
+		"x : compiler.byte = 1 <does_not_exist.doir:2:0>\n");
 }
 
 unittest { // ...and a file that *is* there gives the entity that line's extent
-	auto f = makeParseFixture();
-	scope(exit) f.free();
+	auto f = makeOpenModule();
+	scope(exit) f.freeFixture();
 	diagnostics().clear();
 	// README.md is in the repo root, which is where the tests run from.
 	assert(parseSource(f.mod, f.builders,
@@ -2283,17 +2197,15 @@ unittest { // ...and a file that *is* there gives the entity that line's extent
 }
 
 unittest { // a malformed source-info suffix is simply not one, and so fails
-	bool errors;
-	assert(!parses("x : compiler.byte = 1 <a.doir:x:3>\n", errors)); // no line number
-	assert(!parses("x : compiler.byte = 1 <a.doir:1:x>\n", errors)); // no column number
-	assert(!parses("x : compiler.byte = 1 <a.doir:1:2\n", errors));  // unterminated
-	assert(!parses("x : compiler.byte = 1 <a.doir 1:2>\n", errors)); // no colon after the file
-	assert(!parses("x : compiler.byte = 1 <\"a.doir\" 1:2>\n", errors));
-	// A `-` with no number behind it is not an end: the rule backs up over it
-	// and then finds the `-` where it wanted a `:` or a `>`, so the suffix is
-	// not one at all.
-	assert(!parses("x : compiler.byte = 1 <a.doir:1-:2>\n", errors));
-	assert(!parses("x : compiler.byte = 1 <a.doir:1:2->\n", errors));
+	rejected("x : compiler.byte = 1 <a.doir:x:3>\n",      // no line number
+		"x : compiler.byte = 1 <a.doir:1:x>\n",            // no column number
+		"x : compiler.byte = 1 <a.doir:1:2\n",             // unterminated
+		"x : compiler.byte = 1 <a.doir 1:2>\n",            // no colon after the file
+		"x : compiler.byte = 1 <\"a.doir\" 1:2>\n",
+		// A `-` with no number behind it is not an end: the rule backs up over
+		// it and then finds the `-` where it wanted a `:` or a `>`.
+		"x : compiler.byte = 1 <a.doir:1-:2>\n",
+		"x : compiler.byte = 1 <a.doir:1:2->\n");
 }
 
 unittest { // findColon and lineLength, whose corners the rule above can't reach
@@ -2307,12 +2219,9 @@ unittest { // findColon and lineLength, whose corners the rule above can't reach
 
 // --- Types and function types -----------------------------------------------
 
-unittest { // a function type with several parameters, and with none
+unittest { // function types: several parameters, none, and one as a return type
 	assert(parses("f : type = (a: compiler.byte, b: compiler.byte) -> compiler.byte\n"));
 	assert(parses("f : type = () -> compiler.byte\n"));
-}
-
-unittest { // a function type as a return type is materialised into an entity
 	assert(parses("f : type = (a: compiler.byte) -> (b: compiler.byte) -> compiler.byte\n"));
 }
 
@@ -2356,19 +2265,15 @@ unittest { // a declaration whose type is a named function type, with no body
 }
 
 unittest { // a trailing comma is not a parameter, so it ends the list
-	bool errors;
-	assert(!parses("f : type = (a: compiler.byte,) -> compiler.byte\n", errors));
+	rejected("f : type = (a: compiler.byte,) -> compiler.byte\n");
 }
 
 unittest { // `deduced` parses but is reported as unsupported
-	bool errors;
-	assert(parses("f : type = (a: deduced compiler.byte) -> compiler.byte\n", errors));
-	assert(errors);
+	diagnosed("f : type = (a: deduced compiler.byte) -> compiler.byte\n");
 }
 
 unittest { // a parameter default that isn't a constant is simply not a default
-	bool errors;
-	assert(!parses("f : type = (a: compiler.byte = x) -> compiler.byte\n", errors));
+	rejected("f : type = (a: compiler.byte = x) -> compiler.byte\n");
 }
 
 unittest { // string and number parameter defaults both reach pushFunction*Parameter
@@ -2385,13 +2290,12 @@ unittest { // ...and so does a valueless function declared with the same default
 }
 
 unittest { // a `(` that never closes is not a function type, and not an identifier
-	bool errors;
-	assert(!parses("f : type = (a: compiler.byte\n", errors));
-	// `(a: compiler.byte)` is now a complete function type (returning void), so
-	// this fails on the trailing `compiler.byte` having no terminator before it
-	// rather than on the missing `->`.
-	assert(!parses("f : type = (a: compiler.byte) compiler.byte\n", errors));
-	assert(!parses("f : type = (a: compiler.byte) ->\n", errors));            // `->` with no return type
+	// `(a: compiler.byte)` is a complete function type (returning void), so the
+	// second fails on the trailing `compiler.byte` having no terminator before
+	// it rather than on a missing `->`.
+	rejected("f : type = (a: compiler.byte\n",
+		"f : type = (a: compiler.byte) compiler.byte\n",
+		"f : type = (a: compiler.byte) ->\n"); // `->` with no return type
 }
 
 
@@ -2413,8 +2317,8 @@ unittest { // each of the three call modifiers sets its flag
 	static immutable string[3] keywords = ["inline", "flatten", "tail"];
 	static immutable ushort[3] bits = [Flags.Inline, Flags.Flatten, Flags.Tail];
 	foreach (i, keyword; keywords) {
-		auto f = makeParseFixture();
-		scope(exit) f.free();
+		auto f = makeOpenModule();
+		scope(exit) f.freeFixture();
 		diagnostics().clear();
 
 		auto source = text("%0 : compiler.byte = 1\n%1 : compiler.byte = ",
@@ -2429,11 +2333,6 @@ unittest { // each of the three call modifiers sets its flag
 	}
 }
 
-unittest { // a call whose argument list never closes is a syntax error
-	bool errors;
-	assert(!parses("%1 : compiler.byte = compiler.emit(%0\n", errors));
-}
-
 unittest { // a call through a declared function type materialises the type
 	assert(parses("f : (a: compiler.byte) -> compiler.byte = compiler.emit(a)\n"));
 }
@@ -2441,16 +2340,9 @@ unittest { // a call through a declared function type materialises the type
 
 // --- buildAssignment's diagnostics ------------------------------------------
 
-unittest { // a number cannot be stored in a register whose type is a function
-	bool errors;
-	assert(parses("x : (a: compiler.byte) -> compiler.byte = 5\n", errors));
-	assert(errors);
-}
-
-unittest { // ...nor can a string
-	bool errors;
-	assert(parses("x : (a: compiler.byte) -> compiler.byte = \"s\"\n", errors));
-	assert(errors);
+unittest { // a register whose type is a function takes neither a number nor a string
+	diagnosed("x : (a: compiler.byte) -> compiler.byte = 5\n",
+		"x : (a: compiler.byte) -> compiler.byte = \"s\"\n");
 }
 
 unittest { // a string-valued `alias` names its target by text
@@ -2461,14 +2353,13 @@ unittest { // a string-valued `alias` names its target by text
 }
 
 unittest { // a non-alias register cannot be assigned from a bare identifier
-	bool errors;
-	assert(parses("a : compiler.byte = 1\nb : compiler.byte = a\n", errors));
-	assert(errors); // CantCopyRegisters: call `copy` or `move` instead
+	// CantCopyRegisters: call `copy` or `move` instead.
+	diagnosed("a : compiler.byte = 1\nb : compiler.byte = a\n");
 }
 
 unittest { // the `compiler` namespace is reserved, and a redefinition is ignored
-	auto f = makeParseFixture();
-	scope(exit) f.free();
+	auto f = makeOpenModule();
+	scope(exit) f.freeFixture();
 	diagnostics().clear();
 	assert(parseSource(f.mod, f.builders,
 		"compiler : namespace = {\n\tx : compiler.byte = 1\n}\n", "reserved.doir"));
@@ -2479,18 +2370,10 @@ unittest { // the `compiler` namespace is reserved, and a redefinition is ignore
 	diagnostics().clear();
 }
 
-unittest { // an alias may not name a block
-	bool errors;
-	assert(parses("x : alias = {\n\ty : compiler.byte = 1\n}\n", errors));
-	assert(errors);
-}
-
-unittest { // a function type may only be assigned to a register of type `type`
-	bool errors;
-	assert(parses("x : compiler.byte = (a: compiler.byte) -> compiler.byte\n", errors));
-	assert(errors);
-	assert(parses("x : (a: compiler.byte) -> compiler.byte = (b: compiler.byte) -> compiler.byte\n", errors));
-	assert(errors);
+unittest { // an alias may not name a block, and a function type only a `type`
+	diagnosed("x : alias = {\n\ty : compiler.byte = 1\n}\n",
+		"x : compiler.byte = (a: compiler.byte) -> compiler.byte\n",
+		"x : (a: compiler.byte) -> compiler.byte = (b: compiler.byte) -> compiler.byte\n");
 }
 
 unittest { // a sub-block whose type is neither `type`, `namespace` nor `block`
@@ -2503,9 +2386,7 @@ unittest { // a sub-block whose type is neither `type`, `namespace` nor `block`
 }
 
 unittest { // `language "..." { ... }` parses, and is reported as unsupported
-	bool errors;
-	assert(parses("language \"c\" { int main() { return 0; } }\n", errors));
-	assert(errors);
+	diagnosed("language \"c\" { int main() { return 0; } }\n");
 }
 
 unittest { // ...and each way of writing it wrong is simply not a language block
@@ -2517,8 +2398,8 @@ unittest { // ...and each way of writing it wrong is simply not a language block
 
 unittest { // `parseFile` reads a real file off disk
 	diagnostics().clear();
-	auto f = makeParseFixture();
-	scope(exit) f.free();
+	auto f = makeOpenModule();
+	scope(exit) f.freeFixture();
 	assert(parseFile(f.mod, f.builders, "test_string.doir"));
 	assert(!diagnostics().hasErrors());
 	assert(resolveLookupName(f.mod, internIn(f.mod, "%0"), f.root) != invalidEntity);
@@ -2527,8 +2408,8 @@ unittest { // `parseFile` reads a real file off disk
 
 unittest { // `guaranteeSourceLocation = false` leaves entities without a span
 	diagnostics().clear();
-	auto f = makeParseFixture();
-	scope(exit) f.free();
+	auto f = makeOpenModule();
+	scope(exit) f.freeFixture();
 	assert(parseSource(f.mod, f.builders, "x : compiler.byte = 1\n", "nospan.doir", false));
 	assert(!diagnostics().hasErrors());
 
@@ -2543,8 +2424,8 @@ unittest {
 	// space apart from an identifier character. A four-byte codepoint is an
 	// identifier character like any other non-space, and a byte that starts no
 	// sequence at all decodes as itself rather than running off the end.
-	auto f = makeParseFixture();
-	scope(exit) f.free();
+	auto f = makeOpenModule();
+	scope(exit) f.freeFixture();
 	diagnostics().clear();
 	assert(parseSource(f.mod, f.builders,
 		"\U0001F600 : compiler.byte = 1\n", "utf8.doir")); // grinning face

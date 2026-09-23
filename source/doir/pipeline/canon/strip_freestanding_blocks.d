@@ -1,6 +1,6 @@
 /// `opt.stripFreestandingBlocks`: drops quoted blocks nothing refers to.
 /// Ported from opt/strip_freestanding_blocks.hpp.
-module doir.pipeline.opt.strip_freestanding_blocks;
+module doir.pipeline.canon.strip_freestanding_blocks;
 
 import ecrs.storage : EntityId, invalidEntity;
 

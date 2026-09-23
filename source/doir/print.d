@@ -10,72 +10,68 @@ import core.stdc.stdio : FILE, fwrite, stdout;
 import diagnose.source_location : Detailed, SourceLocation;
 import ecrs.storage : EntityId, invalidEntity;
 
+static import fp.dynarray;
 import fp.dynarray : daLength = length;
-import fp.string : concatenateSlice, strFree = free, strLength = length, strSlice = slice;
+import fp.string : strFree = free, strLength = length, strSlice = slice;
 
-import doir.diagnostics : appendText, text;
+import doir.string_helpers : appendText, escapePythonString, text;
 import doir.interface_;
 import doir.module_;
-import doir.string_helpers : escapePythonString;
 
 @nogc nothrow:
 
 
-
 private void appendIndent(ref char* out_, bool pretty, size_t indent) {
 	if (!pretty) return;
-	foreach (_; 0 .. indent) concatenateSlice(out_, "\t");
+	foreach (_; 0 .. indent) appendText(out_, "\t");
 }
 
-private void appendEntity(ref char* out_, EntityId e) {
-	appendText(out_, cast(size_t) e);
+/// The `<indent>export name : type` every assignment form opens with, and the
+/// ` = ` separating it from a value when there is one.
+private void appendHead(T)(ref char* out_, ref const CommonElements c, bool pretty, size_t indent,
+		T type, bool withValue = true) {
+	appendIndent(out_, pretty, indent);
+	appendText(out_, c.export_, c.ident, pretty ? ": " : ":", type);
+	if (withValue) appendText(out_, pretty ? " = " : "=");
 }
 
 private void appendLocation(ref char* out_, ref const Detailed location) @trusted {
 	char* rendered = (cast(Detailed) location).toDisplayString();
 	scope(exit) strFree(rendered);
-	concatenateSlice(out_, strSlice(rendered));
+	appendText(out_, rendered);
 }
 
 /// Renders a function type as `(a:T,b:U)->V`. Returns a libfp string.
 char* printFunctionType(ref Module mod, EntityId type, bool debug_) @trusted {
-	import core.stdc.stdio : snprintf;
-
 	auto inputs = inputsOf(mod, type);
-	scope(exit) doir.interface_.free(inputs);
+	scope(exit) fp.dynarray.free(inputs);
 
 	auto returnType = returnTypeOf(mod, type);
 
 	char* out_ = null;
-	concatenateSlice(out_, "(");
-	foreach (i; 0 .. inputs.length) {
-		if (i > 0) concatenateSlice(out_, ",");
+	appendText(out_, "(");
+	foreach (i; 0 .. daLength(inputs)) {
+		if (i > 0) appendText(out_, ",");
 
 		if (hasComponent!FunctionParameterNames(mod, type))
-			concatenateSlice(out_, getComponent!FunctionParameterNames(mod, type).slice[i].view);
-		else {
-			char[24] buffer;
-			immutable n = snprintf(buffer.ptr, buffer.length, "a%zu", i);
-			concatenateSlice(out_, buffer[0 .. n]);
-		}
+			appendText(out_, getComponent!FunctionParameterNames(mod, type).slice[i].view);
+		else appendText(out_, defaultParameterName(mod, i).view);
 
-		concatenateSlice(out_, ":");
+		appendText(out_, ":");
 		char* name = printLookupName(mod, inputs[i], debug_);
-		concatenateSlice(out_, strSlice(name));
+		appendText(out_, name);
 		strFree(name);
 	}
-	concatenateSlice(out_, ")");
+	appendText(out_, ")");
 
 	if (!returnType.isNull) {
-		concatenateSlice(out_, "->");
+		appendText(out_, "->");
 		char* name = printLookupName(mod, returnType.get, debug_);
-		concatenateSlice(out_, strSlice(name));
+		appendText(out_, name);
 		strFree(name);
 	}
 	if (debug_) {
-		concatenateSlice(out_, "[");
-		appendEntity(out_, type);
-		concatenateSlice(out_, "]");
+		appendText(out_, "[", cast(size_t) type, "]");
 	}
 	return out_;
 }
@@ -86,33 +82,25 @@ char* printLookupName(ref Module mod, Lookup lookup, bool debug_) @trusted {
 	char* out_ = null;
 
 	if (!lookup.resolved()) {
-		if (debug_) {
-			concatenateSlice(out_, "lookup(");
-			concatenateSlice(out_, lookup.name().view);
-			concatenateSlice(out_, ")");
-		} else concatenateSlice(out_, lookup.name().view);
+		if (debug_) appendText(out_, "lookup(", lookup.name().view, ")");
+		else appendText(out_, lookup.name().view);
 		return out_;
 	}
 
 	if (hasComponent!Name(mod, lookup.entity())) {
-		concatenateSlice(out_, getComponent!Name(mod, lookup.entity()).value.view);
+		appendText(out_, getComponent!Name(mod, lookup.entity()).value.view);
 
 		// Namespace-qualify by walking up the parent chain, prefixing as we go.
 		auto parent = findParent(mod, lookup.entity());
 		while (flagsSet(mod, parent, Flags.Namespace) && hasComponent!Name(mod, parent)) {
-			char* prefixed = null;
-			concatenateSlice(prefixed, getComponent!Name(mod, parent).value.view);
-			concatenateSlice(prefixed, ".");
-			concatenateSlice(prefixed, strSlice(out_));
+			char* prefixed = text(getComponent!Name(mod, parent).value.view, ".", out_);
 			strFree(out_);
 			out_ = prefixed;
 			parent = findParent(mod, parent);
 		}
 
 		if (debug_) {
-			concatenateSlice(out_, "[");
-			appendEntity(out_, lookup.entity());
-			concatenateSlice(out_, "]");
+			appendText(out_, "[", cast(size_t) lookup.entity(), "]");
 		}
 		return out_;
 	}
@@ -122,8 +110,7 @@ char* printLookupName(ref Module mod, Lookup lookup, bool debug_) @trusted {
 		return printFunctionType(mod, lookup.entity(), debug_);
 	}
 
-	concatenateSlice(out_, "%");
-	appendEntity(out_, lookup.entity());
+	appendText(out_, "%", cast(size_t) lookup.entity());
 	return out_;
 }
 
@@ -142,15 +129,8 @@ private CommonElements commonAssignmentElements(ref Module mod, EntityId subtree
 
 	if (hasComponent!Name(mod, subtree)) {
 		out_.ident = text(getComponent!Name(mod, subtree).value.view);
-		if (debug_) {
-			concatenateSlice(out_.ident, "[");
-			appendEntity(out_.ident, subtree);
-			concatenateSlice(out_.ident, "]");
-		}
-	} else {
-		out_.ident = text("%");
-		appendEntity(out_.ident, subtree);
-	}
+		if (debug_) appendText(out_.ident, "[", cast(size_t) subtree, "]");
+	} else out_.ident = text("%", cast(size_t) subtree);
 
 	if (hasComponent!TypeOf(mod, subtree))
 		out_.type = printLookupName(mod, Lookup(getComponent!TypeOf(mod, subtree).related[0]), debug_);
@@ -179,47 +159,37 @@ private CommonElements commonAssignmentElements(ref Module mod, EntityId subtree
 private void printDebugExtras(ref char* out_, ref Module mod, EntityId subtree, bool debug_) @trusted {
 	if (!debug_) return;
 
-	if (hasComponent!ComptimeNumber(mod, subtree)) {
-		concatenateSlice(out_, " [comp: ");
-		appendText(out_, getComponent!ComptimeNumber(mod, subtree).value);
-		concatenateSlice(out_, "]");
-	} else if (hasComponent!ComptimeString(mod, subtree)) {
-		concatenateSlice(out_, " [comp: \"");
-		concatenateSlice(out_, getComponent!ComptimeString(mod, subtree).value.view);
-		concatenateSlice(out_, "\"]");
-	} else if (flagsSet(mod, subtree, Flags.Comptime)) {
-		concatenateSlice(out_, " [comp]");
-	}
+	if (hasComponent!ComptimeNumber(mod, subtree))
+		appendText(out_, " [comp: ", getComponent!ComptimeNumber(mod, subtree).value, "]");
+	else if (hasComponent!ComptimeString(mod, subtree))
+		appendText(out_, " [comp: \"", getComponent!ComptimeString(mod, subtree).value.view, "\"]");
+	else if (flagsSet(mod, subtree, Flags.Comptime))
+		appendText(out_, " [comp]");
 
-	if (hasComponent!AssignedRegister(mod, subtree)) {
-		concatenateSlice(out_, " [reg: ");
-		appendText(out_, getComponent!AssignedRegister(mod, subtree).reg);
-		concatenateSlice(out_, "]");
-	}
+	if (hasComponent!AssignedRegister(mod, subtree))
+		appendText(out_, " [reg: ", getComponent!AssignedRegister(mod, subtree).reg, "]");
 }
 
 private void printBlock(ref char* out_, ref Module mod, EntityId blockEntity, bool pretty, bool debug_, bool skipParameters, size_t indent) @trusted {
-	concatenateSlice(out_, "{");
-	if (pretty) concatenateSlice(out_, "\n");
+	appendText(out_, pretty ? "{\n" : "{");
 
 	for (size_t i = 0; i < daLength(getComponent!Block(mod, blockEntity).related); ++i) {
 		immutable elem = getComponent!Block(mod, blockEntity).related[i];
 		if (skipParameters && hasComponent!FunctionParameter(mod, elem)) continue;
 		printImpl(out_, mod, elem, pretty, debug_, indent + 1);
 		printDebugExtras(out_, mod, elem, debug_);
-		concatenateSlice(out_, pretty ? "\n" : ";");
+		appendText(out_, pretty ? "\n" : ";");
 	}
 
 	appendIndent(out_, pretty, indent);
-	concatenateSlice(out_, "}");
+	appendText(out_, "}");
 }
 
 private void printTypeOf(ref char* out_, ref Module mod, EntityId subtree, bool pretty, bool debug_, size_t indent) @trusted {
 	if (flagsSet(mod, subtree, Flags.Valueless)) {
 		auto c = commonAssignmentElements(mod, subtree, debug_);
 		scope(exit) c.free();
-		appendIndent(out_, pretty, indent);
-		appendText(out_, c.export_, strSlice(c.ident), pretty ? ": " : ":", strSlice(c.type));
+		appendHead(out_, c, pretty, indent, c.type, false);
 		if (c.hasLocation) appendLocation(out_, c.location);
 
 	} else if (hasComponent!Call(mod, subtree) || hasComponent!LookupCall(mod, subtree)
@@ -235,40 +205,38 @@ private void printTypeOf(ref char* out_, ref Module mod, EntityId subtree, bool 
 				: getComponent!LookupCall(mod, subtree).lookup;
 
 		auto inputs = inputsOf(mod, subtree);
-		scope(exit) doir.interface_.free(inputs);
+		scope(exit) fp.dynarray.free(inputs);
 
 		char* flags = null;
 		scope(exit) strFree(flags);
 		if (hasComponent!Flags(mod, subtree)) {
-			if (flagsSet(mod, subtree, Flags.Inline)) concatenateSlice(flags, "inline ");
-			if (flagsSet(mod, subtree, Flags.Flatten)) concatenateSlice(flags, "flatten ");
-			if (flagsSet(mod, subtree, Flags.Tail)) concatenateSlice(flags, "tail ");
-			if (debug_ && flagsSet(mod, subtree, Flags.Comptime)) concatenateSlice(flags, "comptime ");
+			if (flagsSet(mod, subtree, Flags.Inline)) appendText(flags, "inline ");
+			if (flagsSet(mod, subtree, Flags.Flatten)) appendText(flags, "flatten ");
+			if (flagsSet(mod, subtree, Flags.Tail)) appendText(flags, "tail ");
+			if (debug_ && flagsSet(mod, subtree, Flags.Comptime)) appendText(flags, "comptime ");
 		}
 
-		appendIndent(out_, pretty, indent);
-		appendText(out_, c.export_, strSlice(c.ident), pretty ? ": " : ":", strSlice(c.type),
-			pretty ? " = " : "=", flags is null ? "" : strSlice(flags));
+		appendHead(out_, c, pretty, indent, c.type);
+		appendText(out_, flags);
 		{
 			char* name = printLookupName(mod, call, debug_);
 			scope(exit) strFree(name);
-			concatenateSlice(out_, strSlice(name));
+			appendText(out_, name);
 		}
-		concatenateSlice(out_, "(");
-		foreach (i; 0 .. inputs.length) {
-			if (i > 0) concatenateSlice(out_, pretty ? ", " : ",");
+		appendText(out_, "(");
+		foreach (i; 0 .. daLength(inputs)) {
+			if (i > 0) appendText(out_, pretty ? ", " : ",");
 			char* name = printLookupName(mod, inputs[i], debug_);
 			scope(exit) strFree(name);
-			concatenateSlice(out_, strSlice(name));
+			appendText(out_, name);
 		}
-		concatenateSlice(out_, ")");
+		appendText(out_, ")");
 
 	} else if (hasComponent!Number(mod, subtree)) {
 		auto c = commonAssignmentElements(mod, subtree, debug_);
 		scope(exit) c.free();
-		appendIndent(out_, pretty, indent);
-		appendText(out_, c.export_, strSlice(c.ident), pretty ? ": " : ":", strSlice(c.type),
-			pretty ? " = " : "=", getComponent!Number(mod, subtree).value);
+		appendHead(out_, c, pretty, indent, c.type);
+		appendText(out_, getComponent!Number(mod, subtree).value);
 		if (c.hasLocation) appendLocation(out_, c.location);
 
 	} else if (hasComponent!DString(mod, subtree)) {
@@ -276,20 +244,19 @@ private void printTypeOf(ref char* out_, ref Module mod, EntityId subtree, bool 
 		scope(exit) c.free();
 		char* escaped = escapePythonString(getComponent!DString(mod, subtree).value.view);
 		scope(exit) strFree(escaped);
-		appendIndent(out_, pretty, indent);
-		appendText(out_, c.export_, strSlice(c.ident), pretty ? ": " : ":", strSlice(c.type),
-			pretty ? " = " : "=", "\"", escaped is null ? "" : strSlice(escaped), "\"");
+		appendHead(out_, c, pretty, indent, c.type);
+		appendText(out_, "\"", escaped, "\"");
 		if (c.hasLocation) appendLocation(out_, c.location);
 
 	} else if (hasComponent!FunctionReturnType(mod, subtree) || hasComponent!LookupFunctionReturnType(mod, subtree)) {
 		auto c = commonAssignmentElements(mod, subtree, debug_);
 		scope(exit) c.free();
 		appendIndent(out_, pretty, indent);
-		appendText(out_, c.export_, debug_ ? "f:" : "", strSlice(c.ident), pretty ? ": " : ":");
+		appendText(out_, c.export_, debug_ ? "f:" : "", c.ident, pretty ? ": " : ":");
 
 		auto lookup = typeOfLookup(mod, subtree);
 		if (!lookup.resolved()) {
-			appendText(out_, strSlice(c.type), pretty ? " = " : "=");
+			appendText(out_, c.type, pretty ? " = " : "=");
 			printBlock(out_, mod, subtree, pretty, debug_, true, indent);
 		} else {
 			immutable ft = resolveAlias(mod, lookup.entity());
@@ -298,46 +265,42 @@ private void printTypeOf(ref char* out_, ref Module mod, EntityId subtree, bool 
 
 			if (hasComponent!Block(mod, subtree)) {
 				auto inputs = inputsOf(mod, ft);
-				scope(exit) doir.interface_.free(inputs);
+				scope(exit) fp.dynarray.free(inputs);
 
 				auto returnType = returnTypeOf(mod, ft);
 
-				auto parameters = associatedParameters(mod, inputs.length, subtree);
-				scope(exit) doir.interface_.free(parameters);
+				auto parameters = associatedParameters(mod, daLength(inputs), subtree);
+				scope(exit) fp.dynarray.free(parameters);
 
 				if (ftIsModification)
-					concatenateSlice(out_, strSlice(c.type));
+					appendText(out_, c.type);
 				else {
-					concatenateSlice(out_, "(");
-					foreach (i; 0 .. parameters.length) {
+					appendText(out_, "(");
+					foreach (i; 0 .. daLength(parameters)) {
 						printImpl(out_, mod, parameters[i], pretty, debug_, 0);
 						printDebugExtras(out_, mod, parameters[i], debug_);
-						if (i < parameters.length - 1)
-							concatenateSlice(out_, pretty ? ", " : ",");
+						if (i < daLength(parameters) - 1)
+							appendText(out_, pretty ? ", " : ",");
 					}
-					concatenateSlice(out_, ")");
+					appendText(out_, ")");
 
 					if (!returnType.isNull) {
-						concatenateSlice(out_, pretty ? " -> " : "->");
+						appendText(out_, pretty ? " -> " : "->");
 						char* name = printLookupName(mod, returnType.get, debug_);
 						scope(exit) strFree(name);
-						concatenateSlice(out_, strSlice(name));
+						appendText(out_, name);
 					}
-					if (debug_) {
-						concatenateSlice(out_, "[");
-						appendEntity(out_, ft);
-						concatenateSlice(out_, "]");
-					}
+					if (debug_) appendText(out_, "[", cast(size_t) ft, "]");
 				}
 
-				concatenateSlice(out_, pretty ? " = " : "=");
+				appendText(out_, pretty ? " = " : "=");
 				printBlock(out_, mod, subtree, pretty, debug_, true, indent);
 			} else { // Valueless function
-				if (ftIsModification) concatenateSlice(out_, strSlice(c.type));
+				if (ftIsModification) appendText(out_, c.type);
 				else {
 					char* ftText = printFunctionType(mod, ft, debug_);
 					scope(exit) strFree(ftText);
-					concatenateSlice(out_, strSlice(ftText));
+					appendText(out_, ftText);
 				}
 			}
 		}
@@ -345,12 +308,10 @@ private void printTypeOf(ref char* out_, ref Module mod, EntityId subtree, bool 
 	} else if (hasComponent!Block(mod, subtree)) {
 		auto c = commonAssignmentElements(mod, subtree, debug_);
 		scope(exit) c.free();
-		appendIndent(out_, pretty, indent);
-		appendText(out_, c.export_, strSlice(c.ident), pretty ? ": " : ":", strSlice(c.type),
-			pretty ? " = " : "=");
+		appendHead(out_, c, pretty, indent, c.type);
 		printBlock(out_, mod, subtree, pretty, debug_, false, indent);
 
-	} else concatenateSlice(out_, "<type_of error>");
+	} else appendText(out_, "<type_of error>");
 }
 
 private void printImpl(ref char* out_, ref Module mod, EntityId subtree, bool pretty, bool debug_, size_t indent = 0) @trusted {
@@ -362,9 +323,7 @@ private void printImpl(ref char* out_, ref Module mod, EntityId subtree, bool pr
 	} else if (hasComponent!TypeDefinition(mod, subtree)) {
 		auto c = commonAssignmentElements(mod, subtree, debug_);
 		scope(exit) c.free();
-		appendIndent(out_, pretty, indent);
-		appendText(out_, c.export_, strSlice(c.ident), pretty ? ": " : ":", strSlice(c.type),
-			pretty ? " = " : "=");
+		appendHead(out_, c, pretty, indent, c.type);
 
 		if (hasComponent!Block(mod, subtree))
 			printBlock(out_, mod, subtree, pretty, debug_, false, indent);
@@ -373,21 +332,19 @@ private void printImpl(ref char* out_, ref Module mod, EntityId subtree, bool pr
 			char* base = printLookupName(mod, Lookup(p.related[0]), debug_);
 			scope(exit) strFree(base);
 			if (p.size == 0)
-				appendText(out_, "type.pointer(", strSlice(base), ")");
+				appendText(out_, "type.pointer(", base, ")");
 			else
-				appendText(out_, "type.array(", strSlice(base), ", ", p.size, ")");
+				appendText(out_, "type.array(", base, ", ", p.size, ")");
 		} else {
 			char* ftText = printFunctionType(mod, subtree, debug_);
 			scope(exit) strFree(ftText);
-			concatenateSlice(out_, strSlice(ftText));
+			appendText(out_, ftText);
 		}
 
 	} else if (flagsSet(mod, subtree, Flags.Namespace)) {
 		auto c = commonAssignmentElements(mod, subtree, debug_);
 		scope(exit) c.free();
-		appendIndent(out_, pretty, indent);
-		appendText(out_, c.export_, strSlice(c.ident), pretty ? ": " : ":", strSlice(c.type),
-			pretty ? " = " : "=");
+		appendHead(out_, c, pretty, indent, c.type);
 		printBlock(out_, mod, subtree, pretty, debug_, false, indent);
 
 	} else if (hasComponent!Alias(mod, subtree) || hasComponent!LookupAlias(mod, subtree)) {
@@ -411,13 +368,12 @@ private void printImpl(ref char* out_, ref Module mod, EntityId subtree, bool pr
 
 		char* name = printLookupName(mod, aliasLookup, debug_);
 		scope(exit) strFree(name);
-		appendIndent(out_, pretty, indent);
-		appendText(out_, c.export_, strSlice(c.ident), pretty ? ": " : ":", "alias",
-			pretty ? " = " : "=", strSlice(name));
+		appendHead(out_, c, pretty, indent, "alias");
+		appendText(out_, name);
 		if (debug_ && aliasHasFile)
 			appendText(out_, "[", aliasFile, "]");
 
-	} else concatenateSlice(out_, "<error>");
+	} else appendText(out_, "<error>");
 }
 
 /// Renders `root` (or, when it is a block, its contents) as DOIR source.
@@ -430,7 +386,7 @@ char* print(ref Module mod, EntityId root, bool pretty = true, bool debug_ = fal
 			immutable elem = getComponent!Block(mod, root).related[i];
 			printImpl(out_, mod, elem, pretty, debug_, 0);
 			printDebugExtras(out_, mod, elem, debug_);
-			concatenateSlice(out_, pretty ? "\n" : ";");
+			appendText(out_, pretty ? "\n" : ";");
 		}
 	} else {
 		printImpl(out_, mod, root, pretty, debug_, 0);
@@ -450,7 +406,7 @@ void printModule(FILE* out_, ref Module mod, EntityId root, bool pretty = true, 
 
 /// `print` packaged as a system.
 bool printSystem(ref Module mod, EntityId root = currentCanonicalizeRoot, bool pretty = true, bool debug_ = true) {
-	import doir.pipeline.sema.sort : newRoot;
+	import doir.pipeline.canon.sort : newRoot;
 	printModule(stdout, mod, root == currentCanonicalizeRoot ? newRoot : root, pretty, debug_);
 	return true;
 }
@@ -469,9 +425,6 @@ bool printSystem(ref Module mod, EntityId root = currentCanonicalizeRoot, bool p
 
 version (unittest) {
 	import core.stdc.stdio : fclose, tmpfile;
-
-	static import fp.dynarray;
-	import fp.dynarray : daPushBack = pushBack;
 
 	import doir.diagnostics : diagnostics;
 	import doir.parser : parseSource;
@@ -494,25 +447,11 @@ version (unittest) {
 		scope(exit) strFree(out_);
 		check(out_ is null ? "" : strSlice(out_));
 	}
-
-	/// A module with its builtin block open, for hand-built IR.
-	private struct PrintFixture {
-		Module mod;
-		BlockBuilder builder;
-	}
-
-	private PrintFixture makePrintFixture() {
-		PrintFixture f;
-		f.mod = createModule();
-		f.builder = createBlockBuilder(f.mod);
-		buildBuiltinBlock(f.builder);
-		return f;
-	}
 }
 
 unittest { // the builtin block alone already exercises most of the renderer
-	auto f = makePrintFixture();
-	scope(exit) freeModule(f.mod);
+	auto f = makeOpenModule();
+	scope(exit) f.freeFixture();
 	immutable root = f.builder.end();
 
 	// Namespaces, type definitions, pointers, function types (named and
@@ -537,14 +476,10 @@ unittest { // the builtin block alone already exercises most of the renderer
 
 unittest { // a parsed-but-unlowered module renders its *unresolved* lookups
 	diagnostics().clear();
-	auto f = makePrintFixture();
-	scope(exit) freeModule(f.mod);
+	auto f = makeOpenModule();
+	scope(exit) f.freeFixture();
 
-	BlockBuilder* builders;
-	scope(exit) fp.dynarray.free(builders);
-	daPushBack(builders, f.builder);
-
-	assert(parseSource(f.mod, builders,
+	assert(parseSource(f.mod, f.builders,
 		"n : compiler.byte = 5\n"
 		~ "s : compiler.byte_pointer = \"hi\\n\"\n"
 		~ "v : compiler.byte\n"
@@ -556,9 +491,8 @@ unittest { // a parsed-but-unlowered module renders its *unresolved* lookups
 		~ "c : compiler.byte = inline compiler.emit(n)\n",
 		"print.doir"));
 	assert(!diagnostics().hasErrors());
-	immutable root = builders[0].block;
 
-	rendered(f.mod, root, true, false, (text_) {
+	rendered(f.mod, f.root, true, false, (text_) {
 		assert(has(text_, "n: compiler.byte = 5"));
 		assert(has(text_, "\"hi\\n\""));       // the string is re-escaped
 		assert(has(text_, "v: compiler.byte")); // valueless: no ` = `
@@ -570,7 +504,7 @@ unittest { // a parsed-but-unlowered module renders its *unresolved* lookups
 
 	// In debug mode an unresolved lookup is spelled `lookup(name)`, and a
 	// function definition is prefixed `f:`.
-	rendered(f.mod, root, true, true, (text_) {
+	rendered(f.mod, f.root, true, true, (text_) {
 		assert(has(text_, "lookup("));
 	});
 	diagnostics().clear();
@@ -595,22 +529,17 @@ unittest { // a fully lowered module renders registers and comptime values
 
 unittest { // every flag a call can carry is rendered back out
 	diagnostics().clear();
-	auto f = makePrintFixture();
-	scope(exit) freeModule(f.mod);
+	auto f = makeOpenModule();
+	scope(exit) f.freeFixture();
 
-	BlockBuilder* builders;
-	scope(exit) fp.dynarray.free(builders);
-	daPushBack(builders, f.builder);
-
-	assert(parseSource(f.mod, builders,
+	assert(parseSource(f.mod, f.builders,
 		"n : compiler.byte = 1\n"
 		~ "i : compiler.byte = inline compiler.emit(n)\n"
 		~ "l : compiler.byte = flatten compiler.emit(n)\n"
 		~ "t : compiler.byte = tail compiler.emit(n)\n",
 		"flags.doir"));
-	immutable root = builders[0].block;
 
-	rendered(f.mod, root, true, false, (text_) {
+	rendered(f.mod, f.root, true, false, (text_) {
 		assert(has(text_, "inline "));
 		assert(has(text_, "flatten "));
 		assert(has(text_, "tail "));
@@ -619,8 +548,8 @@ unittest { // every flag a call can carry is rendered back out
 }
 
 unittest { // an array pointer prints as `type.array(base, size)`
-	auto f = makePrintFixture();
-	scope(exit) freeModule(f.mod);
+	auto f = makeOpenModule();
+	scope(exit) f.freeFixture();
 
 	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.builder.block);
 	assert(byte_ != invalidEntity);
@@ -633,8 +562,8 @@ unittest { // an array pointer prints as `type.array(base, size)`
 }
 
 unittest { // an alias that names another file records the file in debug mode
-	auto f = makePrintFixture();
-	scope(exit) freeModule(f.mod);
+	auto f = makeOpenModule();
+	scope(exit) f.freeFixture();
 
 	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.builder.block);
 	immutable e = pushAlias(f.builder, internIn(f.mod, "elsewhere"), byte_);
@@ -648,8 +577,8 @@ unittest { // an alias that names another file records the file in debug mode
 }
 
 unittest { // ...and so does an unresolved one
-	auto f = makePrintFixture();
-	scope(exit) freeModule(f.mod);
+	auto f = makeOpenModule();
+	scope(exit) f.freeFixture();
 
 	immutable e = pushAlias(f.builder, internIn(f.mod, "dangling"), internIn(f.mod, "nowhere"));
 	auto a = &getComponent!LookupAlias(f.mod, e);
@@ -663,8 +592,8 @@ unittest { // ...and so does an unresolved one
 }
 
 unittest { // a `PrintAsCall` marker makes a substituted value print as its call
-	auto f = makePrintFixture();
-	scope(exit) freeModule(f.mod);
+	auto f = makeOpenModule();
+	scope(exit) f.freeFixture();
 
 	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.builder.block);
 	immutable emit = resolveLookupName(f.mod, internIn(f.mod, "compiler.emit"), f.builder.block);
@@ -684,8 +613,8 @@ unittest { // a `PrintAsCall` marker makes a substituted value print as its call
 }
 
 unittest { // the comptime annotations, one per component
-	auto f = makePrintFixture();
-	scope(exit) freeModule(f.mod);
+	auto f = makeOpenModule();
+	scope(exit) f.freeFixture();
 
 	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.builder.block);
 	immutable n = pushNumber(f.builder, internIn(f.mod, "n"), byte_, 1);
@@ -709,20 +638,16 @@ unittest { // the comptime annotations, one per component
 
 unittest { // an entity carrying a location renders it after the value
 	diagnostics().clear();
-	auto f = makePrintFixture();
-	scope(exit) freeModule(f.mod);
-
-	BlockBuilder* builders;
-	scope(exit) fp.dynarray.free(builders);
-	daPushBack(builders, f.builder);
+	auto f = makeOpenModule();
+	scope(exit) f.freeFixture();
 
 	// The `<file:line:col>` suffix attaches a `Detailed` directly; a plain
 	// assignment gets a `SourceLocation` that is resolved on the way out.
-	assert(parseSource(f.mod, builders,
+	assert(parseSource(f.mod, f.builders,
 		"x : compiler.byte = 1 <other.doir:3:4>\ny : compiler.byte = 2\n", "loc.doir"));
 	assert(!diagnostics().hasErrors());
 
-	rendered(f.mod, builders[0].block, true, false, (text_) {
+	rendered(f.mod, f.root, true, false, (text_) {
 		assert(has(text_, "other.doir"));
 		assert(has(text_, "loc.doir"));
 	});
@@ -730,8 +655,8 @@ unittest { // an entity carrying a location renders it after the value
 }
 
 unittest { // IR the renderer has no shape for says so rather than crashing
-	auto f = makePrintFixture();
-	scope(exit) freeModule(f.mod);
+	auto f = makeOpenModule();
+	scope(exit) f.freeFixture();
 	auto mod = &f.mod;
 
 	// An entity with nothing on it at all.
@@ -750,8 +675,8 @@ unittest { // IR the renderer has no shape for says so rather than crashing
 }
 
 unittest { // an unnamed entity prints as `%id`, and so does an unnamed lookup
-	auto f = makePrintFixture();
-	scope(exit) freeModule(f.mod);
+	auto f = makeOpenModule();
+	scope(exit) f.freeFixture();
 
 	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.builder.block);
 	// `_` is the discard name, which `pushCommon` attaches no `Name` for.
@@ -767,8 +692,8 @@ unittest { // an unnamed entity prints as `%id`, and so does an unnamed lookup
 }
 
 unittest { // `printLookupName` renders a named entity, a path and a raw id
-	auto f = makePrintFixture();
-	scope(exit) freeModule(f.mod);
+	auto f = makeOpenModule();
+	scope(exit) f.freeFixture();
 	immutable root = f.builder.end();
 
 	// A namespaced name is qualified by walking up the parent chain.
@@ -799,8 +724,8 @@ unittest { // `printLookupName` renders a named entity, a path and a raw id
 }
 
 unittest { // an anonymous function type renders as its signature
-	auto f = makePrintFixture();
-	scope(exit) freeModule(f.mod);
+	auto f = makeOpenModule();
+	scope(exit) f.freeFixture();
 	immutable root = f.builder.end();
 
 	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), root);
@@ -833,8 +758,8 @@ unittest { // an anonymous function type renders as its signature
 }
 
 unittest { // `printModule` writes the same text to a FILE*
-	auto f = makePrintFixture();
-	scope(exit) freeModule(f.mod);
+	auto f = makeOpenModule();
+	scope(exit) f.freeFixture();
 	immutable root = f.builder.end();
 
 	auto file = tmpfile();
@@ -852,7 +777,7 @@ unittest { // `printModule` writes the same text to a FILE*
 unittest {
 	// `printSystem` writes to stdout, so this uses a module of its own with
 	// two entities in it rather than one carrying the whole builtin block.
-	import doir.pipeline.sema.sort : sort;
+	import doir.pipeline.canon.sort : sort;
 
 	auto mod = createModule();
 	scope(exit) freeModule(mod);
@@ -868,8 +793,8 @@ unittest {
 }
 
 unittest { // a non-block root renders as the single entity it is
-	auto f = makePrintFixture();
-	scope(exit) freeModule(f.mod);
+	auto f = makeOpenModule();
+	scope(exit) f.freeFixture();
 	immutable root = f.builder.end();
 
 	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), root);
@@ -880,8 +805,8 @@ unittest {
 	// A function definition whose own type never resolved has no signature to
 	// render, so the declared type name stands in for it and the body is
 	// printed behind it.
-	auto f = makePrintFixture();
-	scope(exit) freeModule(f.mod);
+	auto f = makeOpenModule();
+	scope(exit) f.freeFixture();
 
 	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.builder.block);
 	immutable e = pushCommon(f.mod, f.builder.block, internIn(f.mod, "pending"));
@@ -898,8 +823,8 @@ unittest {
 	// A function type reached through a type modification (`compiler.pointer`
 	// and friends) is printed as the modification rather than unwrapped into a
 	// parameter list.
-	auto f = makePrintFixture();
-	scope(exit) freeModule(f.mod);
+	auto f = makeOpenModule();
+	scope(exit) f.freeFixture();
 
 	auto block = f.builder;
 	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), block.block);

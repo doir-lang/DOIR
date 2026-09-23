@@ -5,7 +5,7 @@ module doir.pipeline.opt.compute_compiler_namespace;
 
 import core.stdc.stdio : printf, stdout;
 
-import diagnose.diagnostics : Ansi, Diagnostic, pushAnnotation;
+import diagnose.diagnostics : Ansi;
 import ecrs.storage : EntityId, invalidEntity;
 
 static import fp.dynarray;
@@ -14,21 +14,11 @@ import fp.dynarray : daLength = length;
 import doir.diagnostics;
 import doir.interface_;
 import doir.module_;
+import doir.string_helpers : text;
 import doir.print : printModule;
 
 @nogc nothrow:
 
-
-/// Copies a call's (already resolved) inputs into a caller-owned list with
-/// every alias followed - the C++ `inputs = doir::alias::resolve(mod, inputs)`.
-private EntityList resolvedInputs(ref Module mod, EntityId subtree) @trusted {
-	EntityList out_;
-	auto inputs = &getComponent!FunctionInputs(mod, subtree);
-	foreach (i; 0 .. daLength(inputs.related))
-		out_.push(inputs.related[i]);
-	resolveAliases(mod, out_.slice);
-	return out_;
-}
 
 /// The `(size_bits, align_bits) -> next unique id` counter behind
 /// `compiler.base_type`. A dynarray rather than the C++ function-local
@@ -52,8 +42,8 @@ private bool computeBaseType(ref Module mod, EntityId subtree, EntityId function
 		return false;
 	}
 	auto inputs = resolvedInputs(mod, subtree);
-	scope(exit) inputs.free();
-	if (inputs.length != 2) {
+	scope(exit) fp.dynarray.free(inputs);
+	if (daLength(inputs) != 2) {
 		expectsXInputs(mod, subtree, "base_type", "two");
 		return false;
 	}
@@ -97,8 +87,8 @@ private bool computePointer(ref Module mod, EntityId subtree, EntityId function_
 		return false;
 	}
 	auto inputs = resolvedInputs(mod, subtree);
-	scope(exit) inputs.free();
-	if (inputs.length != 1) {
+	scope(exit) fp.dynarray.free(inputs);
+	if (daLength(inputs) != 1) {
 		expectsXInputs(mod, subtree, "pointer", "one");
 		return false;
 	}
@@ -125,8 +115,8 @@ private bool computeTypeMarker(ref Module mod, EntityId subtree, EntityId functi
 		return false;
 	}
 	auto inputs = resolvedInputs(mod, subtree);
-	scope(exit) inputs.free();
-	if (inputs.length != 1) {
+	scope(exit) fp.dynarray.free(inputs);
+	if (daLength(inputs) != 1) {
 		expectsXInputs(mod, subtree, name, "one");
 		return false;
 	}
@@ -168,8 +158,8 @@ private bool computeBinaryFold(ref Module mod, EntityId subtree,
 		return false;
 	}
 	auto inputs = resolvedInputs(mod, subtree);
-	scope(exit) inputs.free();
-	if (inputs.length != 2) {
+	scope(exit) fp.dynarray.free(inputs);
+	if (daLength(inputs) != 2) {
 		expectsXInputs(mod, subtree, name, arity);
 		return false;
 	}
@@ -351,62 +341,52 @@ unittest {
 // runs anything.
 
 version (unittest) {
-	import doir.pipeline.sema.sort : sort;
+	import doir.pipeline.canon.sort : sort;
 	import doir.string_helpers : InternedString;
 
-	private struct ComputeFixture {
-		Module mod;
-		EntityId root;
-		BlockBuilder block;
-	}
-
-	private ComputeFixture makeComputeFixture() {
+	private Fixture makeComputeFixture() {
 		diagnostics().clear();
-		ComputeFixture f;
-		auto built = makeModuleWithBuiltins();
-		f.mod = built.mod;
-		f.root = built.root;
-		f.block = BlockBuilder(f.root, &f.mod);
-		return f;
+		return makeModuleWithBuiltins();
 	}
 
 	/// Renumbers the module the way the pipeline has by the time this pass runs.
-	private void canonicalize(ref ComputeFixture f) {
+	private void canonicalize(ref Fixture f) {
 		f.root = sort(f.mod, f.root);
 	}
 
-	private EntityId named(ref ComputeFixture f, const(char)[] name) {
-		return resolveLookupName(f.mod, internIn(f.mod, name), f.root);
+	private EntityId named(ref Fixture f, const(char)[] name) {
+		return find(f.mod, f.root, name);
 	}
 
-	private EntityId builtin(ref ComputeFixture f, const(char)[] path) {
-		immutable e = resolveLookupName(f.mod, internIn(f.mod, path), f.root);
+	private EntityId builtin(ref Fixture f, const(char)[] path) {
+		immutable e = named(f, path);
 		assert(e != invalidEntity);
 		return e;
 	}
 
 	/// `<callee>(args...)`, named so it can be found again after the sort.
-	private EntityId pushBuiltinCall(ref ComputeFixture f, const(char)[] name,
-		const(char)[] callee, const(EntityId)[] args)
+	private EntityId pushBuiltinCall(ref Fixture f, ref BlockBuilder block,
+		const(char)[] name, const(char)[] callee, const(EntityId)[] args)
 	{
 		immutable byte_ = builtin(f, "compiler.byte");
-		return pushCall(f.block, internIn(f.mod, name), byte_, builtin(f, callee), args);
+		return pushCall(block, internIn(f.mod, name), byte_, builtin(f, callee), args);
 	}
 }
 
 unittest { // `compiler.base_type` rejects a call it cannot fold
 	auto f = makeComputeFixture();
 	scope(exit) freeModule(f.mod);
+	auto block = f.openRoot();
 
 	immutable pointerSized = builtin(f, "compiler.pointer_sized");
-	immutable n = pushNumber(f.block, internIn(f.mod, "n"), pointerSized, 8);
-	immutable notANumber = pushValueless(f.block, internIn(f.mod, "nan"), pointerSized);
+	immutable n = pushNumber(block, internIn(f.mod, "n"), pointerSized, 8);
+	immutable notANumber = pushValueless(block, internIn(f.mod, "nan"), pointerSized);
 
 	EntityId[1] one = [n];
 	EntityId[2] nonNumeric = [n, notANumber];
-	pushBuiltinCall(f, "argless", "compiler.base_type", null);
-	pushBuiltinCall(f, "wrong_count", "compiler.base_type", one[]);
-	pushBuiltinCall(f, "bad_type", "compiler.base_type", nonNumeric[]);
+	pushBuiltinCall(f, block, "argless", "compiler.base_type", null);
+	pushBuiltinCall(f, block, "wrong_count", "compiler.base_type", one[]);
+	pushBuiltinCall(f, block, "bad_type", "compiler.base_type", nonNumeric[]);
 	canonicalize(f);
 
 	// `argless` has an empty inputs component rather than none, so it is the
@@ -423,13 +403,14 @@ unittest { // `compiler.base_type` rejects a call it cannot fold
 unittest { // `compiler.base_type` takes sizes the compiler only worked out
 	auto f = makeComputeFixture();
 	scope(exit) freeModule(f.mod);
+	auto block = f.openRoot();
 
 	immutable pointerSized = builtin(f, "compiler.pointer_sized");
-	immutable n = pushNumber(f.block, internIn(f.mod, "n"), pointerSized, 4);
+	immutable n = pushNumber(block, internIn(f.mod, "n"), pointerSized, 4);
 	// A folded `compiler.shift_right(n, n)` - still a call, with what it comes
 	// to alongside it - is as good a size as a literal.
 	EntityId[2] shiftArgs = [n, n];
-	pushBuiltinCall(f, "size", "compiler.shift_right", shiftArgs[]);
+	pushBuiltinCall(f, block, "size", "compiler.shift_right", shiftArgs[]);
 	canonicalize(f);
 
 	immutable size = named(f, "size");
@@ -438,7 +419,7 @@ unittest { // `compiler.base_type` takes sizes the compiler only worked out
 	getComponent!ComptimeNumber(f.mod, size).value = 32;
 
 	EntityId[2] args = [size, size];
-	immutable t = pushBuiltinCall(f, "t", "compiler.base_type", args[]);
+	immutable t = pushBuiltinCall(f, block, "t", "compiler.base_type", args[]);
 	assert(computeCompilerNamespace(f.mod, t, false));
 	assert(hasComponent!TypeDefinition(f.mod, t));
 	assert(getComponent!TypeDefinition(f.mod, t).size == 32);
@@ -450,11 +431,12 @@ unittest { // `compiler.base_type` takes sizes the compiler only worked out
 unittest { // `compiler.comptime_base_type` marks what it builds always-comptime
 	auto f = makeComputeFixture();
 	scope(exit) freeModule(f.mod);
+	auto block = f.openRoot();
 
 	immutable pointerSized = builtin(f, "compiler.pointer_sized");
-	immutable n = pushNumber(f.block, internIn(f.mod, "n"), pointerSized, 16);
+	immutable n = pushNumber(block, internIn(f.mod, "n"), pointerSized, 16);
 	EntityId[2] args = [n, n];
-	pushBuiltinCall(f, "t", "compiler.comptime_base_type", args[]);
+	pushBuiltinCall(f, block, "t", "compiler.comptime_base_type", args[]);
 	canonicalize(f);
 
 	immutable t = named(f, "t");
@@ -469,19 +451,20 @@ unittest { // `compiler.comptime_base_type` marks what it builds always-comptime
 unittest { // `compiler.pointer` turns a type into a pointer to it
 	auto f = makeComputeFixture();
 	scope(exit) freeModule(f.mod);
+	auto block = f.openRoot();
 
 	immutable byte_ = builtin(f, "compiler.byte");
 	immutable type = builtin(f, "type");
-	immutable n = pushNumber(f.block, internIn(f.mod, "n"),
+	immutable n = pushNumber(block, internIn(f.mod, "n"),
 		builtin(f, "compiler.pointer_sized"), 1);
 
 	EntityId[1] typeArg = [type];
 	EntityId[2] two = [type, type];
 	EntityId[1] notAType = [n];
-	pushBuiltinCall(f, "p", "compiler.pointer", typeArg[]);
-	pushBuiltinCall(f, "argless", "compiler.pointer", typeArg[]);
-	pushBuiltinCall(f, "wrong_count", "compiler.pointer", two[]);
-	pushBuiltinCall(f, "bad_type", "compiler.pointer", notAType[]);
+	pushBuiltinCall(f, block, "p", "compiler.pointer", typeArg[]);
+	pushBuiltinCall(f, block, "argless", "compiler.pointer", typeArg[]);
+	pushBuiltinCall(f, block, "wrong_count", "compiler.pointer", two[]);
+	pushBuiltinCall(f, block, "bad_type", "compiler.pointer", notAType[]);
 	canonicalize(f);
 
 	immutable p = named(f, "p");
@@ -507,18 +490,19 @@ unittest { // `always_inline` and `always_comptime` mark the type they are given
 	foreach (i, callee; callees) {
 		auto f = makeComputeFixture();
 		scope(exit) freeModule(f.mod);
+		auto block = f.openRoot();
 
 		immutable type = builtin(f, "type");
-		immutable n = pushNumber(f.block, internIn(f.mod, "n"),
+		immutable n = pushNumber(block, internIn(f.mod, "n"),
 			builtin(f, "compiler.pointer_sized"), 1);
 
 		EntityId[1] typeArg = [type];
 		EntityId[2] two = [type, type];
 		EntityId[1] notAType = [n];
-		pushBuiltinCall(f, "marked", callee, typeArg[]);
-		pushBuiltinCall(f, "argless", callee, typeArg[]);
-		pushBuiltinCall(f, "wrong_count", callee, two[]);
-		pushBuiltinCall(f, "bad_type", callee, notAType[]);
+		pushBuiltinCall(f, block, "marked", callee, typeArg[]);
+		pushBuiltinCall(f, block, "argless", callee, typeArg[]);
+		pushBuiltinCall(f, block, "wrong_count", callee, two[]);
+		pushBuiltinCall(f, block, "bad_type", callee, notAType[]);
 		canonicalize(f);
 
 		immutable marked = named(f, "marked");
@@ -546,19 +530,20 @@ unittest { // `bitwise_and` and `shift_right` fold their two constants
 	foreach (i, callee; callees) {
 		auto f = makeComputeFixture();
 		scope(exit) freeModule(f.mod);
+		auto block = f.openRoot();
 
 		immutable pointerSized = builtin(f, "compiler.pointer_sized");
-		immutable lhs = pushNumber(f.block, internIn(f.mod, "lhs"), pointerSized, 0b1100);
-		immutable rhs = pushNumber(f.block, internIn(f.mod, "rhs"), pointerSized, rhsValues[i]);
-		immutable notANumber = pushValueless(f.block, internIn(f.mod, "nan"), pointerSized);
+		immutable lhs = pushNumber(block, internIn(f.mod, "lhs"), pointerSized, 0b1100);
+		immutable rhs = pushNumber(block, internIn(f.mod, "rhs"), pointerSized, rhsValues[i]);
+		immutable notANumber = pushValueless(block, internIn(f.mod, "nan"), pointerSized);
 
 		EntityId[2] args = [lhs, rhs];
 		EntityId[1] one = [lhs];
 		EntityId[2] nonNumeric = [lhs, notANumber];
-		pushBuiltinCall(f, "folded", callee, args[]);
-		pushBuiltinCall(f, "argless", callee, args[]);
-		pushBuiltinCall(f, "wrong_count", callee, one[]);
-		pushBuiltinCall(f, "bad_type", callee, nonNumeric[]);
+		pushBuiltinCall(f, block, "folded", callee, args[]);
+		pushBuiltinCall(f, block, "argless", callee, args[]);
+		pushBuiltinCall(f, block, "wrong_count", callee, one[]);
+		pushBuiltinCall(f, block, "bad_type", callee, nonNumeric[]);
 		canonicalize(f);
 
 		// The call stays put; what the fold learned rides along beside it.
@@ -582,16 +567,17 @@ unittest { // `bitwise_and` and `shift_right` fold their two constants
 unittest { // `compiler.debug_print` renders its second argument
 	auto f = makeComputeFixture();
 	scope(exit) freeModule(f.mod);
+	auto block = f.openRoot();
 
 	immutable type = builtin(f, "type");
-	immutable n = pushNumber(f.block, internIn(f.mod, "n"),
+	immutable n = pushNumber(block, internIn(f.mod, "n"),
 		builtin(f, "compiler.pointer_sized"), 1);
 
 	EntityId[2] args = [type, n];
 	EntityId[1] one = [n];
-	pushBuiltinCall(f, "printed", "compiler.debug_print", args[]);
-	pushBuiltinCall(f, "argless", "compiler.debug_print", args[]);
-	pushBuiltinCall(f, "wrong_count", "compiler.debug_print", one[]);
+	pushBuiltinCall(f, block, "printed", "compiler.debug_print", args[]);
+	pushBuiltinCall(f, block, "argless", "compiler.debug_print", args[]);
+	pushBuiltinCall(f, block, "wrong_count", "compiler.debug_print", one[]);
 	canonicalize(f);
 
 	assert(computeCompilerNamespace(f.mod, named(f, "printed"), false));
@@ -608,20 +594,21 @@ unittest { // `compiler.debug_print` renders its second argument
 unittest { // `register_for` reports the register its target was assigned
 	auto f = makeComputeFixture();
 	scope(exit) freeModule(f.mod);
+	auto block = f.openRoot();
 
 	immutable type = builtin(f, "type");
 	immutable pointerSized = builtin(f, "compiler.pointer_sized");
-	immutable target = pushNumber(f.block, internIn(f.mod, "target"), pointerSized, 1);
+	immutable target = pushNumber(block, internIn(f.mod, "target"), pointerSized, 1);
 	getOrAddComponent!AssignedRegister(f.mod, target).reg = 9;
-	immutable unassigned = pushNumber(f.block, internIn(f.mod, "unassigned"), pointerSized, 1);
+	immutable unassigned = pushNumber(block, internIn(f.mod, "unassigned"), pointerSized, 1);
 
 	EntityId[2] args = [type, target];
 	EntityId[2] unassignedArgs = [type, unassigned];
 	EntityId[1] one = [type];
-	pushBuiltinCall(f, "r", "compiler.assembler.register_for", args[]);
-	pushBuiltinCall(f, "no_reg", "compiler.assembler.register_for", unassignedArgs[]);
-	pushBuiltinCall(f, "argless", "compiler.assembler.register_for", args[]);
-	pushBuiltinCall(f, "wrong_count", "compiler.assembler.register_for", one[]);
+	pushBuiltinCall(f, block, "r", "compiler.assembler.register_for", args[]);
+	pushBuiltinCall(f, block, "no_reg", "compiler.assembler.register_for", unassignedArgs[]);
+	pushBuiltinCall(f, block, "argless", "compiler.assembler.register_for", args[]);
+	pushBuiltinCall(f, block, "wrong_count", "compiler.assembler.register_for", one[]);
 	canonicalize(f);
 
 	immutable r = named(f, "r");
@@ -654,18 +641,19 @@ unittest { // `register_for` reports the register its target was assigned
 unittest { // a `register_for` whose target is a parameter is left for later
 	auto f = makeComputeFixture();
 	scope(exit) freeModule(f.mod);
+	auto block = f.openRoot();
 
 	immutable type = builtin(f, "type");
 	immutable byte_ = builtin(f, "compiler.byte");
 	Lookup[1] inputs = [Lookup(byte_)];
 	InternedString[1] names = [internIn(f.mod, "p")];
-	immutable ft = pushFunctionType(f.block, internIn(f.mod, "ft"), inputs[], Lookup(byte_), true, names[]);
-	auto fb = pushFunction(f.block, internIn(f.mod, "fn"), ft, true);
+	immutable ft = pushFunctionType(block, internIn(f.mod, "ft"), inputs[], Lookup(byte_), true, names[]);
+	auto fb = pushFunction(block, internIn(f.mod, "fn"), ft, true);
 	immutable parameter = getComponent!Block(f.mod, fb.builder.block).related[0];
 	assert(hasComponent!FunctionParameter(f.mod, parameter));
 
 	EntityId[2] args = [type, parameter];
-	pushBuiltinCall(f, "r", "compiler.assembler.register_for", args[]);
+	pushBuiltinCall(f, block, "r", "compiler.assembler.register_for", args[]);
 	canonicalize(f);
 
 	immutable r = named(f, "r");
@@ -678,20 +666,21 @@ unittest { // a `register_for` whose target is a parameter is left for later
 unittest { // `yield_register` is for a block, not a function
 	auto f = makeComputeFixture();
 	scope(exit) freeModule(f.mod);
+	auto block = f.openRoot();
 
 	immutable byte_ = builtin(f, "compiler.byte");
 	// A function type built from resolved parameter entities gives the function
 	// a resolved `FunctionReturnType`, which is what marks it a function here.
 	EntityId[0] resolvedInputs;
-	immutable ft = pushFunctionType(f.block, internIn(f.mod, "ft"), resolvedInputs[],
+	immutable ft = pushFunctionType(block, internIn(f.mod, "ft"), resolvedInputs[],
 		cast(EntityId) byte_, true);
-	auto fb = pushFunction(f.block, internIn(f.mod, "fn"), ft);
+	auto fb = pushFunction(block, internIn(f.mod, "fn"), ft);
 	assert(hasComponent!FunctionReturnType(f.mod, fb.builder.block));
 	pushCall(fb.builder, internIn(f.mod, "inside"), byte_,
 		builtin(f, "compiler.assembler.yield_register"), resolvedInputs[0 .. 0]);
 
 	// ...and outside one it reports the enclosing block's register.
-	pushBuiltinCall(f, "outside", "compiler.assembler.yield_register", null);
+	pushBuiltinCall(f, block, "outside", "compiler.assembler.yield_register", null);
 	canonicalize(f);
 
 	immutable fn = named(f, "fn");
@@ -710,16 +699,17 @@ unittest { // `yield_register` is for a block, not a function
 unittest { // `return_register` is the other way round: it needs a function
 	auto f = makeComputeFixture();
 	scope(exit) freeModule(f.mod);
+	auto block = f.openRoot();
 
 	immutable byte_ = builtin(f, "compiler.byte");
 	EntityId[0] resolvedInputs;
-	immutable ft = pushFunctionType(f.block, internIn(f.mod, "ft"), resolvedInputs[],
+	immutable ft = pushFunctionType(block, internIn(f.mod, "ft"), resolvedInputs[],
 		cast(EntityId) byte_, true);
-	auto fb = pushFunction(f.block, internIn(f.mod, "fn"), ft);
+	auto fb = pushFunction(block, internIn(f.mod, "fn"), ft);
 	pushCall(fb.builder, internIn(f.mod, "inside"), byte_,
 		builtin(f, "compiler.assembler.return_register"), resolvedInputs[0 .. 0]);
 
-	pushBuiltinCall(f, "outside", "compiler.assembler.return_register", null);
+	pushBuiltinCall(f, block, "outside", "compiler.assembler.return_register", null);
 	canonicalize(f);
 
 	// Inside a function it is accepted (and, for now, does nothing)...
@@ -737,10 +727,11 @@ unittest { // `return_register` is the other way round: it needs a function
 unittest { // anything that is not a `compiler.*` call is left alone
 	auto f = makeComputeFixture();
 	scope(exit) freeModule(f.mod);
+	auto block = f.openRoot();
 
 	immutable byte_ = builtin(f, "compiler.byte");
-	immutable n = pushNumber(f.block, internIn(f.mod, "n"), byte_, 1);
-	pushBuiltinCall(f, "emitted", "compiler.emit", (&n)[0 .. 1]);
+	immutable n = pushNumber(block, internIn(f.mod, "n"), byte_, 1);
+	pushBuiltinCall(f, block, "emitted", "compiler.emit", (&n)[0 .. 1]);
 	canonicalize(f);
 
 	assert(computeCompilerNamespace(f.mod, named(f, "n"), false)); // not a call

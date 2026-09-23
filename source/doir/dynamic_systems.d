@@ -77,7 +77,8 @@ import ecrs.storage : EntityId, invalidEntity;
 import std.traits : Parameters;
 
 import diagnose.diagnostics : Ansi;
-import doir.diagnostics : DoirAnsi, appendText, stringContentsError, text;
+import doir.diagnostics : DoirAnsi, stringContentsError;
+import doir.string_helpers : appendText, text;
 import doir.interface_ : currentCanonicalizeRoot;
 import doir.module_ : Module, moduleOf;
 import doir.systems;
@@ -96,22 +97,22 @@ import doir.systems;
 private enum string[] passModules = [
 	"doir.print",
 	"doir.pipeline",
-	"doir.pipeline.sema.comptime",
+	"doir.pipeline.canon.comptime",
+	"doir.pipeline.canon.lookup",
+	"doir.pipeline.canon.materialize",
+	"doir.pipeline.canon.override_fallback_schedule",
+	"doir.pipeline.canon.process_early_include",
+	"doir.pipeline.canon.sort",
+	"doir.pipeline.canon.strip_freestanding_blocks",
 	"doir.pipeline.sema.function_arity",
-	"doir.pipeline.sema.lookup",
-	"doir.pipeline.sema.materialize",
 	"doir.pipeline.sema.name_reuse",
-	"doir.pipeline.sema.process_early_include",
-	"doir.pipeline.sema.sort",
 	"doir.pipeline.sema.strip_names",
 	"doir.pipeline.opt.allocate_registers",
 	"doir.pipeline.opt.compute_compiler_namespace",
 	"doir.pipeline.opt.inline_functions",
 	"doir.pipeline.opt.materialize_aliases",
 	"doir.pipeline.opt.pin_registers",
-	"doir.pipeline.opt.override_fallback_schedule",
 	"doir.pipeline.opt.run_schedule",
-	"doir.pipeline.opt.strip_freestanding_blocks",
 	"doir.pipeline.opt.mizu.comptime_evaluate",
 	"doir.pipeline.opt.mizu.materialize_immediates",
 	"doir.pipeline.opt.mizu.materialize_labels",
@@ -259,7 +260,7 @@ private RegisteredSystem boundEntryOf(alias mod, string member, string name, boo
 /// rather than a bool, and so is not pass-shaped; a schedule has no reason to
 /// carry that distinction around.
 private enum string[2][] systemAliases = [
-	["sort", "doir.pipeline.sema.sort.sortSystem"],
+	["sort", "doir.pipeline.canon.sort.sortSystem"],
 	["debugPrint", "doir.print.printSystem"],
 ];
 
@@ -527,7 +528,6 @@ void reportSystemError(ref Module mod, ref const DynamicSystem system,
 }
 
 
-
 // ---------------------------------------------------------------------------
 // Running one
 // ---------------------------------------------------------------------------
@@ -617,7 +617,8 @@ private bool runNode(ref DynamicSystem system, size_t index, ref Context context
 		case NodeKind.fixedPoint:
 			return fixedPoint(context, NodeSystem(&system, system.children[node.firstChild]));
 		case NodeKind.applyGlobally:
-			auto scope_ = GlobalLowering(true);
+			immutable previousGlobal = beginGlobalLowering();
+			scope(exit) endGlobalLowering(previousGlobal);
 			return runNode(system, system.children[node.firstChild], context);
 	}
 }
@@ -925,50 +926,13 @@ DynamicSystem parseSystem(const(char)[] source, ThreadPool* pool = null) @truste
 
 version (unittest) {
 	import doir.diagnostics : diagnostics;
-	import doir.interface_ : Block, BlockBuilder, buildBuiltinBlock, createBlockBuilder;
-	import doir.module_ : addComponent, addEntity, createModule, freeModule, getComponent;
+	import doir.interface_ : createBuilderStack;
+	import doir.module_ : createModule, freeModule;
 	import doir.parser : parseFile;
 	import doir.pipeline : runPipeline;
-	import doir.pipeline.sema.sort : newRoot, sort;
+	import doir.pipeline.canon.sort : newRoot, sort;
+	import tests.pipeline_helper : makeTree;
 
-	/// root -> inner -> (leafA, leafB), and root -> leafC; the same shape
-	/// `doir.systems`' own tests walk.
-	private struct Tree {
-		Module mod;
-		EntityId leafA, leafB, inner, leafC, root;
-	}
-
-	private void link(ref Module mod, EntityId block, EntityId child) @trusted {
-		auto related = &getComponent!Block(mod, block).related;
-		fp.dynarray.pushBack(*related, child);
-	}
-
-	private Tree makeTree() {
-		Tree t;
-		t.mod = createModule();
-		t.leafA = addEntity(t.mod);
-		t.leafB = addEntity(t.mod);
-		t.inner = addEntity(t.mod);
-		addComponent!Block(t.mod, t.inner);
-		t.leafC = addEntity(t.mod);
-		t.root = addEntity(t.mod);
-		addComponent!Block(t.mod, t.root);
-
-		link(t.mod, t.inner, t.leafA);
-		link(t.mod, t.inner, t.leafB);
-		link(t.mod, t.root, t.inner);
-		link(t.mod, t.root, t.leafC);
-		return t;
-	}
-
-	/// Points the canonical root - which is what a schedule string walks, since
-	/// it has no way to name an entity - at `root`.
-	private struct RootedAt {
-		private EntityId previous;
-		@nogc nothrow:
-		this(EntityId root) { previous = newRoot; newRoot = root; }
-		~this() { newRoot = previous; }
-	}
 }
 
 unittest { // the enumeration finds the real passes, under their real names
@@ -986,11 +950,11 @@ unittest { // the enumeration finds the real passes, under their real names
 	assert(entry.pass !is null);
 
 	// `sortSystem`'s root argument has a default, so it is both.
-	assert(findRegisteredSystem("doir.pipeline.sema.sort.sortSystem", entry));
+	assert(findRegisteredSystem("doir.pipeline.canon.sort.sortSystem", entry));
 	assert(entry.pass !is null && entry.visit !is null);
 
 	// A `bool`-configured visitor is registered once per setting.
-	assert(findRegisteredSystem("doir.pipeline.sema.lookup.resolveLookups!true", entry));
+	assert(findRegisteredSystem("doir.pipeline.canon.lookup.resolveLookups!true", entry));
 	assert(entry.visit !is null);
 	assert(findRegisteredSystem("doir.pipeline.opt.compute_compiler_namespace.computeCompilerNamespace!false", entry));
 	assert(entry.visit !is null);
@@ -999,7 +963,7 @@ unittest { // the enumeration finds the real passes, under their real names
 	// `sortSystem` in D only because `sort` there hands back the new root, so a
 	// schedule that wants a sort should not have to know that.
 	assert(findRegisteredSystem("sort", entry));
-	assert(equals(entry.name, "doir.pipeline.sema.sort.sortSystem"));
+	assert(equals(entry.name, "doir.pipeline.canon.sort.sortSystem"));
 	assert(entry.pass !is null);
 
 	// The last component alone works where it is unambiguous...
@@ -1015,7 +979,7 @@ unittest { // the enumeration finds the real passes, under their real names
 	assert(!findRegisteredSystem("nonsense", entry));
 
 	// `doir.pipeline`, `doir.pipeline.opt.run_schedule` and
-	// `doir.pipeline.opt.override_fallback_schedule` all import their way back
+	// `doir.pipeline.canon.override_fallback_schedule` all import their way back
 	// here - the registry enumerates them, and they reach into it (the last one
 	// reaches back up at `doir.pipeline` as well). A cycle the compiler resolved
 	// the wrong way round would not fail to build, it would quietly leave their
@@ -1023,7 +987,7 @@ unittest { // the enumeration finds the real passes, under their real names
 	assert(findRegisteredSystem("doir.pipeline.mizuSchedule", entry));
 	assert(findRegisteredSystem("doir.pipeline.opt.run_schedule.runSchedule", entry));
 	assert(findRegisteredSystem(
-		"doir.pipeline.opt.override_fallback_schedule.runFallbackSchedule", entry));
+		"doir.pipeline.canon.override_fallback_schedule.runFallbackSchedule", entry));
 
 	// Every name the registry reports is one it can find again.
 	foreach (i; 0 .. registeredSystemCount)
@@ -1033,7 +997,11 @@ unittest { // the enumeration finds the real passes, under their real names
 unittest { // a walker parsed from a string walks the way the template does
 	auto t = makeTree();
 	scope(exit) freeModule(t.mod);
-	auto rooted = RootedAt(t.root);
+	// A schedule string walks the canonical root, having no way to name an
+	// entity, so point it at the fixture's.
+	immutable previousRoot = newRoot;
+	newRoot = t.root;
+	scope(exit) newRoot = previousRoot;
 
 	auto system = parseSystem("depthFirst(doir.pipeline.opt.pin_registers.pinRegisters)");
 	scope(exit) freeSystem(system);
@@ -1058,12 +1026,16 @@ unittest { // the combinators nest, and a parsed schedule is itself a system
 
 	auto t = makeTree();
 	scope(exit) freeModule(t.mod);
-	auto rooted = RootedAt(t.root);
+	// A schedule string walks the canonical root, having no way to name an
+	// entity, so point it at the fixture's.
+	immutable previousRoot = newRoot;
+	newRoot = t.root;
+	scope(exit) newRoot = previousRoot;
 
 	enum schedule = "sequential("
 		~ "  fixedPoint(depthFirst(pinRegisters)),"
 		~ "  parallel(breadthFirst(pinRegisters), sorted(pinRegisters, false)),"
-		~ "  doir.pipeline.sema.sort.sortSystem"
+		~ "  doir.pipeline.canon.sort.sortSystem"
 		~ ")";
 	auto system = parseSystem(schedule);
 	scope(exit) freeSystem(system);
@@ -1110,7 +1082,11 @@ unittest { // every way of writing it wrong is reported, not run
 unittest { // comments, in all three of DOIR's forms
 	auto t = makeTree();
 	scope(exit) freeModule(t.mod);
-	auto rooted = RootedAt(t.root);
+	// A schedule string walks the canonical root, having no way to name an
+	// entity, so point it at the fixture's.
+	immutable previousRoot = newRoot;
+	newRoot = t.root;
+	scope(exit) newRoot = previousRoot;
 
 	enum schedule = "
 		sequential(
@@ -1150,7 +1126,11 @@ unittest { // comments, in all three of DOIR's forms
 unittest { // whitespace and empty lists
 	auto t = makeTree();
 	scope(exit) freeModule(t.mod);
-	auto rooted = RootedAt(t.root);
+	// A schedule string walks the canonical root, having no way to name an
+	// entity, so point it at the fixture's.
+	immutable previousRoot = newRoot;
+	newRoot = t.root;
+	scope(exit) newRoot = previousRoot;
 
 	// `sort` is a whole pass, so it stands on its own in a schedule.
 	auto sorting = parseSystem("sequential(sort, depthFirst(pinRegisters))");
@@ -1186,13 +1166,8 @@ unittest { // the pipeline's own schedule, spelled as a string, compiles a file
 	auto mod = createModule();
 	scope(exit) freeModule(mod);
 
-	BlockBuilder* builders;
+	auto builders = createBuilderStack(mod);
 	scope(exit) fp.dynarray.free(builders);
-	{
-		auto builtin = createBlockBuilder(mod);
-		buildBuiltinBlock(builtin);
-		fp.dynarray.pushBack(builders, builtin);
-	}
 	assert(parseFile(mod, builders, "test.doir"));
 	assert(!diagnostics().hasErrors());
 
@@ -1237,7 +1212,11 @@ unittest { // the pipeline's own schedule, spelled as a string, compiles a file
 unittest { // `parallel` dispatches, and agrees with running in order
 	auto t = makeTree();
 	scope(exit) freeModule(t.mod);
-	auto rooted = RootedAt(t.root);
+	// A schedule string walks the canonical root, having no way to name an
+	// entity, so point it at the fixture's.
+	immutable previousRoot = newRoot;
+	newRoot = t.root;
+	scope(exit) newRoot = previousRoot;
 
 	auto pool = bc.threadpool.create(4);
 	scope(exit) bc.threadpool.free(pool);

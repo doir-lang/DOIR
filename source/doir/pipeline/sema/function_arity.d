@@ -10,6 +10,7 @@ import fp.dynarray : daLength = length;
 import doir.diagnostics;
 import doir.interface_;
 import doir.module_;
+import doir.string_helpers : text;
 
 @nogc nothrow:
 

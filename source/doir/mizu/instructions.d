@@ -153,18 +153,13 @@ version (unittest) {
 	private bool compileWithMizu(const(char)[] body_, ref Module mod, out EntityId root) @trusted {
 		import fp.string : strFree = free, strSlice = slice;
 
-		import doir.diagnostics : text;
+		import doir.string_helpers : text;
 
 		diagnostics().clear();
 		mod = createModule();
 
-		BlockBuilder* builders;
+		auto builders = createBuilderStack(mod);
 		scope(exit) fp.dynarray.free(builders);
-		{
-			auto builtin = createBlockBuilder(mod);
-			buildBuiltinBlock(builtin);
-			fp.dynarray.pushBack(builders, builtin);
-		}
 
 		auto source = text(
 			"path : compiler.byte_pointer = \"./mizu.doir\"\n"

@@ -1,7 +1,7 @@
 /// `canonicalize.sort`: renumbers every entity into post-order so that a
 /// block's children always precede it and ids can be walked as ranges.
 /// Ported from sema/canonicalize/sort.cpp.
-module doir.pipeline.sema.sort;
+module doir.pipeline.canon.sort;
 
 static import fp.dynarray;
 import fp.dynarray : daLength = length;

@@ -16,10 +16,9 @@ import ecrs.storage : EntityId, EntityComponentIndices, invalidEntity;
 
 import doir.diagnostics : invalidFileName, panic;
 import doir.module_;
-import doir.string_helpers : InternedString;
+import doir.string_helpers : containsView, InternedString;
 
 @nogc nothrow:
-
 
 
 // ---------------------------------------------------------------------------
@@ -360,78 +359,64 @@ struct AssignedRegister {
 // Owning lists (what the C++ returns by value as std::vector)
 // ---------------------------------------------------------------------------
 
-/// An owning list of `Lookup`s, standing in for the C++
-/// `doir::lookup::function_inputs` values passed around by value. Plain data:
-/// `length`, `push`, `slice` and `free` below are free functions over it, so
-/// `push(list, l)` and `list.push(l)` are the same call. Free it when done.
-struct LookupList {
-	Lookup* data = null;
-
-	@nogc nothrow:
-	ref inout(Lookup) opIndex(size_t i) inout @trusted { return (cast(inout(Lookup)*) data)[i]; }
-}
-
-void free(ref LookupList l) @trusted {
-	if (l.data !is null) { fp.dynarray.free(l.data); l.data = null; }
-}
-
-size_t length(ref const LookupList l) @trusted {
-	return daLength(cast(Lookup*) l.data);
-}
-
-void push(ref LookupList l, Lookup v) @trusted {
-	fp.dynarray.pushBack(l.data, v);
-}
-
-inout(Lookup)[] slice(ref inout LookupList l) @trusted {
-	return l.data is null ? null : (cast(inout(Lookup)*) l.data)[0 .. length(l)];
-}
-
-/// An owning list of entities.
-struct EntityList {
-	EntityId* data = null;
-
-	@nogc nothrow:
-	ref inout(EntityId) opIndex(size_t i) inout @trusted { return (cast(inout(EntityId)*) data)[i]; }
-}
-
-void free(ref EntityList l) @trusted {
-	if (l.data !is null) { fp.dynarray.free(l.data); l.data = null; }
-}
-
-size_t length(ref const EntityList l) @trusted {
-	return daLength(cast(EntityId*) l.data);
-}
-
-void push(ref EntityList l, EntityId e) @trusted {
-	fp.dynarray.pushBack(l.data, e);
-}
-
-inout(EntityId)[] slice(ref inout EntityList l) @trusted {
-	return l.data is null ? null : (cast(inout(EntityId)*) l.data)[0 .. length(l)];
-}
-
 /// Widens a resolved `FunctionInputs` into a list of `Lookup`s
-/// (the C++ `lookup::function_inputs::to_lookup`).
-LookupList toLookupList(ref Module mod, EntityId e) @trusted {
-	LookupList out_;
+/// (the C++ `lookup::function_inputs::to_lookup`). The caller frees the result.
+Lookup* toLookupList(ref Module mod, EntityId e) @trusted {
+	Lookup* out_;
 	auto inputs = &getComponent!FunctionInputs(mod, e);
 	foreach (i; 0 .. daLength(inputs.related))
-		out_.push(Lookup(inputs.related[i]));
+		fp.dynarray.pushBack(out_, Lookup(inputs.related[i]));
 	return out_;
 }
 
 /// The inputs of `e`, whether they are resolved or not - the
 /// `has_component<function_inputs> ? to_lookup(...) : get<lookup::function_inputs>`
 /// idiom that appears all over the C++. The caller frees the result.
-LookupList inputsOf(ref Module mod, EntityId e) @trusted {
+Lookup* inputsOf(ref Module mod, EntityId e) @trusted {
 	if (hasComponent!FunctionInputs(mod, e))
 		return toLookupList(mod, e);
 
-	LookupList out_;
+	Lookup* out_;
 	auto lookups = &getComponent!LookupFunctionInputs(mod, e);
 	foreach (i; 0 .. length(*lookups))
-		push(out_, (*lookups)[i]);
+		fp.dynarray.pushBack(out_, (*lookups)[i]);
+	return out_;
+}
+
+/// The name the `i`th parameter takes when the function type declared none:
+/// `a0`, `a1`, ... Both the builders and `doir.print` have to agree on this,
+/// so it lives here rather than being spelled at each of them.
+InternedString defaultParameterName(ref Module mod, size_t i) @trusted {
+	import core.stdc.stdio : snprintf;
+	char[24] buffer;
+	immutable n = snprintf(buffer.ptr, buffer.length, "a%zu", i);
+	return internIn(mod, buffer[0 .. n]);
+}
+
+/// The name an unnamed entity goes by: `%0`, `%1`, ... - the same spelling the
+/// parser accepts and `doir.print` emits for a register with no name.
+InternedString positionalName(ref Module mod, size_t i) @trusted {
+	import core.stdc.stdio : snprintf;
+	char[24] buffer;
+	immutable n = snprintf(buffer.ptr, buffer.length, "%%%zu", i);
+	return internIn(mod, buffer[0 .. n]);
+}
+
+/// Snapshots a call's stored `FunctionInputs` into a caller-owned dynarray,
+/// so the component can be removed or the store rearranged underneath it.
+EntityId* inputEntities(ref Module mod, EntityId e) @trusted {
+	EntityId* out_;
+	auto stored = &getComponent!FunctionInputs(mod, e);
+	foreach (i; 0 .. daLength(stored.related))
+		fp.dynarray.pushBack(out_, stored.related[i]);
+	return out_;
+}
+
+/// `inputEntities` with every alias followed - the C++
+/// `inputs = doir::alias::resolve(mod, inputs)`.
+EntityId* resolvedInputs(ref Module mod, EntityId e) @trusted {
+	auto out_ = inputEntities(mod, e);
+	resolveAliases(mod, fp.dynarray.slice(out_));
 	return out_;
 }
 
@@ -536,15 +521,15 @@ void prependToNames(ref Module mod, EntityId blockEntity, const(char)[] prefix) 
 
 /// For each input index, the entity in `blockEntity` declared as that
 /// parameter. The caller frees the result.
-EntityList associatedParameters(ref Module mod, size_t inputCount, EntityId blockEntity) @trusted {
-	EntityList parameters;
+EntityId* associatedParameters(ref Module mod, size_t inputCount, EntityId blockEntity) @trusted {
+	EntityId* parameters;
 	auto block = &getComponent!Block(mod, blockEntity);
 	foreach (i; 0 .. inputCount)
 		foreach (j; 0 .. daLength(block.related)) {
 			immutable e = block.related[j];
 			if (!hasComponent!FunctionParameter(mod, e)) continue;
 			if (getComponent!FunctionParameter(mod, e).index == i) {
-				parameters.push(e);
+				fp.dynarray.pushBack(parameters, e);
 				break;
 			}
 		}
@@ -773,7 +758,6 @@ BlockBuilder pushSubblock(ref BlockBuilder b, InternedString name, InternedStrin
 
 /// `add : (a: i32, b: i32 = 5) i32 = { built block... }`
 FunctionBuilder attachFunction(ref Module mod, EntityId to, EntityId functionType, bool pushParameters = false) @trusted {
-	import core.stdc.stdio : snprintf;
 	import fp.string : strSlice = slice;
 
 	addComponent!TypeOf(mod, to).related[0] = functionType;
@@ -788,17 +772,13 @@ FunctionBuilder attachFunction(ref Module mod, EntityId to, EntityId functionTyp
 	if (!pushParameters) return out_;
 
 	auto inputs = inputsOf(mod, functionType);
-	scope(exit) inputs.free();
+	scope(exit) fp.dynarray.free(inputs);
 
-	foreach (i; 0 .. inputs.length) {
+	foreach (i; 0 .. daLength(inputs)) {
 		InternedString name;
 		if (hasComponent!FunctionParameterNames(mod, functionType))
 			name = getComponent!FunctionParameterNames(mod, functionType).slice[i];
-		else {
-			char[24] buffer;
-			immutable n = snprintf(buffer.ptr, buffer.length, "a%zu", i);
-			name = internIn(mod, buffer[0 .. n]);
-		}
+		else name = defaultParameterName(mod, i);
 
 		if (inputs[i].resolved())
 			pushValuelessParameter(out_, i, name, inputs[i].entity());
@@ -922,13 +902,12 @@ BlockBuilder pushNamespace(ref BlockBuilder b, InternedString name) {
 
 /// Declares every parameter of `functionType` inside the function being built.
 void pushParameters(ref FunctionBuilder fb, EntityId functionType, const(InternedString)[] parameterNames = null) @trusted {
-	import core.stdc.stdio : snprintf;
 
 	auto mod = fb.mod;
 	if (!hasAnyInputs(*mod, functionType)) return;
 
 	auto inputs = inputsOf(*mod, functionType);
-	scope(exit) inputs.free();
+	scope(exit) fp.dynarray.free(inputs);
 
 	InternedString[] names;
 	InternedString* generated = null;
@@ -939,17 +918,14 @@ void pushParameters(ref FunctionBuilder fb, EntityId functionType, const(Interne
 	else if (hasComponent!FunctionParameterNames(*mod, functionType))
 		names = cast(InternedString[]) getComponent!FunctionParameterNames(*mod, functionType).slice;
 	else {
-		foreach (i; 0 .. inputs.length) {
-			char[24] buffer;
-			immutable n = snprintf(buffer.ptr, buffer.length, "a%zu", i);
-			fp.dynarray.pushBack(generated, internIn(*mod, buffer[0 .. n]));
-		}
-		names = generated[0 .. inputs.length];
+		foreach (i; 0 .. daLength(inputs))
+			fp.dynarray.pushBack(generated, defaultParameterName(*mod, i));
+		names = generated[0 .. daLength(inputs)];
 	}
 
 	// Walked backwards because each parameter is *prepended*, which leaves
 	// them in declaration order once the loop finishes.
-	for (size_t i = inputs.length; i-- > 0;) {
+	for (size_t i = daLength(inputs); i-- > 0;) {
 		if (inputs[i].resolved())
 			pushValuelessParameter(fb, i, names[i], inputs[i].entity(), false);
 		else
@@ -993,6 +969,35 @@ EntityId pushValuelessParameter(TType)(ref FunctionBuilder fb, size_t index, Int
 // Source locations
 // ---------------------------------------------------------------------------
 
+/// The byte offset of `s` within the working file, or `size_t.max` when it is
+/// not in it.
+///
+/// Two ways of placing it, because callers hand over both kinds of slice: one
+/// cut from the source buffer is located by pointer arithmetic, which names the
+/// occurrence actually being talked about; anything else - an interned name
+/// lives in the interner's arena, a separate allocation - can only be searched
+/// for by content, which finds the first occurrence of equal text.
+/// NOTE: the C++ computes `mod.source.data() - s.data()`, i.e. with the
+/// operands the wrong way round, which underflows to a nonsense offset. That
+/// branch is effectively dead there (identifiers live in the interner's arena,
+/// so the `contains` test fails and the `find` path runs), but here it would be
+/// an out-of-range location rather than merely a wrong one, so the subtraction
+/// is written in the intended direction.
+size_t findTextOffset(ref Module mod, const(char)[] s) @trusted {
+	const source = workingSource(mod);
+	if (containsView(source, s)) return cast(size_t)(s.ptr - source.ptr);
+	return findSlices(source, s, 0);
+}
+
+/// The byte range `s` occupies in the working file, or the top of that file
+/// when it is not in it - the text-slice counterpart to `findSourceLocation`.
+SourceLocation findTextLocation(ref Module mod, const(char)[] s) @trusted {
+	const file = workingFileOr(mod, invalidFileName);
+	immutable start = findTextOffset(mod, s);
+	if (start == size_t.max) return SourceLocation(file, 0, 0);
+	return SourceLocation(file, start, start + s.length);
+}
+
 /// The byte range `subtree` came from, recovered from whichever of the two
 /// location components it carries - or, failing that, by finding its name in
 /// the module's source text.
@@ -1015,7 +1020,7 @@ SourceLocation findSourceLocation(ref Module mod, EntityId subtree) @trusted {
 			// location has to be named after that file for `sourceOf` to hand
 			// the same text back when it is resolved.
 			auto name = getComponent!Name(mod, e).value;
-			immutable start = findSlices(workingSource(mod), name.view, 0);
+			immutable start = findTextOffset(mod, name.view);
 			if (start != size_t.max)
 				return SourceLocation(workingFileOr(mod, invalidFileName), start, start + name.view.length);
 		}
@@ -1072,22 +1077,6 @@ EntityId findParent(ref Module mod, EntityId e) {
 	if (hasComponent!Parent(mod, e))
 		return findBlock(mod, getComponent!Parent(mod, e).related[0]);
 	return findBlock(mod, e, e);
-}
-
-/// Whether `e` is declared somewhere inside `blockEntity` - directly, or in a
-/// block nested in it however deeply.
-///
-/// What "a schedule scoped to a block" means in practice: `opt.inlineFunctions`
-/// asks it before copying a body in, and `opt.runSchedule` asks it to find the
-/// call sites of everything a block declares.
-bool declaredWithin(ref Module mod, EntityId e, EntityId blockEntity) {
-	while (e != invalidEntity) {
-		if (e == blockEntity) return true;
-		immutable parent = findParent(mod, e);
-		if (parent == e) return false; // a block that contains itself: the root
-		e = parent;
-	}
-	return false;
 }
 
 /// The function `subtree` sits inside, or `invalidEntity` when it is not in
@@ -1355,11 +1344,11 @@ private void copyLookup(T)(ref Module mod, EntityId to, EntityId from, EntityMap
 
 private void copyLookupInputs(ref Module mod, EntityId to, EntityId from, EntityMap* subs) @trusted {
 	auto source = inputsOf(mod, from);
-	scope(exit) source.free();
+	scope(exit) fp.dynarray.free(source);
 
 	auto destination = &addComponent!LookupFunctionInputs(mod, to);
 	if (subs is null) return; // see copyLookup's note
-	foreach (i; 0 .. source.length) {
+	foreach (i; 0 .. daLength(source)) {
 		auto l = source[i];
 		if (l.resolved() && contains(*subs, l.entity()))
 			push(*destination, Lookup(get(*subs, l.entity())));
@@ -1599,6 +1588,16 @@ private void orFlags(ref Module mod, EntityId e, ushort bits) {
 	getOrAddComponent!Flags(mod, e).flags |= bits;
 }
 
+/// The parser's stack of open blocks, opened with the builtin block every
+/// entry point starts from. The caller frees it with `fp.dynarray.free`.
+BlockBuilder* createBuilderStack(ref Module mod) @trusted {
+	BlockBuilder* builders;
+	auto builtin = createBlockBuilder(mod);
+	buildBuiltinBlock(builtin);
+	fp.dynarray.pushBack(builders, builtin);
+	return builders;
+}
+
 /// Fills `self`'s block with the language's builtins. Returns `self` so it
 /// chains off `createBlockBuilder` the way the C++ did.
 ref BlockBuilder buildBuiltinBlock(return ref BlockBuilder self) @trusted {
@@ -1678,7 +1677,7 @@ ref BlockBuilder buildBuiltinBlock(return ref BlockBuilder self) @trusted {
 	// of running it here it becomes what lowering means for the whole module -
 	// comptime evaluation included. A backend says this; a program that wants a
 	// different one says it again, further down. See
-	// `doir.pipeline.opt.override_fallback_schedule`.
+	// `doir.pipeline.canon.override_fallback_schedule`.
 	immutable overrideFallbackScheduleT = pushFunctionType(compiler,
 		internIn(*mod, "override_fallback_schedule_t"), bytePointerOnly[], pointerSized, true);
 	orFlags(*mod, overrideFallbackScheduleT, Flags.Comptime);
@@ -1754,7 +1753,7 @@ ref BlockBuilder buildBuiltinBlock(return ref BlockBuilder self) @trusted {
 // tests/spec_syntax.test.cpp.
 
 version (unittest) {
-	import tests.pipeline_helper;
+	import doir.diagnostics : diagnostics;
 	import tests.pipeline_helper;
 
 	private EntityId resolveName(ref Fixture f, const(char)[] name) {
@@ -1769,59 +1768,67 @@ version (unittest) {
 	}
 }
 
-unittest { // pushNumber attaches TypeOf, Number and marks the entity comptime
+unittest {
+	// `findTextOffset` has two ways of placing a name in the source text: the
+	// name's bytes may lie *inside* the working file's buffer, in which case
+	// the offset is the pointer difference, or they may not, in which case the
+	// text is searched for them. Interned names always take the second path -
+	// the interner's arena is a separate allocation - so the first is reached
+	// only by handing it a slice of the source itself.
+	diagnostics().clear();
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+
+	// One buffer, so a slice of it really does point inside the registered
+	// text (a string literal used twice need not be the same allocation).
+	static immutable char[17] buffer = "alpha beta gamma\n";
+	const source = buffer[0 .. $];
+	registerSource(f.mod, "loc.doir", source);
+	f.mod.workingFile = "loc.doir";
+	f.mod.hasWorkingFile = true;
+
+	// A slice of the buffer itself: the pointer-difference path.
+	auto inside = findTextLocation(f.mod, source[6 .. 10]);
+	assert(inside.file == "loc.doir");
+	assert(inside.startByte == 6);
+	assert(inside.endByte == 10);
+
+	// Equal content from somewhere else: the search path finds it anyway.
+	auto searched = findTextLocation(f.mod, internIn(f.mod, "beta").view);
+	assert(searched.startByte == 6);
+	assert(searched.endByte == 10);
+
+	// Content that is not in the file at all has no location to give.
+	auto missing = findTextLocation(f.mod, internIn(f.mod, "not here at all").view);
+	assert(missing.startByte == 0);
+	assert(missing.endByte == 0);
+	diagnostics().clear();
+}
+
+unittest { // what each push* helper attaches
 	auto f = makeModuleWithBuiltins();
 	scope(exit) freeModule(f.mod);
 	immutable type = resolveName(f, "compiler.byte");
-	assert(type != invalidEntity);
-
+	immutable pointerType = resolveName(f, "compiler.byte_pointer");
+	assert(type != invalidEntity && pointerType != invalidEntity);
 	auto builder = createBlockBuilder(f.mod);
-	immutable e = pushNumber(builder, internIn(f.mod, "n"), type, 42);
 
-	assert(hasComponent!TypeOf(f.mod, e));
-	assert(getComponent!TypeOf(f.mod, e).related[0] == type);
-	assert(hasComponent!Number(f.mod, e));
-	assert(getComponent!Number(f.mod, e).value == 42);
-	assert(flagsSet(f.mod, e, Flags.Comptime));
-}
+	immutable n = pushNumber(builder, internIn(f.mod, "n"), type, 42);
+	assert(getComponent!TypeOf(f.mod, n).related[0] == type);
+	assert(getComponent!Number(f.mod, n).value == 42);
+	assert(flagsSet(f.mod, n, Flags.Comptime));
 
-unittest { // pushString attaches TypeOf, DString and marks the entity comptime
-	auto f = makeModuleWithBuiltins();
-	scope(exit) freeModule(f.mod);
-	immutable type = resolveName(f, "compiler.byte_pointer");
-	assert(type != invalidEntity);
-
-	auto builder = createBlockBuilder(f.mod);
 	auto value = internIn(f.mod, "hello world");
-	immutable e = pushString(builder, internIn(f.mod, "s"), type, value);
+	immutable str = pushString(builder, internIn(f.mod, "s"), pointerType, value);
+	assert(getComponent!DString(f.mod, str).value == value);
+	assert(flagsSet(f.mod, str, Flags.Comptime));
 
-	assert(hasComponent!DString(f.mod, e));
-	assert(getComponent!DString(f.mod, e).value == value);
-	assert(flagsSet(f.mod, e, Flags.Comptime));
-}
+	immutable v = pushValueless(builder, internIn(f.mod, "v"), type);
+	assert(flagsSet(f.mod, v, Flags.Valueless));
+	assert(!hasComponent!Number(f.mod, v) && !hasComponent!DString(f.mod, v));
 
-unittest { // pushValueless attaches TypeOf and the Valueless flag, no number/string
-	auto f = makeModuleWithBuiltins();
-	scope(exit) freeModule(f.mod);
-	immutable type = resolveName(f, "compiler.byte");
-
-	auto builder = createBlockBuilder(f.mod);
-	immutable e = pushValueless(builder, internIn(f.mod, "v"), type);
-
-	assert(flagsSet(f.mod, e, Flags.Valueless));
-	assert(!hasComponent!Number(f.mod, e));
-	assert(!hasComponent!DString(f.mod, e));
-}
-
-unittest { // pushCommon skips the name component for the discard identifier "_"
-	auto f = makeModuleWithBuiltins();
-	scope(exit) freeModule(f.mod);
-	immutable type = resolveName(f, "compiler.byte");
-
-	auto builder = createBlockBuilder(f.mod);
-	immutable e = pushNumber(builder, internIn(f.mod, "_"), type, 1);
-
-	assert(!hasComponent!Name(f.mod, e));
+	// pushCommon skips the name component for the discard identifier.
+	assert(!hasComponent!Name(f.mod, pushNumber(builder, internIn(f.mod, "_"), type, 1)));
 }
 
 unittest { // pushNumber attaches a parent pointing back at the containing block
@@ -1878,60 +1885,34 @@ unittest { // pushNamespace marks the entity as a Namespace with an (initially e
 	assert(daLength(getComponent!Block(f.mod, nsEntity).related) == 0);
 }
 
-unittest { // pushPointer preserves the requested bounds size
+unittest { // pushPointer keeps the requested bounds, and defaults to unbounded
 	auto f = makeModuleWithBuiltins();
 	scope(exit) freeModule(f.mod);
 	immutable byteType = resolveName(f, "compiler.byte");
 	assert(byteType != invalidEntity);
-
 	auto builder = createBlockBuilder(f.mod);
-	immutable e = pushPointer(builder, internIn(f.mod, "bounded_ptr"), byteType, 8);
 
-	assert(hasComponent!Pointer(f.mod, e));
-	assert(getComponent!Pointer(f.mod, e).related[0] == byteType);
-	assert(getComponent!Pointer(f.mod, e).size == 8);
+	immutable bounded = pushPointer(builder, internIn(f.mod, "bounded_ptr"), byteType, 8);
+	assert(getComponent!Pointer(f.mod, bounded).related[0] == byteType);
+	assert(getComponent!Pointer(f.mod, bounded).size == 8);
+
+	immutable unbounded = pushPointer(builder, internIn(f.mod, "unbounded_ptr"), byteType);
+	assert(getComponent!Pointer(f.mod, unbounded).size == 0);
 }
 
-unittest { // pushPointer still defaults to an unbounded (size 0) pointer
+unittest { // what name resolution finds, and what it does with what it cannot
 	auto f = makeModuleWithBuiltins();
 	scope(exit) freeModule(f.mod);
-	immutable byteType = resolveName(f, "compiler.byte");
 
-	auto builder = createBlockBuilder(f.mod);
-	immutable e = pushPointer(builder, internIn(f.mod, "unbounded_ptr"), byteType);
+	assert(resolveName(f, "compiler.debug_print") != invalidEntity);          // a dotted path
+	assert(resolveName(f, "compiler.assembler.pin_register") != invalidEntity); // nested namespaces
+	assert(resolveName(f, "this.does.not.exist") == invalidEntity);           // unknown, not a failure
 
-	assert(getComponent!Pointer(f.mod, e).size == 0);
-}
-
-unittest { // resolves a dotted path into the compiler namespace
-	auto f = makeModuleWithBuiltins();
-	scope(exit) freeModule(f.mod);
-	assert(resolveLookupName(f.mod, internIn(f.mod, "compiler.debug_print"), f.root) != invalidEntity);
-}
-
-unittest { // resolves nested namespaces (compiler.assembler.*)
-	auto f = makeModuleWithBuiltins();
-	scope(exit) freeModule(f.mod);
-	assert(resolveLookupName(f.mod, internIn(f.mod, "compiler.assembler.pin_register"), f.root) != invalidEntity);
-}
-
-unittest { // resolving an unknown name returns invalidEntity rather than failing
-	auto f = makeModuleWithBuiltins();
-	scope(exit) freeModule(f.mod);
-	assert(resolveLookupName(f.mod, internIn(f.mod, "this.does.not.exist"), f.root) == invalidEntity);
-}
-
-unittest { // resolving a Lookup leaves already-resolved entries untouched
-	auto f = makeModuleWithBuiltins();
-	scope(exit) freeModule(f.mod);
+	// An already-resolved Lookup is left alone.
 	auto alreadyResolved = Lookup(EntityId(123));
 	assert(resolveLookup(f.mod, alreadyResolved, f.root) == 123);
-}
 
-unittest { // `type` is resolvable and is flagged AlwaysComptime
-	auto f = makeModuleWithBuiltins();
-	scope(exit) freeModule(f.mod);
-	immutable type = resolveLookupName(f.mod, internIn(f.mod, "type"), f.root);
+	immutable type = resolveName(f, "type");
 	assert(type != invalidEntity);
 	assert(flagsSet(f.mod, type, Flags.AlwaysComptime));
 }

@@ -2,9 +2,12 @@
 /// type's return type onto each value of that type, and declares the
 /// parameters a function body left implicit. Ported from
 /// sema/canonicalize/materialize_function_types_and_parameters.hpp.
-module doir.pipeline.sema.materialize;
+module doir.pipeline.canon.materialize;
 
 import ecrs.storage : EntityId, invalidEntity;
+
+static import fp.dynarray;
+import fp.dynarray : daLength = length;
 
 import doir.interface_;
 import doir.module_;
@@ -35,12 +38,12 @@ bool materializeFunctionTypesAndParameters(ref Module mod, EntityId subtree) @tr
 	if (!hasComponent!Block(mod, subtree)) return true;
 
 	auto declInputs = inputsOf(mod, ft);
-	scope(exit) declInputs.free();
+	scope(exit) fp.dynarray.free(declInputs);
 
-	auto parameters = associatedParameters(mod, declInputs.length, subtree);
-	scope(exit) parameters.free();
+	auto parameters = associatedParameters(mod, daLength(declInputs), subtree);
+	scope(exit) fp.dynarray.free(parameters);
 
-	if (parameters.length == 0) {
+	if (daLength(parameters) == 0) {
 		FunctionBuilder builder;
 		builder.builder = BlockBuilder(subtree, &mod);
 		pushParameters(builder, ft);

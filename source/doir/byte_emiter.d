@@ -14,60 +14,16 @@ import doir.module_;
 @nogc nothrow:
 
 
-/// One entity's emitted bytes.
-private struct ByteBuffer {
-	ubyte* data = null;
+/// The slot holding entity `e`'s emitted bytes, grown into existence and
+/// cleared: `opt.computeCompilerNamespace` can fold the same entity twice.
+private ubyte** slotFor(ref ubyte** values, EntityId e) @trusted {
+	while (daLength(values) <= e)
+		fp.dynarray.pushBack(values, cast(ubyte*) null);
+	fp.dynarray.free(values[e]);
+	return &values[e];
 }
 
-private size_t length(ref const ByteBuffer b) @trusted {
-	return daLength(cast(ubyte*) b.data);
-}
-
-private void free(ref ByteBuffer b) @trusted {
-	if (b.data !is null) { fp.dynarray.free(b.data); b.data = null; }
-}
-
-/// An owning byte string.
-struct ByteArray {
-	ubyte* data = null;
-}
-
-size_t length(ref const ByteArray a) @trusted {
-	return daLength(cast(ubyte*) a.data);
-}
-
-inout(ubyte)[] slice(ref inout ByteArray a) @trusted {
-	return a.data is null ? null : (cast(inout(ubyte)*) a.data)[0 .. length(a)];
-}
-
-void push(ref ByteArray a, ubyte b) @trusted {
-	fp.dynarray.pushBack(a.data, b);
-}
-
-void free(ref ByteArray a) @trusted {
-	if (a.data !is null) { fp.dynarray.free(a.data); a.data = null; }
-}
-
-/// Holds the per-entity byte values while walking a block.
-struct ByteEmiter {
-	ByteBuffer* values = null; // fp dynarray, indexed by entity
-}
-
-void free(ref ByteEmiter self) @trusted {
-	if (self.values is null) return;
-	foreach (i; 0 .. daLength(self.values))
-		free(self.values[i]);
-	fp.dynarray.free(self.values);
-	self.values = null;
-}
-
-/// Makes sure `self.values` has a slot for entity `e`.
-private void ensureSlot(ref ByteEmiter self, EntityId e) @trusted {
-	while (daLength(self.values) <= e)
-		fp.dynarray.pushBack(self.values, ByteBuffer.init);
-}
-
-private void emitNumberAssign(ref ByteEmiter self, ref ByteArray out_, ref Module mod, EntityId subtree) @trusted {
+private void emitNumberAssign(ref ubyte** values, ref Module mod, EntityId subtree) @trusted {
 	// Either kind of constant is a byte here - `opt.computeCompilerNamespace`
 	// leaves a `ComptimeNumber` behind on a folded `compiler.bitwise_and` /
 	// `shift_right` call, and `mizu`'s `emit_register` hands exactly those to
@@ -77,10 +33,7 @@ private void emitNumberAssign(ref ByteEmiter self, ref ByteArray out_, ref Modul
 		immutable byteType = resolveLookupName(mod, internIn(mod, "compiler.byte"), 1);
 		if (resolveAlias(mod, getComponent!TypeOf(mod, subtree).related[0]) != byteType) return;
 
-		immutable value = cast(size_t) number.get;
-		ensureSlot(self, subtree);
-		free(self.values[subtree]);
-		fp.dynarray.pushBack(self.values[subtree].data, cast(ubyte) value);
+		fp.dynarray.pushBack(*slotFor(values, subtree), cast(ubyte) cast(size_t) number.get);
 		return;
 	}
 
@@ -88,16 +41,13 @@ private void emitNumberAssign(ref ByteEmiter self, ref ByteArray out_, ref Modul
 		immutable bytePointer = resolveLookupName(mod, internIn(mod, "compiler.byte_pointer"), 1);
 		if (resolveAlias(mod, getComponent!TypeOf(mod, subtree).related[0]) != bytePointer) return;
 
-		auto value = getComponent!DString(mod, subtree).value;
-		ensureSlot(self, subtree);
-		free(self.values[subtree]);
-		foreach (c; value.view)
-			fp.dynarray.pushBack(self.values[subtree].data, cast(ubyte) c);
-		return;
+		auto slot = slotFor(values, subtree);
+		foreach (c; getComponent!DString(mod, subtree).value.view)
+			fp.dynarray.pushBack(*slot, cast(ubyte) c);
 	}
 }
 
-private void emitCall(ref ByteEmiter self, ref ByteArray out_, ref Module mod, EntityId subtree) @trusted {
+private void emitCall(ref ubyte** values, ref ubyte* out_, ref Module mod, EntityId subtree) @trusted {
 	if (!hasComponent!Call(mod, subtree)) return;
 	if (findFunctionInsideOf(mod, subtree)) return;
 
@@ -105,39 +55,47 @@ private void emitCall(ref ByteEmiter self, ref ByteArray out_, ref Module mod, E
 	immutable emitBytes = resolveLookupName(mod, internIn(mod, "compiler.emit_bytes"), 1, true);
 
 	immutable function_ = resolveAlias(mod, getComponent!Call(mod, subtree).related[0]);
-	auto inputs = &getComponent!FunctionInputs(mod, subtree);
+	if (function_ != emit && function_ != emitBytes) return;
+
+	immutable source = resolveAlias(mod, getComponent!FunctionInputs(mod, subtree).related[0]);
+	assert(source < daLength(values));
 
 	if (function_ == emit) {
-		immutable source = resolveAlias(mod, inputs.related[0]);
-		assert(source < daLength(self.values));
-		assert(length(self.values[source]) > 0);
-		push(out_, self.values[source].data[0]);
-	} else if (function_ == emitBytes) {
-		immutable source = resolveAlias(mod, inputs.related[0]);
-		assert(source < daLength(self.values));
-		foreach (i; 0 .. length(self.values[source]))
-			push(out_, self.values[source].data[i]);
+		assert(daLength(values[source]) > 0);
+		fp.dynarray.pushBack(out_, values[source][0]);
+	} else {
+		foreach (i; 0 .. daLength(values[source]))
+			fp.dynarray.pushBack(out_, values[source][i]);
 	}
 }
 
-private void emitBlock(ref ByteEmiter self, ref ByteArray out_, ref Module mod, EntityId subtree) @trusted {
+private void emitBlock(ref ubyte** values, ref ubyte* out_, ref Module mod, EntityId subtree) @trusted {
 	assert(hasComponent!Block(mod, subtree));
 
 	for (size_t i = 0; i < daLength(getComponent!Block(mod, subtree).related); ++i) {
 		immutable e = getComponent!Block(mod, subtree).related[i];
 		if (hasComponent!Block(mod, e))
-			emitBlock(self, out_, mod, e);
+			emitBlock(values, out_, mod, e);
 		else {
-			emitNumberAssign(self, out_, mod, e);
-			emitCall(self, out_, mod, e);
+			emitNumberAssign(values, mod, e);
+			emitCall(values, out_, mod, e);
 		}
 	}
 }
 
-/// Walks `root`, returning the bytes it emits. The caller frees the result.
-ByteArray emitAll(ref ByteEmiter self, ref Module mod, EntityId root) {
-	ByteArray out_;
-	emitBlock(self, out_, mod, root);
+/// Walks `root`, returning the bytes it emits as a libfp dynarray the caller
+/// frees with `fp.dynarray.free`. The per-entity scratch is internal: every
+/// caller only ever built one, handed it straight here and freed it again.
+ubyte* emitAll(ref Module mod, EntityId root) @trusted {
+	ubyte** values = null; // indexed by entity
+	scope(exit) {
+		foreach (i; 0 .. daLength(values))
+			fp.dynarray.free(values[i]);
+		fp.dynarray.free(values);
+	}
+
+	ubyte* out_;
+	emitBlock(values, out_, mod, root);
 	return out_;
 }
 
@@ -154,27 +112,18 @@ version (unittest) {
 	import doir.diagnostics;
 	import doir.parser : parseSource;
 	import doir.pipeline : runPipeline;
-	import doir.pipeline.sema.sort : newRoot;
+	import doir.pipeline.canon.sort : newRoot;
 
 	import tests.pipeline_helper;
 }
 
 unittest {
-	// Drives the exact pipeline the driver uses for a real compile (parse ->
-	// canonicalize -> sema -> optimize/comptime evaluate), which includes
+	// Drives the exact pipeline the driver uses for a real compile, including
 	// `canonicalize.sort` - a pass that physically renumbers entities.
 	//
-	// This used to have to live in its own executable in the C++ build, because
-	// resolution helpers memoized `lookup::resolve(...)` results in
-	// function-local `static`s: once sort renumbered one module's entities,
-	// those caches returned stale ids to every other test in the binary.
-	// `resolveCached` is per-module and invalidated by sort, so this can live
-	// alongside everything else.
-	//
-	// Mirrors test_string.doir (a real fixture checked into the repo root): a
-	// sequence of `compiler.byte` constants each immediately emitted via
-	// compiler.emit. It doesn't touch the `mizu` namespace, so it doesn't
-	// require early_include-ing mizu.doir from disk, keeping this test hermetic.
+	// Mirrors test_string.doir: `compiler.byte` constants each immediately
+	// emitted. It doesn't touch the `mizu` namespace, so it needs no
+	// early_include of mizu.doir from disk, keeping the test hermetic.
 	static immutable string source =
 		"%0 : compiler.byte = 0x48\n"
 		~ "%1 : compiler.byte = compiler.emit(%0)\n"
@@ -203,11 +152,8 @@ unittest {
 	auto mod = createModule();
 	scope(exit) freeModule(mod);
 
-	BlockBuilder* builders;
+	auto builders = createBuilderStack(mod);
 	scope(exit) fp.dynarray.free(builders);
-	auto builtin = createBlockBuilder(mod);
-	buildBuiltinBlock(builtin);
-	fp.dynarray.pushBack(builders, builtin);
 
 	assert(parseSource(mod, builders, source, "test_string.doir"));
 	immutable root = runPipeline(mod, builders);
@@ -217,12 +163,10 @@ unittest {
 	internIn(mod, "compiler.emit");
 	internIn(mod, "compiler.emit_bytes");
 
-	ByteEmiter emiter;
-	scope(exit) emiter.free();
-	auto bytes = emitAll(emiter, mod, newRoot);
-	scope(exit) bytes.free();
+	auto bytes = emitAll(mod, newRoot);
+	scope(exit) fp.dynarray.free(bytes);
 
-	assert(bytes.slice == cast(const(ubyte)[]) "Hello World");
+	assert(fp.dynarray.slice(bytes) == cast(const(ubyte)[]) "Hello World");
 	diagnostics().clear();
 }
 

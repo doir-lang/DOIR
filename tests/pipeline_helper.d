@@ -29,30 +29,48 @@ struct Fixture {
 /// Builds a fresh module and immediately populates it with the standard builtin
 /// block (`type`, `block`, `compiler.*`, `compiler.assembler.*`, ...) - exactly
 /// mirroring what the driver does before parsing any user source.
-///
-/// (Historical note: this used to carry a warning that every module in the
-/// process had to build its builtin block identically, because the many
-/// `static ecrs::entity_t X = lookup::resolve(mod, "compiler.foo", ...)` caches
-/// throughout the codebase memoized their result in a function-local `static`
-/// the first time they ran in the process, silently reusing that first
-/// module's ids for every module built afterwards. That pattern has been
-/// replaced by `resolveCached`, a per-module cache that `canonicalize.sort`
-/// also invalidates - see doir/module_.d and the resolve-cache tests.)
 Fixture makeModuleWithBuiltins() {
 	Fixture f;
 	f.mod = createModule();
-	f.root = builtinBlockBuilder(f.mod).end();
+	auto builder = createBlockBuilder(f.mod);
+	buildBuiltinBlock(builder);
+	f.root = builder.end();
 	return f;
 }
 
-/// The open builtin block builder both `makeModuleWithBuiltins` and `compile`
-/// start from: one ends it for the root id, the other leaves it open as
-/// `builders[0]` the way the driver does.
-private BlockBuilder builtinBlockBuilder(ref Module mod) {
-	auto builder = createBlockBuilder(mod);
-	buildBuiltinBlock(builder);
-	return builder;
+
+/// The same module with the builtin block left *open* as `builders[0]`, the
+/// way the driver leaves it for `parseSource`. Tests that hand-build IR push
+/// into `builder` and end it themselves; tests that parse hand `builders`
+/// straight to `parseSource`.
+struct BuilderFixture {
+	Module mod;
+	BlockBuilder* builders;
+	EntityId root = invalidEntity;
 }
+
+BuilderFixture makeOpenModule() @trusted {
+	BuilderFixture f;
+	f.mod = createModule();
+	f.builders = createBuilderStack(f.mod);
+	f.root = f.builders[0].block;
+	return f;
+}
+
+ref BlockBuilder builder(return ref BuilderFixture f) @trusted { return f.builders[0]; }
+
+/// Not `free`: one declared here would hide every imported `free` throughout
+/// each module that imports this (see the note in README.md).
+void freeFixture(ref BuilderFixture f) @trusted {
+	fp.dynarray.free(f.builders);
+	freeModule(f.mod);
+}
+
+/// Reopens the finished root, for passes whose tests hand-build IR into a
+/// module whose builtins are already closed. The result holds `&f.mod`, so it
+/// belongs in a local beside the fixture it was opened on - a fixture that
+/// stored its own builder would be storing a pointer into itself.
+BlockBuilder openRoot(return ref Fixture f) @trusted { return BlockBuilder(f.root, &f.mod); }
 
 
 struct PipelineResult {
@@ -71,14 +89,24 @@ PipelineResult compile(const(char)[] source, const(char)[] path = "test.doir") {
 	PipelineResult result;
 	result.mod = createModule();
 
-	BlockBuilder* builders; // the parser's stack of open blocks
+	auto builders = createBuilderStack(result.mod);
 	scope(exit) fp.dynarray.free(builders);
-	fp.dynarray.pushBack(builders, builtinBlockBuilder(result.mod));
 
 	if (parseSource(result.mod, builders, source, path) && !diagnostics().hasErrors())
 		result.root = runPipeline(result.mod, builders);
 	result.ok = result.root != invalidEntity && !diagnostics().hasErrors();
 	return result;
+}
+
+/// A module with `mizu.doir` included and taken through the pipeline, so every
+/// `mizu.*` name a backend pass needs resolves. `path` is only what diagnostics
+/// blame - the included file is always `./mizu.doir`, relative to the cwd.
+PipelineResult withMizu(const(char)[] path) {
+	auto r = compile(
+		"path : compiler.byte_pointer = \"./mizu.doir\"\n"
+		~ "_ : compiler.byte = early_include(path)\n", path);
+	assert(r.ok);
+	return r;
 }
 
 /// Looks an entity up *by name* after a compile. Tests must do this rather
@@ -92,14 +120,46 @@ EntityId find(ref Module mod, EntityId root, const(char)[] name) {
 /// Runs the byte emiter over a finished compile and compares what it emits.
 bool emits(ref PipelineResult r, const(ubyte)[] expected) {
 	import doir.byte_emiter;
-	import doir.pipeline.sema.sort : newRoot;
+	import doir.pipeline.canon.sort : newRoot;
 
 	internIn(r.mod, "compiler.emit");
 	internIn(r.mod, "compiler.emit_bytes");
 
-	ByteEmiter emiter;
-	scope(exit) emiter.free();
-	auto out_ = emitAll(emiter, r.mod, newRoot);
-	scope(exit) out_.free();
-	return out_.slice == expected;
+	auto out_ = emitAll(r.mod, newRoot);
+	scope(exit) fp.dynarray.free(out_);
+	return fp.dynarray.slice(out_) == expected;
+}
+
+
+/// root -> inner -> (leafA, leafB), and root -> leafC: the small hand-built
+/// tree both `doir.systems` and `doir.dynamic_systems` walk in their tests.
+///
+/// Ids are allocated children-first, so it also satisfies the contiguous-id
+/// invariant `sorted` relies on.
+struct Tree {
+	Module mod;
+	EntityId leafA, leafB, inner, leafC, root;
+}
+
+void link(ref Module mod, EntityId block, EntityId child) @trusted {
+	auto related = &getComponent!Block(mod, block).related;
+	fp.dynarray.pushBack(*related, child);
+}
+
+Tree makeTree() {
+	Tree t;
+	t.mod = createModule();
+	t.leafA = addEntity(t.mod);
+	t.leafB = addEntity(t.mod);
+	t.inner = addEntity(t.mod);
+	addComponent!Block(t.mod, t.inner);
+	t.leafC = addEntity(t.mod);
+	t.root = addEntity(t.mod);
+	addComponent!Block(t.mod, t.root);
+
+	link(t.mod, t.inner, t.leafA);
+	link(t.mod, t.inner, t.leafB);
+	link(t.mod, t.root, t.inner);
+	link(t.mod, t.root, t.leafC);
+	return t;
 }

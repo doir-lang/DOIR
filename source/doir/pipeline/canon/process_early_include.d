@@ -1,7 +1,7 @@
 /// `canonicalize.processEarlyInclude`: parses an `early_include("...")`'s file
 /// straight into the surrounding block and replaces the call with the file's
 /// byte count. Ported from sema/canonicalize/process_early_include.hpp.
-module doir.pipeline.sema.process_early_include;
+module doir.pipeline.canon.process_early_include;
 
 import ecrs.storage : EntityId, invalidEntity;
 
@@ -36,7 +36,7 @@ struct EarlyIncludeContext {
 /// their visitor as a compile-time alias (as `ecrs.system`'s own combinators
 /// do), so a pass whose extra state is only known at runtime parks it here
 /// instead of threading an untyped `ctx` through every walk. Thread-local,
-/// like `doir.pipeline.sema.sort.newRoot`; a schedule fills it in right before the
+/// like `doir.pipeline.canon.sort.newRoot`; a schedule fills it in right before the
 /// `sorted!processEarlyIncludeVisitor` pass that reads it.
 EarlyIncludeContext earlyIncludeContext;
 
@@ -71,8 +71,8 @@ bool processEarlyInclude(ref Module mod, EntityId subtree, ref EarlyIncludeConte
 		return false;
 	}
 	auto inputs = inputsOf(mod, subtree);
-	scope(exit) inputs.free();
-	if (inputs.length != 1) {
+	scope(exit) fp.dynarray.free(inputs);
+	if (daLength(inputs) != 1) {
 		expectsXInputs(mod, subtree, "early_include", "one");
 		return false;
 	}
@@ -145,34 +145,15 @@ version (unittest) {
 	import doir.string_helpers : InternedString;
 	import tests.pipeline_helper;
 
-	/// A module with an open builder stack, as the pass expects to find one.
-	private struct IncludeFixture {
-		Module mod;
-		EntityId root;
-		BlockBuilder* builders;
-		EarlyIncludeContext context;
-	}
-
-	private IncludeFixture makeIncludeFixture() @trusted {
-		IncludeFixture f;
-		f.mod = createModule();
-		auto builtin = createBlockBuilder(f.mod);
-		buildBuiltinBlock(builtin);
-		fp.dynarray.pushBack(f.builders, builtin);
-		f.root = f.builders[0].block;
-		f.context.builders = &f.builders;
-		return f;
-	}
-
-	/// Not `free`: a `free` declared here would hide every imported one
-	/// throughout the module (see the note in README.md).
-	private void freeFixture(ref IncludeFixture f) @trusted {
-		fp.dynarray.free(f.builders);
-		freeModule(f.mod);
+	/// Built at the test site rather than stored in the fixture: it holds a
+	/// pointer *into* the fixture, which only stays valid while the fixture
+	/// itself does not move.
+	private EarlyIncludeContext contextFor(return ref BuilderFixture f) @trusted {
+		return EarlyIncludeContext(&f.builders);
 	}
 
 	/// Builds `early_include(args...)` inside the fixture's root block.
-	private EntityId pushInclude(ref IncludeFixture f, const(EntityId)[] args) {
+	private EntityId pushInclude(ref BuilderFixture f, const(EntityId)[] args) {
 		auto block = BlockBuilder(f.root, &f.mod);
 		immutable pointerSized = resolveLookupName(f.mod,
 			internIn(f.mod, "compiler.pointer_sized"), f.root);
@@ -183,8 +164,9 @@ version (unittest) {
 
 unittest { // a resolved `early_include` call includes its file and is replaced
 	diagnostics().clear();
-	auto f = makeIncludeFixture();
+	auto f = makeOpenModule();
 	scope(exit) f.freeFixture();
+	auto ctx = contextFor(f);
 
 	auto block = BlockBuilder(f.root, &f.mod);
 	immutable bytePointer = resolveLookupName(f.mod,
@@ -193,7 +175,7 @@ unittest { // a resolved `early_include` call includes its file and is replaced
 		internIn(f.mod, "./test_string.doir"));
 	immutable call = pushInclude(f, (&path)[0 .. 1]);
 
-	assert(processEarlyInclude(f.mod, call, f.context));
+	assert(processEarlyInclude(f.mod, call, ctx));
 	assert(!diagnostics().hasErrors());
 
 	// The call is gone, replaced by the included file's byte count.
@@ -207,8 +189,9 @@ unittest { // a resolved `early_include` call includes its file and is replaced
 
 unittest { // a call with the wrong number of arguments is reported
 	diagnostics().clear();
-	auto f = makeIncludeFixture();
+	auto f = makeOpenModule();
 	scope(exit) f.freeFixture();
+	auto ctx = contextFor(f);
 
 	auto block = BlockBuilder(f.root, &f.mod);
 	immutable bytePointer = resolveLookupName(f.mod,
@@ -220,27 +203,28 @@ unittest { // a call with the wrong number of arguments is reported
 	// component behind, so the count check is what catches that; stripping the
 	// component reaches the `hasAnyInputs` check in front of it.
 	EntityId[0] none;
-	assert(!processEarlyInclude(f.mod, pushInclude(f, none[]), f.context));
+	assert(!processEarlyInclude(f.mod, pushInclude(f, none[]), ctx));
 	assert(diagnostics().hasErrors());
 	diagnostics().clear();
 
 	immutable argless = pushInclude(f, none[]);
 	removeComponent!FunctionInputs(f.mod, argless);
-	assert(!processEarlyInclude(f.mod, argless, f.context));
+	assert(!processEarlyInclude(f.mod, argless, ctx));
 	assert(diagnostics().hasErrors());
 	diagnostics().clear();
 
 	// ...and too many.
 	EntityId[2] two = [path, path];
-	assert(!processEarlyInclude(f.mod, pushInclude(f, two[]), f.context));
+	assert(!processEarlyInclude(f.mod, pushInclude(f, two[]), ctx));
 	assert(diagnostics().hasErrors());
 	diagnostics().clear();
 }
 
 unittest { // ...as is an argument that does not name a file
 	diagnostics().clear();
-	auto f = makeIncludeFixture();
+	auto f = makeOpenModule();
 	scope(exit) f.freeFixture();
+	auto ctx = contextFor(f);
 
 	auto block = BlockBuilder(f.root, &f.mod);
 	immutable pointerSized = resolveLookupName(f.mod,
@@ -248,7 +232,7 @@ unittest { // ...as is an argument that does not name a file
 
 	// A number rather than a string constant.
 	immutable number = pushNumber(block, internIn(f.mod, "n"), pointerSized, 1);
-	assert(!processEarlyInclude(f.mod, pushInclude(f, (&number)[0 .. 1]), f.context));
+	assert(!processEarlyInclude(f.mod, pushInclude(f, (&number)[0 .. 1]), ctx));
 	assert(diagnostics().hasErrors());
 	diagnostics().clear();
 
@@ -257,7 +241,7 @@ unittest { // ...as is an argument that does not name a file
 		internIn(f.mod, "compiler.byte_pointer"), f.root);
 	immutable missing = pushString(block, internIn(f.mod, "missing"), bytePointer,
 		internIn(f.mod, "/nonexistent/definitely_not_here.doir"));
-	assert(!processEarlyInclude(f.mod, pushInclude(f, (&missing)[0 .. 1]), f.context));
+	assert(!processEarlyInclude(f.mod, pushInclude(f, (&missing)[0 .. 1]), ctx));
 	assert(diagnostics().hasErrors());
 	diagnostics().clear();
 
@@ -265,31 +249,32 @@ unittest { // ...as is an argument that does not name a file
 	Lookup[1] nowhere = [Lookup(internIn(f.mod, "nope"))];
 	auto unresolvable = pushCall(block, InternedString("_"), pointerSized,
 		resolveLookupName(f.mod, internIn(f.mod, "early_include"), f.root), nowhere[]);
-	assert(!processEarlyInclude(f.mod, unresolvable, f.context));
+	assert(!processEarlyInclude(f.mod, unresolvable, ctx));
 	assert(diagnostics().hasErrors());
 	diagnostics().clear();
 }
 
 unittest { // anything that is not an `early_include` call is left alone
 	diagnostics().clear();
-	auto f = makeIncludeFixture();
+	auto f = makeOpenModule();
 	scope(exit) f.freeFixture();
+	auto ctx = contextFor(f);
 
 	auto block = BlockBuilder(f.root, &f.mod);
 	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.root);
 	immutable emit = resolveLookupName(f.mod, internIn(f.mod, "compiler.emit"), f.root);
 
 	immutable n = pushNumber(block, internIn(f.mod, "n"), byte_, 1);
-	assert(processEarlyInclude(f.mod, n, f.context)); // not a call
+	assert(processEarlyInclude(f.mod, n, ctx)); // not a call
 
 	immutable other = pushCall(block, InternedString("_"), byte_, emit, (&n)[0 .. 1]);
-	assert(processEarlyInclude(f.mod, other, f.context)); // a call to something else
+	assert(processEarlyInclude(f.mod, other, ctx)); // a call to something else
 
 	// An `early_include` with no surrounding block to include into.
 	immutable orphan = addEntity(f.mod);
 	addComponent!Call(f.mod, orphan).related[0] =
 		resolveLookupName(f.mod, internIn(f.mod, "early_include"), f.root);
-	assert(processEarlyInclude(f.mod, orphan, f.context));
+	assert(processEarlyInclude(f.mod, orphan, ctx));
 
 	assert(!diagnostics().hasErrors());
 	diagnostics().clear();

@@ -8,7 +8,7 @@ import fp.dynarray : daLength = length;
 
 import doir.interface_;
 import doir.module_;
-import doir.pipeline.sema.sort : newRoot;
+import doir.pipeline.canon.sort : newRoot;
 
 static import fp.dynarray;
 
@@ -54,7 +54,7 @@ bool materializeAliases(ref Module mod, EntityId subtree, EntityId root = curren
 // so it is driven directly here.
 
 version (unittest) {
-	import doir.pipeline.sema.sort : sort;
+	import doir.pipeline.canon.sort : sort;
 	import tests.pipeline_helper;
 }
 

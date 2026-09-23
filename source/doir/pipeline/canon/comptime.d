@@ -1,6 +1,6 @@
 /// `sema.bubbleComptime` and its validation half: works out which values the
 /// compiler can evaluate at compile time. Ported from sema/comptime.hpp.
-module doir.pipeline.sema.comptime;
+module doir.pipeline.canon.comptime;
 
 import ecrs.storage : EntityId, invalidEntity;
 
@@ -10,6 +10,7 @@ import fp.string : strFree = free, strSlice = slice;
 import doir.diagnostics;
 import doir.interface_;
 import doir.module_;
+import doir.string_helpers : text;
 import doir.systems : fixedPointChanged;
 
 @nogc nothrow:
@@ -80,7 +81,6 @@ bool bubbleComptime(ref Module mod, EntityId subtree) @trusted {
 
 /// Reports a compile-time call handed a value that isn't compile-time known.
 bool validateComptime(ref Module mod, EntityId subtree) @trusted {
-	import core.stdc.stdio : snprintf;
 
 	if (!hasComponent!Call(mod, subtree)) return true;
 	if (!hasComponent!FunctionInputs(mod, subtree)) return true;
@@ -106,11 +106,7 @@ bool validateComptime(ref Module mod, EntityId subtree) @trusted {
 		scope(exit) strFree(name);
 		if (hasComponent!Name(mod, subtree))
 			name = text(getComponent!Name(mod, subtree).value.view);
-		else {
-			char[24] buffer;
-			immutable n = snprintf(buffer.ptr, buffer.length, "%%%u", subtree);
-			name = text(buffer[0 .. n]);
-		}
+		else name = text(positionalName(mod, subtree).view);
 
 		parameterError(mod, subtree, strSlice(name), nonComptimeInput,
 			" is not compile time known despite being provided to a compile time call.");

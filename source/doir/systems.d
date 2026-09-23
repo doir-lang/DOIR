@@ -35,10 +35,9 @@ import ecrs.storage : EntityId, empty, invalidEntity;
 /// libECRS's own combinators, so a schedule only has to import this module.
 public import ecrs.system : sequential, parallel;
 
-import doir.interface_ : Block, Call, ScheduleClaim, currentCanonicalizeRoot,
-	findParent, resolveAlias;
+import doir.interface_ : Block, Call, ScheduleClaim, currentCanonicalizeRoot, findParent, resolveAlias;
 import doir.module_;
-import doir.pipeline.sema.sort : canonicalizeSort = sort, newRoot;
+import doir.pipeline.canon.sort : canonicalizeSort = sort, newRoot;
 
 @nogc nothrow:
 
@@ -357,20 +356,17 @@ private bool currentLoweringIsABlocks;
 /// far side of the filter.
 private bool currentLoweringIsGlobal = false;
 
-/// Runs the ownership filter off for as long as it is alive, restoring whatever
-/// it replaced - so an `applyGlobally` inside a block's schedule widens for that
-/// node only.
-struct GlobalLowering {
-	private bool previous = false;
-
-	@nogc nothrow:
-	@disable this(this);
-	this(bool unused) {
-		previous = currentLoweringIsGlobal;
-		currentLoweringIsGlobal = true;
-	}
-	~this() { currentLoweringIsGlobal = previous; }
+/// Runs the ownership filter off until `endGlobalLowering` puts back what this
+/// returns - so an `applyGlobally` inside a block's schedule widens for that
+/// node only. Pair them with `scope(exit)`.
+bool beginGlobalLowering() {
+	immutable previous = currentLoweringIsGlobal;
+	currentLoweringIsGlobal = true;
+	return previous;
 }
+
+/// Ditto.
+void endGlobalLowering(bool previous) { currentLoweringIsGlobal = previous; }
 
 /// The text of the schedule currently lowering, or null when it is the
 /// compiler's own compiled-in one (which has no source to compare against).
@@ -403,7 +399,6 @@ private const(char)[] currentScheduleSource;
 private size_t loweringDepth;
 
 /// Ditto.
-const(char)[] loweringSchedule() { return currentScheduleSource; }
 
 /// Whether `source` is the schedule that is running - interned, so this is
 /// identity, not a comparison of the text.
@@ -412,41 +407,35 @@ bool isCurrentSchedule(const(char)[] source) @trusted {
 		&& source.length == currentScheduleSource.length;
 }
 
-/// Names the schedule running for as long as it is alive, restoring whatever
-/// it replaced.
-struct LoweringSchedule {
-	private const(char)[] previous;
-
-	@nogc nothrow:
-	@disable this(this);
-	this(const(char)[] source) {
-		previous = currentScheduleSource;
-		currentScheduleSource = source;
-		++loweringDepth;
-	}
-	~this() {
-		currentScheduleSource = previous;
-		--loweringDepth;
-	}
+/// Names `source` as the schedule running until `endLoweringSchedule` puts back
+/// what this returns. Pair them with `scope(exit)`.
+const(char)[] beginLoweringSchedule(const(char)[] source) {
+	const previous = currentScheduleSource;
+	currentScheduleSource = source;
+	++loweringDepth;
+	return previous;
 }
 
-/// Opens a lowering block for as long as it is alive. Nested ones restore the
-/// one they replaced, so a schedule run from inside a block's schedule narrows
-/// rather than clears.
+/// Ditto.
+void endLoweringSchedule(const(char)[] previous) {
+	currentScheduleSource = previous;
+	--loweringDepth;
+}
+
+/// Opens a lowering block until `endLoweringBlock` puts back what this returns,
+/// so a schedule run from inside a block's schedule narrows rather than clears.
+/// Pair them with `scope(exit)`.
 ///
 /// Takes the block it is opened for, and keeps only whether there was one; see
 /// `currentLoweringIsABlocks` on why the id must not outlive the call.
-struct LoweringBlock {
-	private bool previous;
-
-	@nogc nothrow:
-	@disable this(this);
-	this(EntityId blockEntity) {
-		previous = currentLoweringIsABlocks;
-		currentLoweringIsABlocks = blockEntity != invalidEntity;
-	}
-	~this() { currentLoweringIsABlocks = previous; }
+bool beginLoweringBlock(EntityId blockEntity) {
+	immutable previous = currentLoweringIsABlocks;
+	currentLoweringIsABlocks = blockEntity != invalidEntity;
+	return previous;
 }
+
+/// Ditto.
+void endLoweringBlock(bool previous) { currentLoweringIsABlocks = previous; }
 
 /// Whether the walk should hand `e` to its visitor: one rule, both ways round.
 ///
@@ -560,6 +549,8 @@ version (unittest) {
 	static import ecrs.system;
 	import bc.threadpool : ThreadPool;
 
+	import tests.pipeline_helper : makeTree, Tree;
+
 	/// Where the test visitors record what they were handed: a visitor is an
 	/// alias to a plain function, so it carries no state of its own.
 	private EntityId[16] visitLog;
@@ -593,47 +584,18 @@ version (unittest) {
 		return true;
 	}
 
-	/// root
-	///  +- inner
-	///  |   +- leafA
-	///  |   +- leafB
-	///  +- leafC
-	///
-	/// Ids are allocated children-first, so the tree also satisfies the
-	/// contiguous-id invariant `sorted` relies on.
-	private struct Tree {
-		Module mod;
-		EntityId leafA, leafB, inner, leafC, root;
-	}
-
-	private void link(ref Module mod, EntityId block, EntityId child) @trusted {
-		auto related = &getComponent!Block(mod, block).related;
-		fp.dynarray.pushBack(*related, child);
-	}
-
-	private Tree makeTree() {
-		Tree t;
-		t.mod = createModule();
-		t.leafA = addEntity(t.mod);
-		t.leafB = addEntity(t.mod);
-		t.inner = addEntity(t.mod);
-		addComponent!Block(t.mod, t.inner);
-		t.leafC = addEntity(t.mod);
-		t.root = addEntity(t.mod);
-		addComponent!Block(t.mod, t.root);
-
-		link(t.mod, t.inner, t.leafA);
-		link(t.mod, t.inner, t.leafB);
-		link(t.mod, t.root, t.inner);
-		link(t.mod, t.root, t.leafC);
-
+	/// `tests.pipeline_helper.makeTree`, plus the visit-log reset these tests
+	/// open with. Named apart from it because a local free function hides every
+	/// imported one that shares its name.
+	private Tree loggedTree() {
+		auto t = makeTree();
 		resetLog();
 		return t;
 	}
 }
 
 unittest { // each walker visits the whole subtree, in its own order
-	auto t = makeTree();
+	auto t = loggedTree();
 	scope(exit) freeModule(t.mod);
 
 	EntityId[5] postOrder = [t.leafA, t.leafB, t.inner, t.leafC, t.root];
@@ -654,7 +616,7 @@ unittest { // each walker visits the whole subtree, in its own order
 }
 
 unittest { // the bound form is a system: libECRS's own combinator can run it
-	auto t = makeTree();
+	auto t = loggedTree();
 	scope(exit) freeModule(t.mod);
 
 	// `ecrs.system.sequential(Systems...)` only knows how to call something
@@ -687,7 +649,7 @@ unittest { // the bound form is a system: libECRS's own combinator can run it
 }
 
 unittest { // `visitor` lets libECRS's per-entity walkers drive a DOIR pass
-	auto t = makeTree();
+	auto t = loggedTree();
 	scope(exit) freeModule(t.mod);
 
 	// Every *live* entity, tree or not - including the reserved invalid one.
@@ -697,7 +659,7 @@ unittest { // `visitor` lets libECRS's per-entity walkers drive a DOIR pass
 }
 
 unittest { // sequential stops at the first failing system
-	auto t = makeTree();
+	auto t = loggedTree();
 	scope(exit) freeModule(t.mod);
 
 	// The second walk never runs, so the log stops at the three entities the
@@ -717,7 +679,7 @@ unittest { // sequential stops at the first failing system
 }
 
 unittest { // fixedPoint re-runs a system while it reports changes, and is one
-	auto t = makeTree();
+	auto t = loggedTree();
 	scope(exit) freeModule(t.mod);
 
 	assert(fixedPoint(t.mod, &moduleSystem!bumpUntilFour));
@@ -737,9 +699,9 @@ unittest {
 	// subtree, run now over whatever `canonicalize.sort` last produced, and
 	// each of those as a `Bound` system. The `Bound.opCall(ref Module)` half
 	// is what a schedule built out of `doir.pipeline`'s combinators calls.
-	import doir.pipeline.sema.sort : sort;
+	import doir.pipeline.canon.sort : sort;
 
-	auto t = makeTree();
+	auto t = loggedTree();
 	scope(exit) freeModule(t.mod);
 
 	EntityId[5] postOrder = [t.leafA, t.leafB, t.inner, t.leafC, t.root];
@@ -787,7 +749,7 @@ unittest {
 }
 
 unittest { // `FixedPoint` runs over a module as well as over a context
-	auto t = makeTree();
+	auto t = loggedTree();
 	scope(exit) freeModule(t.mod);
 
 	auto system = fixedPoint(&moduleSystem!bumpUntilFour);

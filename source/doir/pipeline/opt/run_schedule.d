@@ -53,43 +53,21 @@ import doir.dynamic_systems : freeSystem, parseSystem, reportSystemError;
 import doir.interface_;
 import doir.interface_ : currentCanonicalizeRoot;
 import doir.module_;
+import doir.string_helpers : text;
 static import ecrs.system;
 
-import doir.systems : isCurrentSchedule, LoweringBlock, LoweringSchedule, visitor;
+import doir.systems : beginLoweringBlock, beginLoweringSchedule, endLoweringBlock, endLoweringSchedule, isCurrentSchedule, visitor;
 
 @nogc nothrow:
 
 
-/// Copies a call's (already resolved) inputs into a caller-owned list with
-/// every alias followed - the same `alias::resolve(mod, inputs)` idiom
-/// `opt.computeCompilerNamespace` opens with.
-private EntityList resolvedInputs(ref Module mod, EntityId subtree) @trusted {
-	EntityList out_;
-	auto inputs = &getComponent!FunctionInputs(mod, subtree);
-	foreach (i; 0 .. daLength(inputs.related))
-		out_.push(inputs.related[i]);
-	resolveAliases(mod, out_.slice);
-	return out_;
-}
-
-/// Runs `blockEntity`'s claimed schedule, if it has one it has not used yet,
-/// over the whole module with the walkers filtered to what it owns.
-///
-/// Private, and deliberately: every public pass-shaped symbol in this module is
-/// enumerated into `doir.dynamic_systems`' registry, and a schedule string
-/// naming this one inside a walker would get a walk that visits nothing. A
-/// claimed block is owned - by itself - so the walkers skip it while no block
-/// is being lowered, which is exactly when this would be looking for claims.
 /// The schedules running right now, by the identity of their interned source.
 ///
-/// This was a `running` flag on the claim itself, which meant finding the claim
-/// again afterwards to lower it - and the claim was found by the block's entity
-/// id. A schedule is allowed to `sort`, and a sort renumbers every entity in
-/// the module, so by the time such a run returned that id belonged to somebody
-/// else and clearing the flag asserted on a component the new occupant did not
-/// have. Nothing about an entity survives a sort; the interned source pointer
-/// does, and it is what `doir.systems.isCurrentSchedule` already identifies a
-/// schedule by.
+/// Keyed by the interned pointer rather than by the claiming block: a schedule
+/// may `sort`, and a sort renumbers every entity, so an entity id saved across
+/// a run belongs to somebody else by the time it returns. Nothing about an
+/// entity survives a sort; the interned source pointer does, and it is what
+/// `doir.systems.isCurrentSchedule` already identifies a schedule by.
 private const(char)** runningSchedules;
 
 /// Ditto - identity, not a comparison of the text, since the source is interned.
@@ -99,15 +77,15 @@ private bool isScheduleRunning(const(char)[] source) @trusted {
 	return false;
 }
 
-/// Marks `source` as running for as long as it is alive.
-private struct RunningSchedule {
-	@nogc nothrow:
-	@disable this(this);
-	this(const(char)[] source) @trusted { fp.dynarray.pushBack(runningSchedules, source.ptr); }
-	~this() @trusted { fp.dynarray.popBack(runningSchedules); }
-}
-
+/// Runs `blockEntity`'s claimed schedule, if it has one it has not used yet,
+/// over the whole module with the walkers filtered to what it owns.
 /// `runRegisteredSchedules` is the spellable half.
+///
+/// Private, and deliberately: every public pass-shaped symbol in this module is
+/// enumerated into `doir.dynamic_systems`' registry, and a schedule string
+/// naming this one inside a walker would get a walk that visits nothing. A
+/// claimed block is owned - by itself - so the walkers skip it while no block
+/// is being lowered, which is exactly when this would be looking for claims.
 private bool runRegisteredSchedule(ref Module mod, EntityId blockEntity) @trusted {
 	if (!hasComponent!ScheduleClaim(mod, blockEntity)) return true;
 
@@ -137,7 +115,8 @@ private bool runRegisteredSchedule(ref Module mod, EntityId blockEntity) @truste
 	// what somebody has claimed.
 	const(char)[] source = getComponent!ScheduleClaim(mod, blockEntity).source.view;
 	if (isScheduleRunning(source)) return true;
-	auto marked = RunningSchedule(source);
+	fp.dynarray.pushBack(runningSchedules, source.ptr);
+	scope(exit) fp.dynarray.popBack(runningSchedules);
 
 	// `opt.runSchedule` parsed this string already and refused the claim if it
 	// did not take, so a second parse of the same text cannot fail.
@@ -147,8 +126,10 @@ private bool runRegisteredSchedule(ref Module mod, EntityId blockEntity) @truste
 
 	// Rooted at the module, not at the block: the calls this block owns are the
 	// ones written outside it.
-	auto lowering = LoweringBlock(blockEntity);
-	auto running = LoweringSchedule(source);
+	immutable previousBlock = beginLoweringBlock(blockEntity);
+	scope(exit) endLoweringBlock(previousBlock);
+	const previousSchedule = beginLoweringSchedule(source);
+	scope(exit) endLoweringSchedule(previousSchedule);
 	system.subtree = currentCanonicalizeRoot;
 	return system(mod);
 }
@@ -191,8 +172,8 @@ bool runSchedule(ref Module mod, EntityId subtree) @trusted {
 		return false;
 	}
 	auto inputs = resolvedInputs(mod, subtree);
-	scope(exit) inputs.free();
-	if (inputs.length != 1) {
+	scope(exit) fp.dynarray.free(inputs);
+	if (daLength(inputs) != 1) {
 		expectsXInputs(mod, subtree, "run_schedule", "one");
 		return false;
 	}

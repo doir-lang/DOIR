@@ -8,54 +8,27 @@ module doir.verify;
 import core.stdc.stdio : printf;
 
 import diagnose.diagnostics : Ansi, Diagnostic, Manager, pushAnnotation;
-import diagnose.source_location : Pair, SourceLocation;
+import diagnose.source_location : Pair;
 import ecrs.storage : EntityId, invalidEntity;
 
+static import fp.dynarray;
 import fp.dynarray : daLength = length;
-import fp.string : findSlices;
 
 import doir.diagnostics;
 import doir.interface_;
 import doir.module_;
-import doir.string_helpers : InternedString, containsView;
+import doir.string_helpers : InternedString, text;
 
 @nogc nothrow:
 
 
-/// Locates `s` within the module's source text.
-///
-/// NOTE: the C++ computes `mod.source.data() - s.data()` on the "`s` points
-/// into the source" branch, i.e. with the operands the wrong way round, which
-/// underflows to a nonsense offset. That branch is effectively dead there
-/// (identifiers live in the interner's arena, not in the source buffer, so the
-/// `contains` test fails and the `find` path runs), but here it would be an
-/// out-of-range location rather than merely a wrong one, so the subtraction is
-/// written in the intended direction.
-private SourceLocation getLocation(ref Module mod, const(char)[] s) @trusted {
-	// The working file's text, not `mod.source`: the location below is named
-	// after the working file, so an offset into anything else would be
-	// resolved against text it does not index into.
-	const source = workingSource(mod);
-
-	size_t start;
-	if (containsView(source, s))
-		start = cast(size_t)(s.ptr - source.ptr);
-	else
-		start = findSlices(source, s, 0);
-
-	if (start == size_t.max)
-		return SourceLocation(workingFileOr(mod, invalidFileName), 0, 0);
-	return SourceLocation(workingFileOr(mod, invalidFileName), start, start + s.length);
-}
-
-/// True if `subtree` names a live entity slot.
-bool entityExists(ref Manager diags, ref Module mod, EntityId subtree) @trusted {
-	if (!(subtree < daLength(mod.ctx.entityComponentIndices))) {
-		panic("TODO: invalid entity error");
-	}
-	if (entityIsFree(mod, subtree)) {
-		panic("TODO: entity removed error");
-	}
+/// Checks that `subtree` names a live entity slot. Named so it does not hide
+/// `doir.module_.entityExists`, the predicate it reports on - a local free
+/// function hides every imported one that shares its name.
+bool entityStructure(ref Manager diags, ref Module mod, EntityId subtree) @trusted {
+	if (!entityExists(mod, subtree))
+		panic(entityIsFree(mod, subtree)
+			? "TODO: entity removed error" : "TODO: invalid entity error");
 	return true;
 }
 
@@ -95,7 +68,7 @@ bool identifierStructure(ref Manager diags, ref Module mod, InternedString ident
 
 	if (invalidMessage !is null) {
 		auto diag = &diags.push(generateDiagnostic(DiagnosticType.InvalidIdentifier,
-			getLocation(mod, ident.view), workingSource(mod),
+			findTextLocation(mod, ident.view), workingSource(mod),
 			workingFileOr(mod, invalidFileName)));
 		Diagnostic.Annotation annotation;
 		annotation.position = Pair(
@@ -111,7 +84,7 @@ bool identifierStructure(ref Manager diags, ref Module mod, InternedString ident
 
 private bool verifyLookupStructure(ref Manager diags, ref Module mod, ref const Lookup l) {
 	if (l.resolved()) {
-		if (!entityExists(diags, mod, l.entity())) return false;
+		if (!entityStructure(diags, mod, l.entity())) return false;
 	} else if (!identifierStructure(diags, mod, l.name())) return false;
 	return true;
 }
@@ -218,24 +191,24 @@ bool structure(ref Manager diags, ref Module mod, EntityId subtree, bool topLeve
 
 			immutable ft = resolveTypeModifications(mod, t.entity());
 			auto inputs = inputsOf(mod, ft);
-			scope(exit) inputs.free();
+			scope(exit) fp.dynarray.free(inputs);
 
 			if (hasComponent!FunctionParameterNames(mod, subtree)) {
 				immutable nameCount = getComponent!FunctionParameterNames(mod, subtree).length;
-				if (nameCount != inputs.length)
+				if (nameCount != daLength(inputs))
 					panic("TODO: The number of parameter names must match the number of parameters");
 			}
 
 			if (hasComponent!Block(mod, subtree)) {
-				auto parameters = associatedParameters(mod, inputs.length, subtree);
-				scope(exit) parameters.free();
+				auto parameters = associatedParameters(mod, daLength(inputs), subtree);
+				scope(exit) fp.dynarray.free(parameters);
 
-				if (parameters.length != inputs.length)
+				if (daLength(parameters) != daLength(inputs))
 					panic("TODO: A different number of parameters are defined than declared.");
 
 				if (hasComponent!FunctionParameterNames(mod, subtree)) {
 					auto names = getComponent!FunctionParameterNames(mod, subtree).slice;
-					foreach (i; 0 .. parameters.length)
+					foreach (i; 0 .. daLength(parameters))
 						if (hasComponent!Name(mod, parameters[i])
 							&& names[i] != getComponent!Name(mod, parameters[i]).value)
 							panic("TODO: Parameter names differ");
@@ -271,11 +244,11 @@ bool structure(ref Manager diags, ref Module mod, EntityId subtree, bool topLeve
 
 		if (hasComponent!FunctionInputs(mod, subtree)) {
 			auto inputs = inputsOf(mod, subtree);
-			scope(exit) inputs.free();
+			scope(exit) fp.dynarray.free(inputs);
 
 			if (hasComponent!FunctionParameterNames(mod, subtree)) {
 				immutable nameCount = getComponent!FunctionParameterNames(mod, subtree).length;
-				if (nameCount != inputs.length)
+				if (nameCount != daLength(inputs))
 					panic("TODO: The number of parameter names must match the number of parameters");
 			}
 		}
@@ -387,13 +360,13 @@ bool structure(ref Manager diags, ref Module mod, EntityId subtree, bool topLeve
 
 	if (hasComponent!Block(mod, subtree)) {
 		{
-			EntitySet seen;
+			EntityMap seen; // used as a set: each entity maps to itself
 			scope(exit) seen.free();
 			auto related = &getComponent!Block(mod, subtree).related;
 			foreach (i; 0 .. daLength(*related)) {
 				if (seen.contains((*related)[i]))
 					panic("TODO: Duplicate elements in block");
-				seen.insert((*related)[i]);
+				seen.set((*related)[i], (*related)[i]);
 			}
 		}
 
@@ -430,7 +403,7 @@ version (unittest) {
 }
 
 unittest {
-	// `entityExists` accepts a live entity allocated after other entities were
+	// `entityStructure` accepts a live entity allocated after other entities were
 	// removed. (The C++ version bounds checked against `entity_count()`, which
 	// shrinks for every removed entity, instead of the allocated id range, so a
 	// still-live high-numbered entity would wrongly fail the check.)
@@ -445,7 +418,7 @@ unittest {
 
 	Manager diags;
 	scope(exit) freeManager(diags);
-	assert(entityExists(diags, mod, ids[5]));
+	assert(entityStructure(diags, mod, ids[5]));
 }
 
 unittest { // identifierStructure accepts a well formed %N ssa identifier
@@ -499,43 +472,6 @@ unittest { // a freshly built builtin block passes verify.structure
 	scope(exit) freeManager(diags);
 	assert(structure(diags, f.mod, f.root));
 	assert(!diags.hasErrors());
-}
-
-unittest {
-	// `getLocation` has two ways of placing a name in the source text: the
-	// name's bytes may lie *inside* the working file's buffer, in which case
-	// the offset is the pointer difference, or they may not, in which case the
-	// text is searched for them. Interned names always take the second path -
-	// the interner's arena is a separate allocation - so the first is reached
-	// only by handing it a slice of the source itself.
-	diagnostics().clear();
-	auto f = makeModuleWithBuiltins();
-	scope(exit) freeModule(f.mod);
-
-	// One buffer, so a slice of it really does point inside the registered
-	// text (a string literal used twice need not be the same allocation).
-	static immutable char[17] buffer = "alpha beta gamma\n";
-	const source = buffer[0 .. $];
-	registerSource(f.mod, "loc.doir", source);
-	f.mod.workingFile = "loc.doir";
-	f.mod.hasWorkingFile = true;
-
-	// A slice of the buffer itself: the pointer-difference path.
-	auto inside = getLocation(f.mod, source[6 .. 10]);
-	assert(inside.file == "loc.doir");
-	assert(inside.startByte == 6);
-	assert(inside.endByte == 10);
-
-	// Equal content from somewhere else: the search path finds it anyway.
-	auto searched = getLocation(f.mod, internIn(f.mod, "beta").view);
-	assert(searched.startByte == 6);
-	assert(searched.endByte == 10);
-
-	// Content that is not in the file at all has no location to give.
-	auto missing = getLocation(f.mod, internIn(f.mod, "not here at all").view);
-	assert(missing.startByte == 0);
-	assert(missing.endByte == 0);
-	diagnostics().clear();
 }
 
 unittest {

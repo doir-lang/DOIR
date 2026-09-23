@@ -71,9 +71,12 @@ struct EntityPair {
 /// substitution tables.
 ///
 /// The rows live in an insertion-ordered dynarray with a hash table over
-/// them as the index. Keeping the rows out of the table is what makes
-/// iteration possible: libfp's own `HashtableIterator` does not compile
-/// against a `const` table, so there is no usable way to walk one directly.
+/// them as the index. That is not only an iteration workaround: `substitute-
+/// EntitiesImpl` applies the rows in order, so a map holding both `1 -> 2` and
+/// `2 -> 3` gives a different answer depending on which it reaches first.
+/// Insertion order is reproducible across runs; a hash table's is not, and it
+/// shifts again whenever the table grows. Walking `pairs` is what keeps a
+/// compile deterministic, so do not fold these two back together.
 ///
 /// Plain data; the operations below are free functions, so `set(map, k, v)`
 /// and `map.set(k, v)` are the same call.
@@ -133,16 +136,6 @@ void set(ref EntityMap m, EntityId key, EntityId value) @trusted {
 	fp.dynarray.pushBack(m.pairs, EntityPair(key, value));
 	fp.hashtable.insertAssumeUnique(m.table, IndexEntry(key, index));
 }
-
-
-/// An unordered set of entities.
-struct EntitySet {
-	EntityMap map;
-}
-
-void free(ref EntitySet s) { free(s.map); }
-bool contains(ref EntitySet s, EntityId e) { return contains(s.map, e); }
-void insert(ref EntitySet s, EntityId e) { set(s.map, e, e); }
 
 
 /// A *sorted*, duplicate-free array of entities, standing in for the
@@ -371,6 +364,12 @@ bool flagsSet(ref Module m, EntityId e, ushort check) {
 	return (getComponent!Flags(m, e).flags & check) > 0;
 }
 
+/// True if `e` names a live entity slot: one that has been allocated, and not
+/// since deleted.
+bool entityExists(ref Module m, EntityId e) @trusted {
+	return e < daLength(m.ctx.entityComponentIndices) && !entityIsFree(m, e);
+}
+
 /// True if `e` is on the context's freelist (i.e. has been deleted).
 bool entityIsFree(ref Module m, EntityId e) @trusted {
 	if (m.ctx.freelist is null) return false;
@@ -399,7 +398,7 @@ bool entityIsFree(ref Module m, EntityId e) @trusted {
 /// call it first for the lifetime of the process, silently returning that
 /// first module's (and, worse, that module's *pre-canonicalize.sort*) ids to
 /// every other module built afterwards. This cache is per-module, and
-/// `doir.pipeline.sema.canonicalize.sort` clears it since that pass renumbers entities
+/// `doir.pipeline.canon.sort` clears it since that pass renumbers entities
 /// and would otherwise invalidate it.
 EntityId resolveCached(ref Module m, const(char)[] path, EntityId searchStart, bool strict = false) @trusted {
 	import doir.interface_ : resolveLookupName;
@@ -483,7 +482,7 @@ private void substituteEntitiesImpl(ref Module m, EntityId subtree, ref EntityMa
 /// Rewrites every reference to a substituted entity throughout `range`'s
 /// subtree, up to `maxDepth` levels down.
 void substituteEntities(ref Module m, EntityId range, ref EntityMap substitutions, size_t maxDepth = size_t.max) {
-	import doir.pipeline.sema.sort : newRoot;
+	import doir.pipeline.canon.sort : newRoot;
 	if (range == currentCanonicalizeRoot) range = newRoot;
 	substituteEntitiesImpl(m, range, substitutions, 0, maxDepth);
 }
@@ -509,7 +508,7 @@ struct EntityPairLiteral {
 
 version (unittest) {
 	import doir.interface_ : resolveLookupName;
-	import doir.pipeline.sema.sort : sort;
+	import doir.pipeline.canon.sort : sort;
 
 	import tests.pipeline_helper;
 }
@@ -616,14 +615,6 @@ unittest { // EntityMap: insert, overwrite, look up, and the two `get` shapes
 	EntityMap empty;
 	scope(exit) empty.free();
 	assert(empty.rows is null);
-}
-
-unittest { // EntitySet is an EntityMap mapping each entity to itself
-	EntitySet s;
-	scope(exit) s.free();
-	assert(!s.contains(cast(EntityId) 3));
-	s.insert(cast(EntityId) 3);
-	assert(s.contains(cast(EntityId) 3));
 }
 
 unittest { // SortedEntitySet stays sorted, rejects duplicates, and removes
@@ -750,7 +741,7 @@ unittest { // ...and recurses into a block, up to `maxDepth`
 }
 
 unittest { // `currentCanonicalizeRoot` as the range means "whatever sort produced"
-	import doir.pipeline.sema.sort : newRoot, sort;
+	import doir.pipeline.canon.sort : newRoot, sort;
 
 	auto m = createModule();
 	scope(exit) freeModule(m);

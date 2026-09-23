@@ -6,7 +6,7 @@ module main;
 
 import core.stdc.stdio : FILE, fclose, fopen, fwrite, printf, stdout;
 
-import ecrs.storage : EntityId, invalidEntity;
+import ecrs.storage : invalidEntity;
 
 static import fp.dynarray;
 
@@ -17,7 +17,7 @@ import doir.module_;
 import doir.parser;
 import doir.pipeline;
 import doir.print;
-import doir.pipeline.sema.sort : newRoot;
+import doir.pipeline.canon.sort : newRoot;
 
 @nogc nothrow:
 
@@ -42,13 +42,8 @@ extern(C) int main(int argc, char** argv) @trusted {
 
 	auto mod = createModule();
 	scope(exit) freeModule(mod);
-	BlockBuilder* builders; // the parser's stack of open blocks
+	auto builders = createBuilderStack(mod);
 	scope(exit) fp.dynarray.free(builders);
-	{
-		auto builtin = createBlockBuilder(mod);
-		buildBuiltinBlock(builtin);
-		fp.dynarray.pushBack(builders, builtin);
-	}
 
 	auto path = argv[1][0 .. strlen(argv[1])];
 	parseFile(mod, builders, path);
@@ -63,14 +58,12 @@ extern(C) int main(int argc, char** argv) @trusted {
 		internIn(mod, "compiler.emit");
 		internIn(mod, "compiler.emit_bytes");
 
-		ByteEmiter emiter;
-		scope(exit) emiter.free();
-		auto bytes = emitAll(emiter, mod, newRoot);
-		scope(exit) bytes.free();
+		auto bytes = emitAll(mod, newRoot);
+		scope(exit) fp.dynarray.free(bytes);
 
 		FILE* fout = fopen("res.bin", "wb");
 		if (fout !is null) {
-			if (bytes.length) fwrite(bytes.data, 1, bytes.length, fout);
+			if (fp.dynarray.length(bytes)) fwrite(bytes, 1, fp.dynarray.length(bytes), fout);
 			fclose(fout);
 		}
 	}

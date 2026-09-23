@@ -25,18 +25,18 @@
 ///
 /// Neither is knowable until the walk has seen every call, which is why the
 /// running is a separate pass afterwards.
-module doir.pipeline.opt.override_fallback_schedule;
+module doir.pipeline.canon.override_fallback_schedule;
 
-import diagnose.diagnostics : Ansi;
 import ecrs.storage : EntityId, invalidEntity;
 
+static import fp.dynarray;
 import fp.dynarray : daLength = length;
 
 import doir.diagnostics;
 import doir.dynamic_systems : DynamicSystem, freeSystem, parseSystem, reportSystemError;
 import doir.interface_;
 import doir.module_;
-import doir.systems : LoweringSchedule;
+import doir.systems : beginLoweringSchedule, endLoweringSchedule;
 // The fallback, and the only edge in here that points back up at the pipeline.
 // `doir.pipeline` imports this module in turn - as it does `opt.run_schedule`,
 // through `doir.dynamic_systems`' registry - which D resolves without help.
@@ -47,7 +47,7 @@ import doir.pipeline : mizuSchedule;
 
 /// The standing nomination: the schedule to lower with, already parsed, plus
 /// how deep the call that nominated it sat. Thread-local, like
-/// `doir.pipeline.sema.sort.newRoot`.
+/// `doir.pipeline.canon.sort.newRoot`.
 private struct Nomination {
 	bool found;
 	/// Block nesting depth of the winning call. `size_t.max` while there is
@@ -80,7 +80,8 @@ bool runFallbackScheduleOverride(ref Module mod) @trusted {
 	if (!nomination.found) return true;
 	// Named while it runs, so `doir.systems`' filter can tell that a block which
 	// claimed this very schedule is not a second schedule to carve out.
-	auto running = LoweringSchedule(nomination.source);
+	const previousSchedule = beginLoweringSchedule(nomination.source);
+	scope(exit) endLoweringSchedule(previousSchedule);
 	// Left at its default `currentCanonicalizeRoot`, so the walks inside it
 	// resolve to whatever `canonicalize.sort` last produced - which is the
 	// comptime block while `opt.comptimeEvaluate` is lowering one, and the
@@ -98,17 +99,6 @@ private size_t depthOf(ref Module mod, EntityId e) {
 		++depth;
 	}
 	return depth;
-}
-
-/// Copies a call's (already resolved) inputs into a caller-owned list with
-/// every alias followed - the same idiom `opt.runSchedule` opens with.
-private EntityList resolvedInputs(ref Module mod, EntityId subtree) @trusted {
-	EntityList out_;
-	auto inputs = &getComponent!FunctionInputs(mod, subtree);
-	foreach (i; 0 .. daLength(inputs.related))
-		out_.push(inputs.related[i]);
-	resolveAliases(mod, out_.slice);
-	return out_;
 }
 
 /// Pass one: records the schedule `subtree` nominates if it beats the standing
@@ -132,8 +122,8 @@ bool findFallbackScheduleOverride(ref Module mod, EntityId subtree) @trusted {
 		return false;
 	}
 	auto inputs = resolvedInputs(mod, subtree);
-	scope(exit) inputs.free();
-	if (inputs.length != 1) {
+	scope(exit) fp.dynarray.free(inputs);
+	if (daLength(inputs) != 1) {
 		expectsXInputs(mod, subtree, "override_fallback_schedule", "one");
 		return false;
 	}
@@ -197,7 +187,8 @@ bool runFallbackSchedule(ref Module mod) {
 	// at all, since outside one the filter is off. A null source matches no
 	// claim, which is right - the compiler's own schedule is not the schedule
 	// any block asked for.
-	auto running = LoweringSchedule(null);
+	const previousSchedule = beginLoweringSchedule(null);
+	scope(exit) endLoweringSchedule(previousSchedule);
 	return mizuSchedule(mod);
 }
 

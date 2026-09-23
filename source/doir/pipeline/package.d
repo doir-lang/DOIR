@@ -13,15 +13,19 @@ import ecrs.storage : EntityId, invalidEntity;
 import doir.diagnostics;
 import doir.interface_;
 import doir.module_;
-import doir.pipeline.sema.comptime;
-import doir.pipeline.sema.function_arity;
-import doir.pipeline.sema.lookup;
-import doir.pipeline.sema.materialize;
-import doir.pipeline.sema.name_reuse;
-import doir.pipeline.sema.process_early_include;
-import doir.pipeline.sema.sort;
 import doir.systems;
 import doir.verify;
+
+import doir.pipeline.canon.comptime;
+import doir.pipeline.canon.lookup;
+import doir.pipeline.canon.materialize;
+import doir.pipeline.canon.override_fallback_schedule;
+import doir.pipeline.canon.process_early_include;
+import doir.pipeline.canon.sort;
+import doir.pipeline.canon.strip_freestanding_blocks;
+
+import doir.pipeline.sema.function_arity;
+import doir.pipeline.sema.name_reuse;
 
 import doir.pipeline.opt.allocate_registers;
 import doir.pipeline.opt.compute_compiler_namespace;
@@ -31,9 +35,7 @@ import doir.pipeline.opt.mizu.comptime_evaluate;
 import doir.pipeline.opt.mizu.materialize_immediates;
 import doir.pipeline.opt.mizu.materialize_labels;
 import doir.pipeline.opt.pin_registers;
-import doir.pipeline.opt.override_fallback_schedule;
 import doir.pipeline.opt.run_schedule;
-import doir.pipeline.opt.strip_freestanding_blocks;
 
 @nogc nothrow:
 
@@ -83,8 +85,8 @@ bool comptimeEvaluateVisitor(ref Module mod, EntityId e) {
 /// folded - so with nothing standing in, a module with no `early_include` would
 /// not get a usable `compiler.byte`.
 ///
-/// The three passes it opens with used to sit in `canonicalizeSchedule`, ahead of
-/// comptime evaluation. They are here instead because they are answerable to
+/// The three passes it opens with are here rather than in `canonicalizeSchedule`
+/// because they are answerable to
 /// the backend rather than to the language: what counts as a name collision,
 /// what a function's arity is, and when a block-scoped `compiler.run_schedule`
 /// gets its turn are all things a backend should be able to say differently -
@@ -240,7 +242,7 @@ version (unittest) {
 	import diagnose.source_location : SourceLocation;
 
 	import doir.parser : parseFile, parseSource;
-	import doir.pipeline.sema.sort : newRoot;
+	import doir.pipeline.canon.sort : newRoot;
 	import tests.pipeline_helper;
 }
 
@@ -255,13 +257,8 @@ unittest {
 	auto mod = createModule();
 	scope(exit) freeModule(mod);
 
-	BlockBuilder* builders;
+	auto builders = createBuilderStack(mod);
 	scope(exit) fp.dynarray.free(builders);
-	{
-		auto builtin = createBlockBuilder(mod);
-		buildBuiltinBlock(builtin);
-		fp.dynarray.pushBack(builders, builtin);
-	}
 
 	assert(parseFile(mod, builders, "test.doir"));
 	assert(!diagnostics().hasErrors());
@@ -293,13 +290,8 @@ unittest {
 	auto mod = createModule();
 	scope(exit) freeModule(mod);
 
-	BlockBuilder* builders;
+	auto builders = createBuilderStack(mod);
 	scope(exit) fp.dynarray.free(builders);
-	{
-		auto builtin = createBlockBuilder(mod);
-		buildBuiltinBlock(builtin);
-		fp.dynarray.pushBack(builders, builtin);
-	}
 
 	assert(parseFile(mod, builders, "test_string.doir"));
 	immutable root = runPipeline(mod, builders);
@@ -308,12 +300,9 @@ unittest {
 
 	internIn(mod, "compiler.emit");
 	internIn(mod, "compiler.emit_bytes");
-	ByteEmiter emiter;
-	scope(exit) emiter.free();
-	auto bytes = emitAll(emiter, mod, newRoot);
-	scope(exit) bytes.free();
-	assert(bytes.length > 0);
-	assert(bytes.slice == cast(const(ubyte)[]) "Hello World");
+	auto bytes = emitAll(mod, newRoot);
+	scope(exit) fp.dynarray.free(bytes);
+	assert(fp.dynarray.slice(bytes) == cast(const(ubyte)[]) "Hello World");
 	diagnostics().clear();
 }
 
@@ -328,13 +317,8 @@ unittest {
 	auto mod = createModule();
 	scope(exit) freeModule(mod);
 
-	BlockBuilder* builders;
+	auto builders = createBuilderStack(mod);
 	scope(exit) fp.dynarray.free(builders);
-	{
-		auto builtin = createBlockBuilder(mod);
-		buildBuiltinBlock(builtin);
-		fp.dynarray.pushBack(builders, builtin);
-	}
 	assert(parseSource(mod, builders, "%1 : compiler.byte = 5\n", "hook.doir"));
 
 	assert(runPipeline(mod, builders, &refuse) == invalidEntity);

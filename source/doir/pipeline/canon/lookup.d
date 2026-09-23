@@ -1,17 +1,18 @@
 /// The lookup-resolution pass and its validation half. Ported from
 /// sema/lookup.cpp.
-module doir.pipeline.sema.lookup;
+module doir.pipeline.canon.lookup;
 
 import diagnose.diagnostics : Ansi, Diagnostic, pushAnnotation;
 import ecrs.storage : EntityId, invalidEntity;
 
 static import fp.dynarray;
-import fp.dynarray : daLength = length;
+
 import fp.string : findSlices;
 
 import doir.diagnostics;
 import doir.interface_;
 import doir.module_;
+import doir.string_helpers : text;
 
 @nogc nothrow:
 
@@ -206,7 +207,7 @@ unittest {
 	// referring entity for the block containing it - an invariant
 	// `canonicalize.sort` establishes - so the module is sorted first, the way
 	// it is by the time the real pass runs.
-	import doir.pipeline.sema.sort : sort;
+	import doir.pipeline.canon.sort : sort;
 
 	auto f = makeModuleWithBuiltins();
 	scope(exit) freeModule(f.mod);

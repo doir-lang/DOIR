@@ -11,7 +11,6 @@
 /// the immediate it emits.
 module doir.pipeline.opt.mizu.materialize_labels;
 
-import core.stdc.stdio : snprintf;
 
 import ecrs.storage : EntityId, invalidEntity;
 
@@ -66,9 +65,7 @@ bool materializeLabels(ref Module mod, EntityId subtree) @trusted {
 
 		auto bytes = (cast(const(ubyte)*) &value)[0 .. uint.sizeof];
 		foreach (i; 0 .. bytes.length) {
-			char[24] buffer;
-			immutable n = snprintf(buffer.ptr, buffer.length, "%%%zu", i);
-			immutable e = pushNumber(builder, internIn(mod, buffer[0 .. n]), byteType,
+			immutable e = pushNumber(builder, positionalName(mod, i), byteType,
 				cast(int) bytes[i]);
 			pushCall(builder, InternedString("_"), byteType, emit, (&e)[0 .. 1]);
 		}
@@ -101,40 +98,11 @@ version (unittest) {
 	import fp.dynarray : daLength = length;
 
 	import doir.diagnostics;
-	import doir.parser : parseSource;
-	import doir.pipeline : runPipeline;
-	import tests.pipeline_helper : compile, makeModuleWithBuiltins;
+	import tests.pipeline_helper : compile, makeModuleWithBuiltins, PipelineResult, withMizu;
 
-	private struct LabelFixture {
-		Module mod;
-		EntityId root;
-	}
-
-	private LabelFixture makeLabelFixture() @trusted {
-		diagnostics().clear();
-
-		LabelFixture f;
-		f.mod = createModule();
-
-		BlockBuilder* builders;
-		scope(exit) fp.dynarray.free(builders);
-		{
-			auto builtin = createBlockBuilder(f.mod);
-			buildBuiltinBlock(builtin);
-			fp.dynarray.pushBack(builders, builtin);
-		}
-
-		assert(parseSource(f.mod, builders,
-			"path : compiler.byte_pointer = \"./mizu.doir\"\n"
-			~ "_ : compiler.byte = early_include(path)\n", "labels.doir"));
-		f.root = runPipeline(f.mod, builders);
-		assert(f.root != invalidEntity);
-		assert(!diagnostics().hasErrors());
-		return f;
-	}
 
 	/// `mizu.label()` pushed into the fixture's root block.
-	private EntityId pushLabel(ref LabelFixture f) {
+	private EntityId pushLabel(ref PipelineResult f) {
 		auto block = BlockBuilder(f.root, &f.mod);
 		immutable register = resolveLookupName(f.mod,
 			internIn(f.mod, "compiler.assembler.register"), f.root);
@@ -146,7 +114,7 @@ version (unittest) {
 }
 
 unittest { // a label call becomes the block that encodes it, plus its id
-	auto f = makeLabelFixture();
+	auto f = withMizu("labels.doir");
 	scope(exit) freeModule(f.mod);
 
 	immutable call = pushLabel(f);
@@ -163,7 +131,7 @@ unittest { // a label call becomes the block that encodes it, plus its id
 }
 
 unittest { // every call gets an id of its own, one after another
-	auto f = makeLabelFixture();
+	auto f = withMizu("labels.doir");
 	scope(exit) freeModule(f.mod);
 
 	immutable first = pushLabel(f);
@@ -184,7 +152,7 @@ unittest { // every call gets an id of its own, one after another
 }
 
 unittest { // anything that is not a `mizu.label` call is left alone
-	auto f = makeLabelFixture();
+	auto f = withMizu("labels.doir");
 	scope(exit) freeModule(f.mod);
 
 	auto block = BlockBuilder(f.root, &f.mod);
@@ -225,7 +193,7 @@ unittest {
 	// leaving the id behind as a `ComptimeNumber` buys, since that is what
 	// `find_label`'s body folds into the bytes it emits.
 	import doir.byte_emiter;
-	import doir.pipeline.sema.sort : newRoot;
+	import doir.pipeline.canon.sort : newRoot;
 
 	auto r = compile(
 		"path : compiler.byte_pointer = \"./mizu.doir\"\n"
@@ -239,15 +207,13 @@ unittest {
 
 	internIn(r.mod, "compiler.emit");
 	internIn(r.mod, "compiler.emit_bytes");
-	ByteEmiter emiter;
-	scope(exit) emiter.free();
-	auto bytes = emitAll(emiter, r.mod, newRoot);
-	scope(exit) bytes.free();
+	auto bytes = emitAll(r.mod, newRoot);
+	scope(exit) fp.dynarray.free(bytes);
 
 	// Three `Opcode`s, sixteen bytes each: the label, the search for it, and
 	// the halt. Each starts with its instruction id as a little-endian `u64`.
-	assert(bytes.length == 3 * 16);
-	auto slice = bytes.slice;
+	auto slice = fp.dynarray.slice(bytes);
+	assert(slice.length == 3 * 16);
 	assert(slice[0] == 1);  // `label`
 	assert(slice[16] == 2); // `find_label`
 	assert(slice[32] == 3); // `halt`
