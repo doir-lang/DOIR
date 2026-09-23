@@ -1075,6 +1075,7 @@ private bool block(ref Parser p, ref BlockBuilder* blocks, out EntityId result) 
 	// block_start's action
 	immutable blockEntity = addEntity(*mod);
 	addComponent!Block(*mod, blockEntity);
+	getOrAddComponent!Flags(*mod, blockEntity).flags |= Flags.Freestanding;
 	fp.dynarray.pushBack(blocks, BlockBuilder(blockEntity, mod));
 
 	while (!eof(p) && peek(p) != '}') {

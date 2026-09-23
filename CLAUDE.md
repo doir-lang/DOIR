@@ -167,8 +167,11 @@ far the run got.
 schedule, so they exercise the same compile the driver does.
 
 The end-to-end tests in `pipeline/package.d` compile the repository's own
-`.doir` files: `test.doir` (early_includes all of `mizu.doir`, runs a quoted
-block on the comptime VM), `test_string.doir` (nothing but `compiler.emit`, so
-the byte emiter has something to emit), and `test_standard.doir` (the assembler
-layer `standard.doir` assumes, plus an early_include of it — which is where
-every `deduced` in the repository is).
+`.doir` files: `test.doir` (early_includes all of `mizu.doir` and then
+`standard.mizu.doir`, runs a quoted block on the comptime VM, and calls
+`std.add`, `std.if`, `std.while` and a hand-written label and jump — the one
+program written *against* the standard interface rather than declaring it),
+`test_string.doir` (nothing but `compiler.emit`, so the byte emiter has
+something to emit), and `test_standard.doir` (the assembler layer
+`standard.doir` assumes, plus an early_include of it — which is where every
+`deduced` in the repository is).

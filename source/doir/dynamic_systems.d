@@ -270,18 +270,23 @@ private enum string[2][] systemAliases = [
 ];
 
 /// The alias spellings that mean `fullName`, if any.
-private string[] aliasesOf(string fullName) {
+///
+/// This and the CTFE lists below it are lambdas because the module's `@nogc`
+/// reaches a named function, and `~=` on a `string[]` is a GC append even where
+/// only CTFE runs it. `-betterC` drops that check, so a named one builds here
+/// and fails the ordinary-D coverage build.
+private enum string[] aliasesOf(string fullName) = {
 	string[] out_;
 	foreach (pair; systemAliases)
 		if (pair[1] == fullName) out_ ~= pair[0];
 	return out_;
-}
+}();
 
 /// Every name the enumeration produced, in registration order. Computed by the
 /// same enumeration the lookup below runs, so the two cannot disagree; it
 /// exists so "is this short name ambiguous" is answered once, at compile time,
 /// instead of by a second scan on every lookup.
-private string[] collectNames() {
+private enum string[] enumeratedNames = {
 	string[] names;
 	static foreach (moduleName; passModules) {{
 		alias mod = imported!moduleName;
@@ -295,9 +300,7 @@ private string[] collectNames() {
 		}
 	}}
 	return names;
-}
-
-private enum string[] enumeratedNames = collectNames();
+}();
 
 /// An alias for a pass that does not exist is a typo that would otherwise do
 /// nothing at all, quietly, until somebody wrote the alias in a schedule.
@@ -359,7 +362,7 @@ private template matches(string fullName) {
 		if (equals(name, fullName)) return true;
 		static if (shortNameIsUnique(fullName))
 			if (equals(name, shortName(fullName))) return true;
-		static foreach (spelling; aliasesOf(fullName))
+		static foreach (spelling; aliasesOf!fullName)
 			if (equals(name, spelling)) return true;
 		return false;
 	}

@@ -250,13 +250,21 @@ unittest {
 }
 
 unittest {
-	// The other half of the point: the schedule also runs over every call to
-	// something the block declares, wherever that call was written.
+	// The other half of the point: a call to something a scheduled block
+	// declares is *not* that block's, unless it was written there.
+	//
+	// It used to be. `doir.systems.ownerOf` redirected a call to whoever
+	// declared the callee, on the reasoning that calling `ns.f()` is a use of
+	// `ns`'s declaration. That does not survive a second schedule: `mizu.doir`
+	// claims its own block, so every `mizu.*` call in a module with a schedule
+	// of its own belonged to mizu - and mizu's schedule never visits the block
+	// those calls are written in, so they were lowered by nobody. Lowering edits
+	// the site, so the site's block decides.
 	//
 	// `stripNames` is the probe because no schedule the compiler runs contains
 	// it, so a name that is gone is a name this schedule reached and nothing
-	// else could have. `x` calls into the namespace and loses its name; `y`
-	// does not and keeps it.
+	// else could have. Both `x` and `y` are written outside `ns`, so both keep
+	// their names.
 	auto r = compile(
 		"ns : namespace = {\n"
 		~ "\tf : () -> compiler.byte = {\n"
@@ -271,17 +279,16 @@ unittest {
 	assert(r.ok);
 
 	assert(find(r.mod, r.root, "y") != invalidEntity);
-	assert(find(r.mod, r.root, "x") == invalidEntity);
+	assert(find(r.mod, r.root, "x") != invalidEntity);
 	diagnostics().clear();
 }
 
 unittest {
 	// Whose schedule owns `m.x`, when `x` is a call to `ns.f` written inside
-	// `m` and both blocks claimed a schedule? `ns`'s: a call to `ns.f()` is a
-	// use of `ns`'s declaration, and `ns` is the one that said how its
-	// declarations are lowered. So `x` is stripped by `ns`'s schedule even
-	// though it is nowhere near `ns`, while `y` - lexically `m`'s, called by
-	// nobody - keeps its name because `m` asked for something harmless.
+	// `m` and both blocks claimed a schedule? `m`'s - the block it is written
+	// in. `ns` said how the declarations *in* `ns` are lowered, which is not the
+	// same as saying how everybody else's calls to them are. So neither `m.x`
+	// nor `m.y` is stripped: `m` asked for something harmless and got it.
 	auto r = compile(
 		"ns : namespace = {\n"
 		~ "\tf : () -> compiler.byte = {\n"
@@ -300,7 +307,7 @@ unittest {
 	assert(r.ok);
 
 	assert(find(r.mod, r.root, "m.y") != invalidEntity);
-	assert(find(r.mod, r.root, "m.x") == invalidEntity);
+	assert(find(r.mod, r.root, "m.x") != invalidEntity);
 	diagnostics().clear();
 }
 

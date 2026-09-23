@@ -20,6 +20,24 @@ import doir.string_helpers : InternedString;
 private bool allocating = false;
 private size_t nextRegister = 0;
 
+/// Allocates until `endRegisterAllocation` puts back what this returns, for a
+/// walk that will never meet a `begin_register_allocation` call of its own.
+///
+/// `opt.mizu.comptimeEvaluate` lowers two kinds of block that never do: the
+/// throwaway program it assembles for one call, which pins every register by
+/// hand, and a block an instruction spliced into the module, whose code the
+/// program wrote and so needs registers like any other. The flag is a walk's
+/// answer to "has allocation started", and neither walk starts where the
+/// module's own does. Pair them with `scope(exit)`.
+bool beginRegisterAllocation() {
+	immutable previous = allocating;
+	allocating = true;
+	return previous;
+}
+
+/// Ditto.
+void endRegisterAllocation(bool previous) { allocating = previous; }
+
 bool allocateRegisters(ref Module mod, EntityId subtree) @trusted {
 	if (subtree < 5) {
 		allocating = false;

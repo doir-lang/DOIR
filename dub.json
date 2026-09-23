@@ -12,15 +12,15 @@
 	"dependencies": {
 		"mizu": {
 			"repository": "git+https://github.com/doir-lang/Mizu.git",
-			"version": "1df80d017c7ade5ded9a85c005a20f16879a3dd7"
+			"version": "f387b8fdb266c32a57fe1f02be3baccb44d75f78"
 		},
 		"libecrs": {
 			"repository": "git+https://github.com/doir-lang/libECRS.git",
-			"version": "699e6431b0571a2089af282f0f05d2de7c323ada"
+			"version": "ee436f3e51f9e1dcfd7a79fd811d23b96fd2328c"
 		},
 		"diagnose": {
 			"repository": "git+https://github.com/doir-lang/libdiagnose.git",
-			"version": "6e785511f5db14548fd43395bac558c57aef5f3e"
+			"version": "5fdbf538eb9694199c6dcd622683b150f09131f2"
 		}
 	},
 	"dflags-ldc": [

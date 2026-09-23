@@ -2,7 +2,7 @@
 /// call assigns. Ported from opt/pin_registers.hpp.
 module doir.pipeline.opt.pin_registers;
 
-import ecrs.storage : EntityId;
+import ecrs.storage : EntityId, invalidEntity;
 
 static import fp.dynarray;
 import fp.dynarray : daLength = length;
@@ -14,11 +14,51 @@ import doir.diagnostics;
 @nogc nothrow:
 
 
+/// `compiler.return(v)` / `compiler.yield(v)`: the value a block hands back is
+/// given the block's *own* register.
+///
+/// That is what makes a returned value a value the body computed. An emitted
+/// instruction encodes its destination as `return_register`/`yield_register`,
+/// which resolves to the enclosing block's register - so a body whose result
+/// comes from one instruction returns it for free, and a body with two exit
+/// points (`if`) or a result computed several instructions back has no way to
+/// say so at all without this. Both arms of an `if` naming their own value here
+/// is exactly the two of them agreeing on one register.
+///
+/// Silent when the argument is a type, which is `compiler.indicate_return`'s
+/// job rather than this one's.
+private void pinReturnValue(ref Module mod, EntityId subtree, EntityId value) @trusted {
+	value = resolveAlias(mod, value);
+	if (hasComponent!TypeDefinition(mod, value)) return;
+
+	immutable block = findParent(mod, subtree);
+	if (block == invalidEntity) return;
+	// Nothing to copy yet on the walk before `allocateRegisters`; the one after
+	// it is where this lands.
+	if (!hasComponent!AssignedRegister(mod, block)) return;
+
+	getOrAddComponent!AssignedRegister(mod, value).reg =
+		getComponent!AssignedRegister(mod, block).reg;
+}
+
 bool pinRegisters(ref Module mod, EntityId subtree) @trusted {
 	if (!hasComponent!Call(mod, subtree)) return true;
 
 	immutable pinRegister = resolveCached(mod, "compiler.assembler.pin_register", 1);
+	immutable return_ = resolveCached(mod, "compiler.return", 1);
+	immutable yield = resolveCached(mod, "compiler.yield", 1);
 	immutable function_ = resolveAlias(mod, getComponent!Call(mod, subtree).related[0]);
+
+	if (function_ == return_ || function_ == yield) {
+		if (!hasComponent!FunctionInputs(mod, subtree)) return true;
+		auto args = &getComponent!FunctionInputs(mod, subtree);
+		if (daLength(args.related) == 0) return true;
+		// The last argument, not the first: `sema.deduceTypes` splices the
+		// solution for `T` in ahead of the value it was solved from.
+		pinReturnValue(mod, subtree, args.related[daLength(args.related) - 1]);
+		return true;
+	}
+
 	if (function_ != pinRegister) return true;
 
 	auto inputs = resolvedInputs(mod, subtree);

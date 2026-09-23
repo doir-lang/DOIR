@@ -1,15 +1,15 @@
 /// `sema.introduceTypeVariables`: turns every `_` written in type position
-/// into a `TypeVariable` of that site's own.
+/// into a `Flags.TypeVariable` of that site's own.
 ///
 /// `_` resolves, like any other name, to the builtin type entity named `_`
 /// (`interface_.buildBuiltinBlock`). One entity shared by every hole in the
 /// module is a placeholder and not an answer - two holes in one file are two
 /// different types - so this pass runs once the lookups are resolved and swaps
-/// each reference to it for a per-site tag the solver can fill in
+/// each reference to it for a per-site flag the solver can fill in
 /// independently.
 ///
 /// Introduction is pure syntax: it reads no value, folds nothing, and only ever
-/// adds tags. That is why it sits here, before comptime, rather than inside the
+/// sets flags. That is why it sits here, before comptime, rather than inside the
 /// fixpoint that solves what it introduces - `sema.deduceTypes` is the half
 /// that has to interleave with evaluation, and it is much easier to reason
 /// about when every variable in the module already exists before it starts.
@@ -41,7 +41,7 @@ EntityId inferencePlaceholder(ref Module mod, EntityId root) {
 bool isTypeVariable(ref Module mod, EntityId type) {
 	if (type == invalidEntity) return false;
 	type = resolveAlias(mod, type);
-	if (hasComponent!TypeVariable(mod, type)) return true;
+	if (flagsSet(mod, type, Flags.TypeVariable)) return true;
 
 	if (!hasComponent!FunctionParameter(mod, type)) return false;
 	if (!hasComponent!TypeOf(mod, type)) return false;
@@ -50,7 +50,7 @@ bool isTypeVariable(ref Module mod, EntityId type) {
 
 /// Whether `e`'s own type is unknown - it is a hole, or it has no type at all.
 bool typeIsUnknown(ref Module mod, EntityId e) {
-	if (hasComponent!TypeVariable(mod, e)) return true;
+	if (flagsSet(mod, e, Flags.TypeVariable)) return true;
 	if (!hasComponent!TypeOf(mod, e)) return false;
 	return isTypeVariable(mod, getComponent!TypeOf(mod, e).related[0]);
 }
@@ -60,11 +60,11 @@ bool introduceTypeVariables(ref Module mod, EntityId subtree) @trusted {
 	immutable placeholder = inferencePlaceholder(mod, subtree);
 	if (placeholder == invalidEntity) return true;
 
-	// The placeholder itself keeps its name and its `TypeDefinition`; tagging it
-	// is what lets `isTypeVariable` answer for a hole this walk has not reached.
+	// The placeholder itself keeps its name and its `TypeDefinition`; flagging
+	// it is what lets `isTypeVariable` answer for a hole this walk has not
+	// reached.
 	if (subtree == placeholder) {
-		if (!hasComponent!TypeVariable(mod, subtree))
-			addComponent!TypeVariable(mod, subtree);
+		getOrAddComponent!Flags(mod, subtree).flags |= Flags.TypeVariable;
 		return true;
 	}
 
@@ -80,7 +80,7 @@ bool introduceTypeVariables(ref Module mod, EntityId subtree) @trusted {
 	}
 
 	removeComponent!TypeOf(mod, subtree);
-	addComponent!TypeVariable(mod, subtree);
+	getOrAddComponent!Flags(mod, subtree).flags |= Flags.TypeVariable;
 	return true;
 }
 
@@ -108,7 +108,7 @@ unittest { // a hole becomes a variable of its own rather than the shared `_`
 			!= inferencePlaceholder(r.mod, r.root));
 }
 
-unittest { // the placeholder is tagged, so `isTypeVariable` answers for it
+unittest { // the placeholder is flagged, so `isTypeVariable` answers for it
 	auto f = makeModuleWithBuiltins();
 	scope(exit) freeModule(f.mod);
 
@@ -129,6 +129,6 @@ unittest { // a `_` on something that is itself a type is not a hole
 	addComponent!TypeOf(f.mod, t).related[0] = placeholder;
 
 	assert(introduceTypeVariables(f.mod, t));
-	assert(!hasComponent!TypeVariable(f.mod, t));
+	assert(!flagsSet(f.mod, t, Flags.TypeVariable));
 	assert(!hasComponent!TypeOf(f.mod, t));
 }

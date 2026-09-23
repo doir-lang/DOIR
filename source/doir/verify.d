@@ -274,7 +274,7 @@ bool structure(ref Manager diags, ref Module mod, EntityId subtree, bool topLeve
 
 		if (hasComponent!Flags(mod, subtree)) {
 			auto flags = getComponent!Flags(mod, subtree);
-			flags.flags &= ~cast(ushort) Flags.Namespace;
+			flags.flags &= ~cast(ushort)(Flags.Namespace | Flags.Internal);
 			if (!(flags.flags == Flags.None || flags.flags == Flags.Export))
 				panic("Invalid flags");
 		}
@@ -323,14 +323,14 @@ bool structure(ref Manager diags, ref Module mod, EntityId subtree, bool topLeve
 		}
 
 		if (hasComponent!Flags(mod, subtree)) {
-			immutable flags = getComponent!Flags(mod, subtree).flags;
+			immutable flags = cast(ushort)(getComponent!Flags(mod, subtree).flags & ~Flags.Internal);
 			if (!(flags == Flags.None || flags == Flags.Export || flags == Flags.Comptime))
 				panic("Invalid flags");
 		}
 
 	} else if (hasComponent!Block(mod, subtree)) {
 		if (hasComponent!Flags(mod, subtree)) {
-			immutable flags = getComponent!Flags(mod, subtree).flags;
+			immutable flags = cast(ushort)(getComponent!Flags(mod, subtree).flags & ~Flags.Internal);
 			if (!(flags == Flags.None || flags == Flags.Flatten))
 				panic("Invalid flags");
 		}

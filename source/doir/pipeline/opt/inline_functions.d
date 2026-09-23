@@ -11,7 +11,7 @@ import fp.dynarray : daLength = length;
 import doir.interface_;
 import doir.module_;
 import doir.string_helpers : InternedString;
-import doir.systems : ownedByCurrentLowering;
+import doir.pipeline.opt.mizu.comptime_evaluate : comptimeEvaluationClaims;
 
 @nogc nothrow:
 
@@ -22,18 +22,33 @@ bool inlineFunctions(ref Module mod, EntityId subtree) @trusted {
 	immutable functionDef = resolveAlias(mod, getComponent!Call(mod, subtree).related[0]);
 	if (!hasComponent!TypeOf(mod, functionDef)) return true;
 
-	// A body is copied in from wherever it was declared, which is the one thing
-	// this pass does that the walk reaching it does not bound - so ask the walk's
-	// own question about the callee. A body belonging to somebody else's
-	// schedule is left as a call for that schedule to inline when its turn
-	// comes, which is how a backend's schedule inlines the backend's own
-	// functions and not whatever else the module happens to contain. Outside
-	// any schedule everything is fair game, as it has always been.
-	if (!ownedByCurrentLowering(mod, functionDef)) return true;
+	// No ownership question about the *callee*. Inlining is an edit to the call
+	// site, and the walk has already asked whether this schedule owns that - so
+	// asking again about where the body happens to be declared answers a
+	// question nobody posed, and answers it wrongly the moment two schedules are
+	// in play: `mizu.doir` claims its own block, so a call in the module's root
+	// to `mizu.find_label` was inlined by nobody at all. The site's schedule
+	// owned the site but not the body; the backend's schedule owned the body but
+	// never visits the site. A body is read here, not written, and reading
+	// somebody else's declaration is what every call does.
 
 	immutable ft = getComponent!TypeOf(mod, functionDef).related[0];
 	if (!(flagsSet(mod, ft, Flags.Inline) || flagsSet(mod, subtree, Flags.Inline)))
 		return true;
+
+	// Not a call `opt.mizu.comptimeEvaluate` owns. Both passes are in the
+	// lowering schedule and this one reaches a call first, so the ordering has
+	// to be asked for rather than scheduled: inlining `mizu.doir.execute`
+	// replaces the call with the bytes of the execute *instruction*, which in
+	// the emitted program would mean editing the compiler's entity store at
+	// runtime.
+	//
+	// `Claims` rather than `Pending`: the evaluator can only *run* a call whose
+	// arguments are already folded, and at this point in the schedule nothing
+	// has been folded at all - so asking whether it can run yet stood down for
+	// the first link of a comptime chain and inlined every link after it. See
+	// that function's own comment.
+	if (comptimeEvaluationClaims(mod, subtree)) return true;
 
 	// There has to be a body to copy. A builtin (`compiler.emit` and friends)
 	// is declared `Valueless` and carries no `Block`, so `inline` on one used
@@ -58,6 +73,9 @@ bool inlineFunctions(ref Module mod, EntityId subtree) @trusted {
 		ushort flags = 0;
 		if (flagsSet(mod, subtree, Flags.Export)) flags |= Flags.Export;
 		if (flagsSet(mod, subtree, Flags.Flatten)) flags |= Flags.Flatten;
+		// Not a description of the call: it says this entity's own type is
+		// still a hole, which replacing the call with a body does not answer.
+		if (flagsSet(mod, subtree, Flags.TypeVariable)) flags |= Flags.TypeVariable;
 		getOrAddComponent!Flags(mod, subtree).flags = flags;
 	}
 
@@ -65,6 +83,7 @@ bool inlineFunctions(ref Module mod, EntityId subtree) @trusted {
 	scope(exit) fp.dynarray.free(params);
 
 	addComponent!Block(mod, subtree);
+	getOrAddComponent!Flags(mod, subtree).flags |= Flags.Freestanding;
 	auto block = BlockBuilder(subtree, &mod);
 
 	EntityMap paramReplacements;
@@ -86,9 +105,15 @@ bool inlineFunctions(ref Module mod, EntityId subtree) @trusted {
 	immutable returnRegister = resolveLookupName(mod, internIn(mod, "compiler.assembler.return_register"), 1);
 	immutable yieldRegister = resolveLookupName(mod, internIn(mod, "compiler.assembler.yield_register"), 1);
 	// TODO: Does this fix recursive issues? TODO: Calls to return should become calls to yield
-	EntityPairLiteral[2] returnSubs = [
+	immutable return_ = resolveLookupName(mod, internIn(mod, "compiler.return"), 1);
+	immutable yield = resolveLookupName(mod, internIn(mod, "compiler.yield"), 1);
+	EntityPairLiteral[3] returnSubs = [
 		EntityPairLiteral(indicateReturn, indicateYield),
 		EntityPairLiteral(returnRegister, yieldRegister),
+		// `return v` becomes `yield v` for the same reason the marker does: a
+		// body copied into a call site hands its value to that call, not out of
+		// whatever function now contains it.
+		EntityPairLiteral(return_, yield),
 	];
 	substituteEntities(mod, subtree, returnSubs[], 1);
 
@@ -101,7 +126,7 @@ bool inlineFunctions(ref Module mod, EntityId subtree) @trusted {
 
 version (unittest) {
 	import doir.diagnostics : diagnostics;
-	import doir.systems : beginLoweringBlock, beginLoweringSchedule, endLoweringBlock, endLoweringSchedule;
+	import doir.systems : beginLoweringBlock, beginLoweringSchedule, endLoweringBlock, endLoweringSchedule, ownedByCurrentLowering;
 	import tests.pipeline_helper;
 }
 
@@ -190,10 +215,18 @@ unittest {
 }
 
 unittest {
-	// A block's schedule only inlines bodies that belong to it. Inlining is the
-	// one thing this pass does that reaches outside the walk that found the
-	// call, so a backend lowering one block would otherwise rewrite calls to
-	// functions the block never declared.
+	// A block's schedule inlines the calls *written in it*, wherever the body it
+	// copies was declared - and leaves alone the calls written elsewhere, even
+	// to functions it declared itself.
+	//
+	// It used to be the other way round, keyed on where the body lives. That
+	// reads well and does not survive a second schedule: `mizu.doir` claims its
+	// own block, so a `mizu.*` call written in a module that nominated a
+	// schedule of its own was inlined by nobody - the site's schedule owned the
+	// site but not the body, and mizu's schedule owned the body but never visits
+	// the site. Inlining puts a body where the call stands, so the call's block
+	// is the one whose schedule decides; a body declared elsewhere is read, as
+	// any declaration is read from wherever it lives.
 	auto f = makeModuleWithBuiltins();
 	scope(exit) freeModule(f.mod);
 	diagnostics().clear();
@@ -218,6 +251,8 @@ unittest {
 	EntityId[0] noArguments;
 	immutable callsOuter = pushCall(ns, internIn(f.mod, "co"), byte_, outer, noArguments[]);
 	immutable callsInner = pushCall(ns, internIn(f.mod, "ci"), byte_, inner, noArguments[]);
+	// Written at the root, calling into `ns` - the case that swaps sides.
+	immutable rootCallsInner = pushCall(root, internIn(f.mod, "rci"), byte_, inner, noArguments[]);
 
 	// `ns` has to actually claim a schedule for any of this to apply: what the
 	// filter compares is claims, and outside a lowering there is nothing to
@@ -232,20 +267,30 @@ unittest {
 		immutable previousBlock = beginLoweringBlock(ns.block);
 		scope(exit) endLoweringBlock(previousBlock);
 
-		// Declared outside it: left as a call.
+		// Written inside it, body declared outside: inlined, because the site is
+		// `ns`'s.
 		assert(inlineFunctions(f.mod, callsOuter));
-		assert(hasComponent!Call(f.mod, callsOuter));
+		assert(!hasComponent!Call(f.mod, callsOuter));
+		assert(hasComponent!Block(f.mod, callsOuter));
 
-		// Declared inside it: inlined as always.
+		// Written inside it, body inside it: inlined as always.
 		assert(inlineFunctions(f.mod, callsInner));
 		assert(!hasComponent!Call(f.mod, callsInner));
 		assert(hasComponent!Block(f.mod, callsInner));
+
+		// Written at the root: not `ns`'s to touch, though `ns` declared the
+		// body. Asked of the filter rather than of the pass, because the pass no
+		// longer has an opinion - the walk is what declines to hand an entity
+		// over, and these two calls are the two answers it gives.
+		assert(ownedByCurrentLowering(f.mod, callsInner));
+		assert(!ownedByCurrentLowering(f.mod, rootCallsInner));
 	}
 
-	// Outside any lowering the same call inlines - the restriction is the
+	// Outside any lowering everything is owned - the restriction is the
 	// schedule's, not the pass's.
-	assert(inlineFunctions(f.mod, callsOuter));
-	assert(!hasComponent!Call(f.mod, callsOuter));
+	assert(ownedByCurrentLowering(f.mod, rootCallsInner));
+	assert(inlineFunctions(f.mod, rootCallsInner));
+	assert(!hasComponent!Call(f.mod, rootCallsInner));
 
 	assert(!diagnostics().hasErrors());
 	diagnostics().clear();

@@ -19,6 +19,19 @@ bool stripFreestandingBlocks(ref Module mod, EntityId subtree) @trusted {
 	if (!hasComponent!Block(mod, subtree)) return true;
 	if (!blockIsFreestanding(mod, subtree)) return true;
 
+	// Not one declared inside a function body. Unlinking leaves the block in
+	// the store and reachable through whatever named it, which is all a block
+	// at module scope needs - `opt.inlineFunctions` never copies module scope.
+	// A body is copied, though, once per instantiation, and a block it declares
+	// is part of it: `std.add`'s dispatch arms name its parameters, so arms
+	// shared with the declaration name the *declaration's* parameters, which no
+	// call site ever binds. Nothing is emitted by leaving it: `byte_emiter`
+	// skips a `compiler.emit` inside a function body. Once the body has been
+	// inlined the copies are at module scope like any other quoted block, and a
+	// schedule that runs this pass again after `comptimeEvaluate` has consumed
+	// them takes them out then - which is what `standard.mizu.doir` does.
+	if (findFunctionInsideOf(mod, subtree)) return true;
+
 	immutable parent = findParent(mod, subtree);
 	if (parent == invalidEntity) return true;
 
@@ -53,6 +66,37 @@ unittest { // ...and an exported one is kept, because something outside may use 
 	scope(exit) freeModule(r.mod);
 	assert(r.ok);
 	assert(find(r.mod, r.root, "blk") != invalidEntity);
+}
+
+unittest {
+	// ...and so is one declared inside a function body, which is not dead code
+	// at all: it is part of the body, and a body is copied once per
+	// instantiation. `std.add`'s dispatch arms are exactly this - quoted blocks
+	// naming the function's parameters - and arms shared with the declaration
+	// name parameters no call site binds.
+	auto r = compile(
+		"ft : type = () -> compiler.byte\n"
+		~ "f : ft = {\n"
+		~ "\tblk : block = {\n"
+		~ "\t\t%1 : compiler.byte = 6\n"
+		~ "\t}\n"
+		~ "\t%2 : compiler.byte = 7\n"
+		~ "\t_ : compiler.byte = compiler.indicate_return(compiler.byte)\n"
+		~ "}\n");
+	scope(exit) freeModule(r.mod);
+	assert(r.ok);
+
+	immutable f = find(r.mod, r.root, "f");
+	assert(f != invalidEntity);
+	assert(find(r.mod, f, "blk") != invalidEntity);
+
+	bool listed = false;
+	auto body_ = &getComponent!Block(r.mod, f);
+	foreach (i; 0 .. daLength(body_.related))
+		if (hasComponent!Name(r.mod, body_.related[i])
+			&& getComponent!Name(r.mod, body_.related[i]).value.view == "blk")
+			listed = true;
+	assert(listed);
 }
 
 unittest { // a freestanding block whose parent is gone has nothing to unlink

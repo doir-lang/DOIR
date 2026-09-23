@@ -222,14 +222,29 @@ bool canonicalizeSchedule(ref Module mod, EntityId root, ref BlockBuilder* build
 		// a level per round. `deduceTypes` is the monotone half, deliberately;
 		// see its module comment and @comptime's note on the other one.
 		fixedPoint(sequential(
+			// Three things in one knot, not two. `bubbleComptime` is here as
+			// well as above because evaluating a call can *create* a type -
+			// `mizu.doir.type_base` and the M-Ctor instructions turn their own
+			// call into one - and a later call taking that type is comptime by
+			// C-Type only once the type exists. Run once up front, it settled
+			// before any of those types did.
+			depthFirst!bubbleComptime(),
 			depthFirst!deduceTypes(),
 			depthFirst!comptimeEvaluateVisitor(),
 		)),
 		breadthFirst!stripFreestandingBlocks(),
-		// Pass one of `compiler.override_fallback_schedule`, and it has to be
-		// here: `comptimeEvaluateVisitor` below lowers with whatever this
-		// settles on, so the answer has to be settled before the first comptime
-		// call is evaluated rather than alongside them.
+		// Pass one of `compiler.override_fallback_schedule`.
+		//
+		// Its own comment used to claim this had to be ahead of the comptime
+		// fixpoint, since `comptimeEvaluateVisitor` lowers every block it
+		// evaluates with whatever this settles on - and it is right that running
+		// it here means every comptime evaluation in the module is lowered by
+		// the compiler's built in backend rather than the one the source asked
+		// for. Moving it up is not the fix though: the throwaway block a
+		// comptime call is assembled into is hand pinned to registers 1, 2, 3,
+		// and a backend schedule that reallocates registers hands the VM a
+		// program that decodes to nothing. Whatever settles this has to leave
+		// that block alone.
 		depthFirst!findFallbackScheduleOverride(),
 		// Pass two: lower, with the module's own schedule if it named one.
 		&moduleSystem!runFallbackSchedule,
@@ -291,11 +306,13 @@ version (unittest) {
 }
 
 unittest {
-	// `test.doir` is the repository's own end-to-end program: it
-	// `early_include`s the whole Mizu instruction binding file, declares a
-	// quoted block, runs it on the comptime VM through `mizu.doir.execute_if`,
-	// and pins registers on the result. Compiling it drives every stage of the
-	// pipeline over real input - which is the only way most of `opt/mizu` and
+	// `test.doir` is the repository's own end-to-end program, and the only
+	// thing that compiles `standard.mizu.doir` at a *call site*: it
+	// `early_include`s the whole Mizu instruction binding file and the standard
+	// interface on top of it, then runs a quoted block on the comptime VM and
+	// calls `std.add`, `std.subtract`, `std.if`, `std.while` and a hand written
+	// `find_label`/`jump_to`. Compiling it drives every stage of the pipeline
+	// over real input - which is the only way most of `opt/mizu` and
 	// `sema.processEarlyInclude` are reached at all.
 	diagnostics().clear();
 	auto mod = createModule();
@@ -312,16 +329,28 @@ unittest {
 	assert(!diagnostics().hasErrors());
 	assert(root == newRoot);
 
-	// `mizu.doir` ends in a `compiler.override_fallback_schedule`, so the module
-	// was lowered by the schedule written in that file rather than by
-	// `mizuSchedule`. The two currently list the same passes, which is exactly
-	// why this is worth asserting: a fallback would look identical in the
-	// output.
+	// Both included files end in a `compiler.override_fallback_schedule`, and
+	// the bottom-most one wins - so the module was lowered by the schedule
+	// `standard.mizu.doir` nominates rather than by `mizuSchedule`. That
+	// schedule differs from `mizu.doir`'s, which is what the dispatch below
+	// needs: `inlineFunctions` has to run before `comptimeEvaluateVisitor` or
+	// the chain the arms are chosen by is gone by the time anything can read
+	// it.
 	assert(hasFallbackScheduleOverride());
 
-	// The block the program executes at compile time was inlined into the call
-	// that ran it, so its body is present in the output rather than the call.
-	assert(resolveLookupName(mod, internIn(mod, "e"), root) != invalidEntity);
+	// Every construct the file calls is an inlined function or a splice, so
+	// each one's result names a block in the output rather than a call:
+	// `ran` the block the comptime VM ran, `c` and `e` the surviving arm of the
+	// `std.add`/`std.subtract` dispatch, `r_if` and `r_while` the branches
+	// `std.if` and `std.while` emitted around the arms they were handed, and
+	// `after` the label the jump above it was resolved against.
+	static immutable names = ["ran", "c", "e", "r_if", "r_while", "after"];
+	foreach (name; names) {
+		immutable e = resolveLookupName(mod, internIn(mod, name), root);
+		assert(e != invalidEntity);
+		assert(hasComponent!Block(mod, e));
+		assert(!hasComponent!Call(mod, e));
+	}
 	diagnostics().clear();
 }
 
@@ -397,6 +426,43 @@ unittest {
 		elaborated = true;
 	}
 	assert(elaborated);
+	diagnostics().clear();
+}
+
+unittest {
+	// ...and `test_standard_mizu.doir`, which is `standard.mizu.doir` - the
+	// same interface implemented against `mizu.doir`. Where `test_standard.doir`
+	// checks that the interface *parses and deduces*, this checks that the
+	// reflection instructions behind it actually run - `std.byte_pointer` is
+	// built by one.
+	diagnostics().clear();
+	auto mod = createModule();
+	scope(exit) freeModule(mod);
+
+	auto builders = createBuilderStack(mod);
+	scope(exit) fp.dynarray.free(builders);
+
+	assert(parseFile(mod, builders, "test_standard_mizu.doir"));
+	assert(!diagnostics().hasErrors());
+
+	immutable root = runPipeline(mod, builders);
+	assert(root != invalidEntity);
+	assert(!diagnostics().hasErrors());
+
+	// `u8 : alias = mizu.u64`. A Mizu register is 64 bits and there is nothing
+	// narrower for it to be, so the name is a rename rather than a type of the
+	// width it claims - see the file's own note.
+	immutable u8 = resolveAlias(mod, resolveLookupName(mod, internIn(mod, "u8"), root));
+	assert(u8 != invalidEntity);
+	assert(hasComponent!TypeDefinition(mod, u8));
+	assert(getComponent!TypeDefinition(mod, u8).size == 64);
+
+	// M-Ctor, through two aliases: `std.types.pointer` names the instruction
+	// and `std.byte` names `u8`.
+	immutable bytePointer = resolveLookupName(mod, internIn(mod, "std.byte_pointer"), root);
+	assert(bytePointer != invalidEntity);
+	assert(hasComponent!Pointer(mod, bytePointer));
+	assert(resolveAlias(mod, getComponent!Pointer(mod, bytePointer).related[0]) == u8);
 	diagnostics().clear();
 }
 

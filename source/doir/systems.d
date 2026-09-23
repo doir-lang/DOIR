@@ -297,11 +297,20 @@ private EntityId lexicalOwnerOf(ref Module mod, EntityId e) {
 /// Which scheduled block `e` belongs to, or `invalidEntity` when none does and
 /// the module's fallback schedule has it.
 ///
-/// A call belongs to whoever declared what it calls, and only falls back on
-/// where it was written when the callee is not somebody's. The callee wins
-/// deliberately: a call to `ns.f()` written inside another scheduled block is
-/// still a use of `ns`'s declaration, and `ns` is the one that said how its
-/// declarations are lowered.
+/// Where it is *written*, and nothing else. A call used to belong to whoever
+/// declared what it calls, on the reasoning that a call to `ns.f()` is a use of
+/// `ns`'s declaration and `ns` said how its declarations are lowered. That reads
+/// well and does not survive a second schedule: `mizu.doir` claims its own
+/// block, so every `mizu.*` call in a module that nominated a schedule of its
+/// own belonged to mizu - and mizu's schedule never visits the block those calls
+/// are written in, so they were lowered by nobody at all. `standard.mizu.doir`'s
+/// `if` came out with its `find_label`, `branch_to` and `execute` untouched and
+/// its binary empty.
+///
+/// Lowering edits the *site*: it puts bytes where the call stands. So the block
+/// the call stands in is the one whose schedule decides, and a callee declared
+/// elsewhere is read, exactly as any declaration is read from wherever it lives.
+/// `opt.inlineFunctions` asks the same question the same way.
 ///
 /// Free until something claims. Every walk in the compiler asks this about
 /// every entity it reaches, so a module with no `compiler.run_schedule` in it
@@ -310,14 +319,6 @@ private EntityId lexicalOwnerOf(ref Module mod, EntityId e) {
 /// is empty.
 EntityId ownerOf(ref Module mod, EntityId e) @trusted {
 	if (empty(getStorage!ScheduleClaim(mod.ctx))) return invalidEntity;
-
-	if (hasComponent!Call(mod, e)) {
-		immutable callee = resolveAlias(mod, getComponent!Call(mod, e).related[0]);
-		if (callee != invalidEntity && callee != e) {
-			immutable owner = lexicalOwnerOf(mod, callee);
-			if (owner != invalidEntity) return owner;
-		}
-	}
 	return lexicalOwnerOf(mod, e);
 }
 

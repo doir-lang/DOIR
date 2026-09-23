@@ -19,23 +19,54 @@ import mizu.portable_format : fromPortable;
 import doir.module_;
 import doir.diagnostics : panic;
 import doir.pipeline.canon.sort : newRoot, sortSuspended;
+import doir.pipeline.opt.allocate_registers : beginRegisterAllocation, endRegisterAllocation;
 import doir.string_helpers : InternedString, wildcardName;
 import doir.systems : SystemFunction, fixedPointChanged;
 
 @nogc nothrow:
 
 
+/// Set while one call is being assembled, lowered and run, so that the pass
+/// does not re-enter itself through the schedule it lowers with. A plain flag
+/// rather than a depth count: there is nothing a nested evaluation could
+/// usefully do, so the only question is in or out.
+private __gshared bool evaluating;
+
 /// True if `subtree` already has a value the compiler can read directly.
+///
+/// Through aliases (A-Transparent): `byte : alias = u8` is as available as
+/// `u8`, and an argument spelled either way reaches the VM as the same entity
+/// id. And a `TypeDefinition` counts on its own - a type built by an
+/// instruction rather than declared `: type` has no `TypeOf` left to read.
 bool comptimeValueAvailable(ref Module mod, EntityId subtree) {
+	immutable compiler = resolveCached(mod, "compiler", 1, true);
 	immutable type = resolveCached(mod, "type", 1, true);
 	immutable blockType = resolveCached(mod, "block", 1, true);
+	immutable e = resolveAlias(mod, subtree);
 
-	return hasComponent!Number(mod, subtree) || hasComponent!DString(mod, subtree)
-		|| hasComponent!ComptimeNumber(mod, subtree) || hasComponent!ComptimeString(mod, subtree)
-		|| (hasComponent!TypeOf(mod, subtree)
-			&& (getComponent!TypeOf(mod, subtree).related[0] == type
-				|| getComponent!TypeOf(mod, subtree).related[0] == blockType));
+	return hasComponent!Number(mod, e) || hasComponent!DString(mod, e)
+		|| hasComponent!ComptimeNumber(mod, e) || hasComponent!ComptimeString(mod, e)
+		|| hasComponent!TypeDefinition(mod, e)
+		|| (hasComponent!TypeOf(mod, e)
+			&& (getComponent!TypeOf(mod, e).related[0] == type
+				|| getComponent!TypeOf(mod, e).related[0] == blockType));
 }
+
+/// The `mizu.doir` names the throwaway program is assembled out of. Every one
+/// of them is `invalidEntity` in a module that never early_include'd the
+/// backend, and building the program anyway emitted bytes that decode to
+/// nothing - which handed the VM a wild address, a segfault for any comptime
+/// call in a module with no backend (a zero argument call is vacuously
+/// comptime, so this is easy to reach).
+private static immutable string[7] requiredForEvaluation = [
+	"mizu",
+	"mizu.u64",
+	"mizu.halt",
+	"mizu.load_immediate",
+	"mizu.load_upper_immediate",
+	"mizu.doir.set_module",
+	"mizu.doir.attach_comptime_number_i64",
+];
 
 /// The instructions `comptimeEvaluate` must not run.
 ///
@@ -67,32 +98,155 @@ private static immutable string[9] neverComptime = [
 /// any libECRS system, so the driver can hand over whatever it composed out of
 /// `doir.systems`' walkers (see `doir.systems.moduleSystem` for turning one
 /// into the function pointer this takes).
-bool comptimeEvaluate(ref Module mod, EntityId subtree, SystemFunction mizuSchedule) @trusted {
-	if (!hasComponent!Call(mod, subtree)) return true;
-	if (!flagsSet(mod, subtree, Flags.Comptime)) return true;
-	if (comptimeValueAvailable(mod, subtree)) return true;
+/// Everything `comptimeEvaluationPending` asks that is not about the
+/// arguments: the flags, the position, and the callee.
+private bool evaluableCall(ref Module mod, EntityId subtree) @trusted {
+	if (!hasComponent!Call(mod, subtree)) return false;
+	if (!flagsSet(mod, subtree, Flags.Comptime)) return false;
 
-	if (hasComponent!FunctionInputs(mod, subtree)) {
-		auto inputs = &getComponent!FunctionInputs(mod, subtree);
-		foreach (i; 0 .. daLength(inputs.related))
-			if (!comptimeValueAvailable(mod, inputs.related[i])) return true;
-	}
+	// Not while another call is being evaluated. Lowering the throwaway block
+	// runs the fallback schedule, which now holds this pass too, and the block
+	// holds a comptime call by construction - so without this the first
+	// evaluation would recurse into itself forever.
+	if (evaluating) return false;
 
-	immutable compiler = resolveCached(mod, "compiler", 1, true);
-	immutable assembler = resolveCached(mod, "compiler.assembler", 1, true);
+	// Not inside a function that has not been instantiated. A comptime call in
+	// a body reads the body's *parameters*, which have no value until a call
+	// site binds them - `std.execute(t)` on a `block` parameter used to abort in
+	// `inlineInto`, since a parameter has no `Block` to splice.
+	// `opt.inlineFunctions` substitutes the arguments in, and this pass runs
+	// after it (see `mizuSchedule`), which is when such a call can be run.
+	// `opt.computeShiftRight` declines the same way and for the same reason.
+	if (findFunctionInsideOf(mod, subtree)) return false;
+
 	immutable calledFunction = resolveAlias(mod, getComponent!Call(mod, subtree).related[0]);
 	// Nothing to run if the call has no target. `invalidEntity` is 0, so
 	// leaving this open would also let an unresolved callee compare equal to
 	// any `mizu.*` name this module never resolved.
-	if (calledFunction == invalidEntity) return true;
+	if (calledFunction == invalidEntity) return false;
+	// Nor is there anything to run when the callee was only declared.
+	// `standard.doir` is almost entirely such declarations.
+	if (flagsSet(mod, calledFunction, Flags.Valueless)) return false;
+
 	immutable calleeParent = findParent(mod, calledFunction);
 	// Compiler functions have their own pass and shouldn't really be used
 	// outside of the mizu backend.
-	if (calleeParent == compiler || calleeParent == assembler) return true;
+	if (calleeParent == resolveCached(mod, "compiler", 1, true)
+		|| calleeParent == resolveCached(mod, "compiler.assembler", 1, true))
+		return false;
 
 	foreach (name; neverComptime)
-		if (calledFunction == resolveCached(mod, name, 1, true)) return true;
+		if (calledFunction == resolveCached(mod, name, 1, true)) return false;
 
+	// A callee whose type says it emits rather than computes. `sema.bubbleComptime`
+	// clears the mark for the same reason, and asking again here is not belt and
+	// braces: the two passes are in one `fixedPoint`, and within a round
+	// `bubbleComptime` walks the whole module before this one does. A modifier
+	// call that sets the flag - `std.function.never_comptime(if_t)` - is folded by
+	// *this* walk, so in the round that sets it `bubbleComptime` has already been
+	// past with the flag still absent, and the call it marked comptime is standing
+	// right there. `std.if` was evaluated exactly once that way, which was once too
+	// many: the throwaway block is assembled out of the branch instructions `if`
+	// exists to emit.
+	if (hasComponent!TypeOf(mod, calledFunction)
+		&& flagsSet(mod, resolveAlias(mod, getComponent!TypeOf(mod, calledFunction).related[0]),
+			Flags.NoComptime))
+		return false;
+
+	// And nothing is pending in a module with no mizu backend loaded: every name
+	// the throwaway program is assembled out of is `invalidEntity` there, so
+	// there is no program to run. `comptimeEvaluate` checked this on its own and
+	// declined, which was too late once `opt.inlineFunctions` started asking -
+	// it left a call that this pass was never going to fold and that pass had
+	// stood down for.
+	foreach (name; requiredForEvaluation)
+		if (resolveCached(mod, name, 1, true) == invalidEntity) return false;
+
+	return true;
+}
+
+/// Whether `subtree` is the evaluator's - a comptime call it is entitled to
+/// run - whether or not it can run it yet, and whether or not it already has.
+///
+/// Public because `opt.inlineFunctions` asks, and this rather than
+/// `comptimeEvaluationPending` is the question that pass has. A call the
+/// evaluator owns must not be inlined out from under it: inlining replaces the
+/// call with its body, and the body of a `mizu.doir` instruction is the *bytes
+/// of that instruction*, which in the emitted program would mean editing the
+/// entity store at runtime.
+///
+/// The two questions came apart over a chain. One `depthFirst` walk of the
+/// evaluator folds a whole chain, because post-order reaches an argument
+/// before the call that reads it - but the inliner runs before any of that, so
+/// when it asks, every link past the first still has an unfolded call for an
+/// argument. Asking `comptimeEvaluationPending` there answered "not runnable,
+/// inline it" and cost the chain every link but the innermost: `std.add`'s
+/// dispatch reads its type's tag, compares it, and only then has a condition
+/// to pick a block with, and it was the comparison that went. So an argument
+/// that is itself a claimed call counts as one the evaluator will supply.
+///
+/// Only such an argument, which is why this is not simply
+/// `comptimeEvaluationPending` without its argument check. `mizu.emit_register`
+/// is a comptime call whose argument is a `compiler.assembler.return_register`
+/// - folded by `opt.computeCompilerNamespace`, never by the evaluator, which
+/// declines the whole `compiler` namespace - and standing down for that one
+/// left every instruction in `mizu.doir` two bytes short of its operand.
+///
+/// An already-folded call is still claimed. The evaluator leaves the `Call`
+/// where it was and hangs the answer off it as a `ComptimeNumber`, so nothing
+/// else marks it done - and a schedule that runs the inliner again afterwards
+/// (`standard.mizu.doir`'s does, for `materializeLabels`) would otherwise
+/// replace a call whose value is known with the instruction that computes it.
+bool comptimeEvaluationClaims(ref Module mod, EntityId subtree, size_t depth = 8) @trusted {
+	if (!evaluableCall(mod, subtree)) return false;
+
+	if (hasComponent!FunctionInputs(mod, subtree)) {
+		auto inputs = &getComponent!FunctionInputs(mod, subtree);
+		foreach (i; 0 .. daLength(inputs.related)) {
+			immutable e = resolveAlias(mod, inputs.related[i]);
+			if (comptimeValueAvailable(mod, e)) continue;
+			// Bounded rather than exhaustive: arguments form a DAG (SSA), so
+			// this terminates either way, and a chain longer than this asks
+			// the inliner to stand down for a fold several rounds out, which
+			// it has no schedule to wait for.
+			if (depth > 0 && comptimeEvaluationClaims(mod, e, depth - 1)) continue;
+			return false;
+		}
+	}
+
+	return true;
+}
+
+/// Whether this pass still owes `subtree` an answer: a call it owns, has not
+/// run yet, and has every argument for *now*.
+bool comptimeEvaluationPending(ref Module mod, EntityId subtree) @trusted {
+	if (!evaluableCall(mod, subtree)) return false;
+
+	// Already folded. Not `comptimeValueAvailable`: its `TypeOf == type` clause
+	// is about *arguments* - a type entity passed to a call is a value the
+	// compiler can read - and `subtree` here is the call. Asking it of the call
+	// as well made every declaration whose result is a type unevaluable, which
+	// is every modifier there is: M-Flag's whole signature is
+	// `(in: type) -> type`.
+	if (hasComponent!Number(mod, subtree) || hasComponent!DString(mod, subtree)
+		|| hasComponent!ComptimeNumber(mod, subtree) || hasComponent!ComptimeString(mod, subtree))
+		return false;
+
+	if (hasComponent!FunctionInputs(mod, subtree)) {
+		auto inputs = &getComponent!FunctionInputs(mod, subtree);
+		foreach (i; 0 .. daLength(inputs.related))
+			if (!comptimeValueAvailable(mod, inputs.related[i])) return false;
+	}
+
+	return true;
+}
+
+bool comptimeEvaluate(ref Module mod, EntityId subtree, SystemFunction mizuSchedule) @trusted {
+	if (!comptimeEvaluationPending(mod, subtree)) return true;
+
+	immutable calledFunction = resolveAlias(mod, getComponent!Call(mod, subtree).related[0]);
+
+	immutable compiler = resolveCached(mod, "compiler", 1, true);
 	immutable type = resolveCached(mod, "type", 1, true);
 	immutable blockType = resolveCached(mod, "block", 1, true);
 	immutable voidType = resolveCached(mod, "void", 1, true);
@@ -197,21 +351,34 @@ bool comptimeEvaluate(ref Module mod, EntityId subtree, SystemFunction mizuSched
 				name = internIn(mod, buffer[0 .. n]);
 			}
 
+			size_t value;
 			if (hasComponent!Number(mod, e))
-				e = pushNumber(comptimeBlock, name, mizuU64, cast(size_t) getComponent!Number(mod, e).value);
+				value = cast(size_t) getComponent!Number(mod, e).value;
 			else if (hasComponent!ComptimeNumber(mod, e))
-				e = pushNumber(comptimeBlock, name, mizuU64, cast(size_t) getComponent!ComptimeNumber(mod, e).value);
+				value = cast(size_t) getComponent!ComptimeNumber(mod, e).value;
 			else if (hasComponent!DString(mod, e))
-				e = pushNumber(comptimeBlock, name, mizuU64, cast(size_t) getComponent!DString(mod, e).value.view.ptr);
+				value = cast(size_t) getComponent!DString(mod, e).value.view.ptr;
 			else if (hasComponent!ComptimeString(mod, e))
-				e = pushNumber(comptimeBlock, name, mizuU64, cast(size_t) getComponent!ComptimeString(mod, e).value.view.ptr);
-			else if (hasComponent!TypeOf(mod, e)
-				&& (getComponent!TypeOf(mod, e).related[0] == blockType
-					|| getComponent!TypeOf(mod, e).related[0] == type))
-				e = pushNumber(comptimeBlock, name, mizuU64, resolveAlias(mod, e));
+				value = cast(size_t) getComponent!ComptimeString(mod, e).value.view.ptr;
+			// A type is passed as its entity id, which is what makes
+			// `mizu.doir`'s reflection instructions work on a plain register.
+			// `TypeDefinition` as well as `TypeOf == type`: an instruction that
+			// builds a type leaves the definition and no declared type.
+			else if (hasComponent!TypeDefinition(mod, e)
+				|| (hasComponent!TypeOf(mod, e)
+					&& (getComponent!TypeOf(mod, e).related[0] == blockType
+						|| getComponent!TypeOf(mod, e).related[0] == type)))
+				value = resolveAlias(mod, e);
 			else
 				panic("Comptime evaluation of call with non-comptime parameter");
 
+			// Low half first, then the upper one into the same register, the
+			// way the `Module*` above is loaded. A Mizu immediate is 32 bits
+			// (`opt.mizu.materializeImmediates` casts to `uint`), and a single
+			// `load_immediate` per argument silently truncated every value that
+			// did not fit - which is every *pointer*, so a string argument
+			// reached an instruction as a wild address.
+			e = pushNumber(comptimeBlock, name, mizuU64, cast(uint) value);
 			{
 				EntityId[2] inputs = [mizuU64, e];
 				pushCall(comptimeBlock, InternedString("_"), assemblerRegister, mizuLoadImmediate, inputs[]);
@@ -220,6 +387,23 @@ bool comptimeEvaluate(ref Module mod, EntityId subtree, SystemFunction mizuSched
 			{
 				EntityId[3] inputs = [mizuU64, e, r];
 				pushCall(comptimeBlock, InternedString("_"), assemblerRegister, assemblerPinRegister, inputs[]);
+			}
+			if (value >> 32) {
+				InternedString upperName;
+				{
+					char[24] buffer;
+					immutable n = snprintf(buffer.ptr, buffer.length, "a%zu_upper", i);
+					upperName = internIn(mod, buffer[0 .. n]);
+				}
+				immutable upper = pushNumber(comptimeBlock, upperName, mizuU64, cast(uint)(value >> 32));
+				{
+					EntityId[3] inputs = [mizuU64, upper, r];
+					pushCall(comptimeBlock, InternedString("_"), assemblerRegister, assemblerPinRegister, inputs[]);
+				}
+				{
+					EntityId[2] inputs = [mizuU64, upper];
+					pushCall(comptimeBlock, InternedString("_"), assemblerRegister, mizuLoadUpperImmediate, inputs[]);
+				}
 			}
 			fp.dynarray.pushBack(arguments, e);
 		}
@@ -248,6 +432,9 @@ bool comptimeEvaluate(ref Module mod, EntityId subtree, SystemFunction mizuSched
 	}
 
 	// printf("Comptime evaluating: %u\n", subtree);
+
+	evaluating = true;
+	scope(exit) evaluating = false;
 
 	immutable backup = newRoot;
 	newRoot = comptimeBlock.block;
@@ -280,6 +467,33 @@ bool comptimeEvaluate(ref Module mod, EntityId subtree, SystemFunction mizuSched
 		if (count == 0) return true;
 		setupEnvironment(portable.environment, portable.program, portable.program + count);
 		startFromEnvironment(portable.program, portable.environment);
+	}
+
+	// An instruction may have spliced source into the call it replaced rather
+	// than handing back a number - `mizu.doir.execute` is the whole reason this
+	// pass runs inside the lowering schedule at all. What it splices is a copy
+	// of what the program *wrote*, so it has had none of the lowering the code
+	// around it has: no registers, no materialized immediates, its own calls
+	// still calls. Lower it the same way the block above was, which is also the
+	// same way the module around it is (C-Lower).
+	//
+	// `evaluating` is still set, so this walk will not try to evaluate anything
+	// it finds. That is the intent: the spliced code is the program's, to be
+	// emitted, not more compile time work to do.
+	if (hasComponent!Block(mod, subtree)) {
+		immutable splicedBackup = newRoot;
+		newRoot = subtree;
+		sortSuspended = true;
+		// The walk starts inside the module rather than at its root, so it never
+		// meets the `begin_register_allocation` call that would otherwise turn
+		// allocation on - and spliced code needs registers exactly like the code
+		// around it.
+		immutable wasAllocating = beginRegisterAllocation();
+		immutable ok = mizuSchedule(mod.ctx);
+		endRegisterAllocation(wasAllocating);
+		sortSuspended = false;
+		newRoot = splicedBackup;
+		if (!ok) return false;
 	}
 
 	return true;
@@ -401,6 +615,56 @@ unittest { // calls the evaluator has nothing to do with are left alone
 	addComponent!Call(f.mod, dangling).related[0] = invalidEntity;
 	getOrAddComponent!Flags(f.mod, dangling).flags |= Flags.Comptime;
 	assert(comptimeEvaluate(f.mod, dangling, &moduleSystem!mizuSchedule));
+
+	assert(!diagnostics().hasErrors());
+	diagnostics().clear();
+}
+
+unittest {
+	// `comptimeEvaluationClaims` is the weaker question, and it is
+	// `opt.inlineFunctions`' one: a chain of comptime calls is folded innermost
+	// first, so when the inliner asks, every link past the first still has an
+	// unfolded call for an argument. Answering with `comptimeEvaluationPending`
+	// left the inliner free to replace the outer link with the bytes of the
+	// instruction that computes it, which is what cost `std.add`'s dispatch its
+	// comparison.
+	auto f = withMizu("claims.doir");
+	scope(exit) freeModule(f.mod);
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.root);
+	immutable n = pushNumber(block, internIn(f.mod, "n"), byte_, 1);
+
+	EntityId[2] leaf = [n, n];
+	immutable inner = pushComptimeAdd(f, leaf[]);
+	assert(comptimeEvaluationPending(f.mod, inner));
+	assert(comptimeEvaluationClaims(f.mod, inner));
+
+	// The outer call cannot run - `inner` has no value yet - but it is still
+	// the evaluator's, because `inner` is.
+	EntityId[2] chained = [inner, inner];
+	immutable outer = pushComptimeAdd(f, chained[]);
+	assert(!comptimeEvaluationPending(f.mod, outer));
+	assert(comptimeEvaluationClaims(f.mod, outer));
+
+	// Not every unfolded argument, though. A `compiler.assembler.*` call is
+	// `opt.computeCompilerNamespace`'s to fold and never the evaluator's, so a
+	// call reading one has to be inlined rather than waited for - which is
+	// every instruction encoder in `mizu.doir`, each of them reading a
+	// `return_register`.
+	immutable returnRegister = resolveLookupName(f.mod,
+		internIn(f.mod, "compiler.assembler.return_register"), f.root);
+	immutable registerType = resolveLookupName(f.mod,
+		internIn(f.mod, "compiler.assembler.register"), f.root);
+	EntityId[1] typeArg = [resolveLookupName(f.mod, internIn(f.mod, "mizu.u64"), f.root)];
+	immutable regret = pushCall(block, internIn(f.mod, "regret"), registerType,
+		returnRegister, typeArg[]);
+	getOrAddComponent!Flags(f.mod, regret).flags |= Flags.Comptime;
+
+	EntityId[2] viaRegister = [regret, regret];
+	immutable reader = pushComptimeAdd(f, viaRegister[]);
+	assert(!comptimeEvaluationPending(f.mod, reader));
+	assert(!comptimeEvaluationClaims(f.mod, reader));
 
 	assert(!diagnostics().hasErrors());
 	diagnostics().clear();

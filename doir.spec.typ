@@ -1132,7 +1132,7 @@ reflection: nothing survives into the emitted binary.
   the discipline.
 ]
 
-== Control flow
+== Control flow <control-flow>
 
 A `block` is a comptime value holding unexecuted code, and by WF-Arg it must be
 named before it can be passed.
@@ -1301,6 +1301,33 @@ rest are outstanding.
      `tail f(x)` was indistinguishable from `flatten f(x)`, printed as both, and
      a block carrying `Flatten` tripped the "no `Tail` on a value" check. `Tail`
      has its own bit.],
+    [`opt/inline_functions.d`, `opt/mizu/comptime_evaluate.d`],
+    [The inliner asked whether the evaluator could *run* a call where it meant
+     whether the call was the evaluator's. It runs first, so nothing has been
+     folded when it asks, and a comptime chain lost every link but the
+     innermost: each one's argument was still an unfolded call, so each was
+     replaced by the bytes of the instruction that computes it. A dispatch on a
+     type -- read the tag, compare it, pick a block -- is three links, and only
+     the read survived. `comptimeEvaluationClaims` is the question the inliner
+     has: the same flags, position and callee checks, with an argument that is
+     itself a claimed call counting as one the evaluator will supply. Not
+     simply the check without its arguments: `mizu.emit_register` takes a
+     `compiler.assembler.return_register`, which `computeCompilerNamespace`
+     folds and the evaluator never will, and standing down for it left every
+     instruction in `mizu.doir` two bytes short of its operand. An
+     already-folded call counts as claimed too, since the evaluator leaves the
+     `Call` in place and hangs the answer off it.],
+    [`canon/strip_freestanding_blocks.d`],
+    [A quoted block is unlinked from its parent so that it is not emitted where
+     it stands. One declared *inside a function body* was unlinked from that
+     body, so a copy of the body -- one per instantiation, from
+     `monomorphizeFunctions` and `inlineFunctions` -- shared the original's
+     blocks, and a block naming the function's parameters named the parameters
+     of the declaration no call site ever binds. Such a block is left in place;
+     `byte_emiter` skips a `compiler.emit` inside a function body anyway, and
+     once the body is inlined the copies are ordinary module-scope quoted
+     blocks that a later run of the pass takes out. `standard.mizu.doir`'s
+     schedule runs it once more for exactly that.],
     table.hline(stroke: 0.6pt + hair),
   ),
   caption: [Compiler fixes, each with a regression test.],
@@ -1404,6 +1431,45 @@ rest are outstanding.
 / `move` does not yet invalidate: normative per V-Copy / V-Move, unenforceable
   until there is a liveness analysis, and unobservable until a type is not POD.
   The two arrive together.
+
+/ A type the VM builds goes stale (`opt.mizu.comptimeEvaluate`, `canon.sort`):
+  it cannot be asked about afterwards. Every evaluation writes its
+  answer back as a `ComptimeNumber` on the call, and the answer an M-Ctor
+  instruction gives is an *entity id*. The next sort renumbers every entity,
+  and the argument loader prefers a `ComptimeNumber` to the live entity -- so a
+  later query about that type asks about whatever now lives at the id it used
+  to have. `compiler.base_type` is unaffected, being folded by
+  `opt.foldBaseTypes` rather than by the VM, which is why
+  `standard.mizu.doir` declares its numeric types with that and not with
+  `mizu.doir.type_base`. Either the write-back skips a result that is an
+  entity, or the sort rewrites the numbers that are.
+
+/ The numeric kinds are attributes rather than types (`standard.mizu.doir`):
+  `f64` and `i64` are `compiler.base_type(64, 64)` carrying an `attribute_id`,
+  and that tag is what every arithmetic and comparison operation dispatches on.
+  M-Unique is what the names deserve, and is what would stop S-Struct silently
+  converting an `f64` to a `u64` -- but a unique type stops agreeing with
+  `mizu.u64`, every instruction in `mizu.doir` takes `mizu.u64`, and the type
+  would then have nothing it could be passed to. It arrives with the implicit
+  conversion above, not before.
+
+/ `while` does not have the type given above (@control-flow):
+  in `standard.mizu.doir` the result should be `pointer(typeof(body))`, null
+  when the loop ran zero times, and the implementation hands back the body's
+  register -- so a loop that never ran is indistinguishable from one whose last
+  iteration yielded zero. Building the pointer needs an allocation on a path
+  that by construction executes no instructions. The signature is the deeper
+  problem, and it is `standard.doir`'s rather than the backend's: `condition`
+  is a value, so a loop can only re-test it if the body overwrites the register
+  it was computed into, which is what the implementation pins it for. A
+  `block`, as `if` takes for its arms, is the fix.
+
+/ `defer` has no way to reach its caller's exit points (@control-flow):
+  `execute` splices a block where the call stands, which is what `if` and
+  `while` are built out of, and `defer` has to splice after the enclosing
+  block's last statement and ahead of every `return` and `yield` above it. No
+  instruction exposes the calling block, so this is the one construct in
+  @control-flow that cannot be written in the language it is part of.
 
 #v(1.5em)
 #line(length: 100%, stroke: 0.7pt + hair)

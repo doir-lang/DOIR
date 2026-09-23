@@ -105,3 +105,39 @@ Mizu dependency is bumped:
 dub build --compiler=ldc2 --config=mizu-gen && ./bin/mizu-gen > mizu.doir
 ```
 
+## Profiling
+
+```sh
+DFLAGS="--frame-pointer=all" dub build --config=doir --compiler=ldc2 --build=release-debug --force
+perf record --call-graph fp -e cpu_core/cycles/ -- ./bin/doir test.doir # the call to profile
+perf script > perf.script
+~/Dev/Packages/FlameGraph/stackcollapse-perf.pl perf.script > perf.folded
+~/Dev/Packages/FlameGraph/flamegraph.pl perf.folded > perf.svg
+```
+
+`--frame-pointer=all` is what makes the profile readable, and it is not
+optional: `--call-graph dwarf` against a build without it unwound 0.1% of
+cycles to a real stack, left 65% of samples with no frames at all, throttled
+the sample period 5x under the cost of copying stacks, and wrote 4.6GB of
+`perf.data`. With frame pointers in the binary, `--call-graph fp` needs none of
+that copying — `dwarf` also works, but there is nothing left for it to buy.
+
+`-e cpu_core/cycles/` because a hybrid CPU otherwise reports `cpu_atom` and
+`cpu_core` as two events with their own sample periods, and anything that sums
+raw sample counts across them is measuring nothing.
+
+Check `kernel.perf_event_paranoid` before reading any of the numbers. At the
+default of 2 a run can land ~40% of its cycles on a single unresolvable
+`0xffffffff...` address, and that time is simply invisible —
+`sudo sysctl kernel.perf_event_paranoid=1` attributes it.
+
+Mind what `bin/doir` spends its time on: it prints the whole IR, and that print
+has been between 20% and 39% of the command's cycles depending on how much the
+compile itself costs, none of it compilation. Profile `bin/doir-tests`, or
+subtract `doir.print`, when the question is about compile speed rather than
+about the driver.
+
+`perf.script` for a run of any size is gigabytes, so stream it with `awk`
+rather than loading it, and weight each sample by the period in its header
+line — once perf has throttled, that period is not constant, and treating
+every sample as one unit silently reweights the profile.

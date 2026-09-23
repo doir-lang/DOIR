@@ -196,8 +196,8 @@ bool typeCheck(ref Module mod, EntityId subtree) @trusted {
 
 	bool valid = true;
 
-	if (hasComponent!TypeVariable(mod, subtree)) {
-		// The placeholder `_` itself carries the tag as a marker and is not a
+	if (flagsSet(mod, subtree, Flags.TypeVariable)) {
+		// The placeholder `_` itself carries the flag as a marker and is not a
 		// hole anybody wrote; it is the thing holes used to resolve to.
 		if (!hasComponent!Name(mod, subtree)
 			|| getComponent!Name(mod, subtree).value.view != "_")
@@ -479,7 +479,7 @@ unittest { // an unsolved variable is reported
 	diagnostics().clear();
 
 	immutable e = pushCommon(f.mod, f.root, internIn(f.mod, "hole"));
-	addComponent!TypeVariable(f.mod, e);
+	getOrAddComponent!Flags(f.mod, e).flags |= Flags.TypeVariable;
 
 	assert(!typeCheck(f.mod, e));
 	assert(diagnostics().hasErrors());
@@ -487,7 +487,7 @@ unittest { // an unsolved variable is reported
 }
 
 unittest {
-	// The builtin `_` placeholder carries the tag as a marker rather than as a
+	// The builtin `_` placeholder carries the flag as a marker rather than as a
 	// hole somebody wrote, so it must not report against itself.
 	import doir.pipeline.sema.type_variables : inferencePlaceholder, introduceTypeVariables;
 

@@ -18,6 +18,7 @@ module tools.mizu_gen;
 
 import core.stdc.stdio : printf;
 
+import doir.interface_ : Flags;
 import doir.mizu.instructions : doirLookup;
 import mizu.lookup : notFound;
 
@@ -27,7 +28,7 @@ import mizu.lookup : notFound;
 /// Every instruction to bind, in the order the generated file lists them.
 /// These are `doirLookup` names (D spellings); `snakeCase` below converts
 /// each one for the DOIR side.
-private static immutable string[44] program = [
+private static immutable string[92] program = [
 	"findLabel",
 	"debugPrint",
 	"debugPrintBinary",
@@ -72,23 +73,153 @@ private static immutable string[44] program = [
 	"bitwiseXor",
 	"bitwiseAnd",
 	"bitwiseOr",
+
+	// `mizu.instructions.dbg`.
+	"breakpoint",
+
+	// `mizu.instructions.unsafe`. `copyMemory` and `setMemory` are left out:
+	// both read `out_` as the *destination pointer* rather than writing a
+	// result to it, and every binding here puts the assembler's return
+	// register there. They need a shape of their own before they can be bound.
+	"allocate",
+	"freeAllocated",
+	"allocateFatPointer",
+	"freeFatPointer",
+	"pointerToStack",
+	"pointerToStackBottom",
+	"pointerToRegister",
+
+	// `mizu.instructions.f32`.
+	"convertToF32",
+	"convertSignedToF32",
+	"convertFromF32",
+	"convertSignedFromF32",
+	"addF32",
+	"subtractF32",
+	"multiplyF32",
+	"divideF32",
+	"maxF32",
+	"minF32",
+	"sqrtF32",
+	"setIfEqualF32",
+	"setIfNotEqualF32",
+	"setIfLessF32",
+	"setIfGreaterEqualF32",
+	"setIfNegativeF32",
+	"setIfPositiveF32",
+	"setIfInfinityF32",
+	"setIfNanF32",
+
+	// `mizu.instructions.f64`.
+	"convertF32ToF64",
+	"convertF64ToF32",
+	"convertToF64",
+	"convertSignedToF64",
+	"convertFromF64",
+	"convertSignedFromF64",
+	"addF64",
+	"subtractF64",
+	"multiplyF64",
+	"divideF64",
+	"maxF64",
+	"minF64",
+	"sqrtF64",
+	"setIfEqualF64",
+	"setIfNotEqualF64",
+	"setIfLessF64",
+	"setIfGreaterEqualF64",
+	"setIfNegativeF64",
+	"setIfPositiveF64",
+	"setIfInfinityF64",
+	"setIfNanF64",
 ];
 
 /// DOIR's own four, which the generated file nests in a `doir` namespace of
 /// its own so they read as `mizu.doir.execute` rather than sitting beside
 /// Mizu's instructions as `mizu.doir_execute`.
-private static immutable string[4] doirProgram = [
+private static immutable string[36] doirProgram = [
 	"setModule",
 	"attachComptimeNumberI64",
 	"execute",
 	"executeIf",
+
+	// The store, exposed to a comptime program - `standard.doir`'s `meta`,
+	// `types`, `attribute` and `diagnostic` namespaces, which until now had
+	// only a `compiler.*` spelling and so could not be implemented by a
+	// program at all.
+	"reflect",
+	"unreflectAlias",
+	"typeBase",
+	"typeIs",
+	"typeSizeBits",
+	"typeAlignBits",
+	"typeSetFlags",
+	"typeComptime",
+	"typeUnion",
+	"typeNeverMonomorphize",
+	"typeForciblyInline",
+	"typeAlwaysFlatten",
+	"typeNoComptime",
+	"typePure",
+	"typeMakeUnique",
+	"typeSetAttributeId",
+	"typeAttributeId",
+	"typePointer",
+	"typeArray",
+	"entityRename",
+	"internName",
+	"labelToImmediate",
+	"sourceLocationFile",
+	"sourceLocationStartByte",
+	"sourceLocationEndByte",
+	"sourceLocationStartLine",
+	"sourceLocationStartColumn",
+	"sourceLocationEndLine",
+	"sourceLocationEndColumn",
+	"diagnosticInfo",
+	"diagnosticWarning",
+	"diagnosticError",
 ];
 
-private static immutable string[16] singleOperandOps = [
+private static immutable string[50] singleOperandOps = [
 	"debugPrint", "debugPrintBinary", "convertToU64", "convertToU32", "convertToU16",
 	"convertToU8", "stackLoadU64", "stackLoadU32", "stackLoadU16", "stackLoadU8",
 	"stackPush", "stackPop", "offsetOfStackBottom", "jumpRelative", "jumpTo",
 	"setModule",
+
+	"allocate", "freeAllocated", "pointerToStack", "pointerToStackBottom",
+	"pointerToRegister",
+
+	"convertToF32", "convertSignedToF32", "convertFromF32", "convertSignedFromF32",
+	"sqrtF32", "setIfNegativeF32", "setIfPositiveF32", "setIfInfinityF32", "setIfNanF32",
+
+	"convertF32ToF64", "convertF64ToF32", "convertToF64", "convertSignedToF64",
+	"convertFromF64", "convertSignedFromF64", "sqrtF64", "setIfNegativeF64",
+	"setIfPositiveF64", "setIfInfinityF64", "setIfNanF64",
+
+	"internName",
+	"labelToImmediate", "sourceLocationFile", "sourceLocationStartByte",
+	"sourceLocationEndByte", "sourceLocationStartLine", "sourceLocationStartColumn",
+	"sourceLocationEndLine", "sourceLocationEndColumn",
+];
+
+/// `(T : type) -> type`: a modifier edits the type it is handed and yields an
+/// alias to it (M-Flag), a constructor allocates (M-Ctor). The signature is the
+/// same either way, which is why `standard.mizu.doir` can alias both straight
+/// through with no body of its own.
+private static immutable string[9] typeModifierOps = [
+	"typeComptime", "typeUnion", "typeNeverMonomorphize", "typeForciblyInline",
+	"typeAlwaysFlatten", "typeNoComptime", "typePure", "typeMakeUnique", "typePointer",
+];
+
+/// `(T : type) -> u64`: asks a type something instead of editing it.
+private static immutable string[4] typeQueryOps = [
+	"typeIs", "typeSizeBits", "typeAlignBits", "typeAttributeId",
+];
+
+/// `(T : type, n : comptime.u64) -> type`.
+private static immutable string[2] typeWithNumberOps = [
+	"typeSetAttributeId", "typeArray",
 ];
 
 private static immutable string[3] immediateOps = [
@@ -279,7 +410,89 @@ private void emitInstruction(const(char)[] name) {
 		--indent;
 		line("}");
 
-	} else if (name == "halt") {
+	} else if (name == "reflect") {
+		tabs(); printName(name); printf(" : reflect_t = {\n");
+		++indent;
+		line("rega : compiler.assembler.register = compiler.assembler.register_for(type, T)");
+		line("regret : compiler.assembler.register = compiler.assembler.return_register(u64)");
+		emitOpcodeId(name);
+		line("_ : compiler.assembler.register = inline emit_register(regret)");
+		line("_ : compiler.assembler.register = inline emit_register(rega)");
+		emitU32(0);
+		line("_ : u64 = compiler.indicate_return(u64)");
+		--indent;
+		line("}");
+
+	} else if (isIn(typeModifierOps, name)) {
+		tabs(); printName(name); printf(" : type_modifier_t = {\n");
+		++indent;
+		line("rega : compiler.assembler.register = compiler.assembler.register_for(type, T)");
+		line("regret : compiler.assembler.register = compiler.assembler.return_register(type)");
+		emitOpcodeId(name);
+		line("_ : compiler.assembler.register = inline emit_register(regret)");
+		line("_ : compiler.assembler.register = inline emit_register(rega)");
+		emitU32(0);
+		line("_ : type = compiler.indicate_return(type)");
+		--indent;
+		line("}");
+
+	} else if (isIn(typeQueryOps, name)) {
+		tabs(); printName(name); printf(" : type_query_t = {\n");
+		++indent;
+		line("rega : compiler.assembler.register = compiler.assembler.register_for(type, T)");
+		line("regret : compiler.assembler.register = compiler.assembler.return_register(u64)");
+		emitOpcodeId(name);
+		line("_ : compiler.assembler.register = inline emit_register(regret)");
+		line("_ : compiler.assembler.register = inline emit_register(rega)");
+		emitU32(0);
+		line("_ : u64 = compiler.indicate_return(u64)");
+		--indent;
+		line("}");
+
+	} else if (isIn(typeWithNumberOps, name)) {
+		tabs(); printName(name); printf(" : type_with_number_t = {\n");
+		++indent;
+		line("rega : compiler.assembler.register = compiler.assembler.register_for(type, T)");
+		line("regb : compiler.assembler.register = compiler.assembler.register_for(comptime.u64, n)");
+		line("regret : compiler.assembler.register = compiler.assembler.return_register(type)");
+		emitOpcodeId(name);
+		line("_ : compiler.assembler.register = inline emit_register(regret)");
+		line("_ : compiler.assembler.register = inline emit_register(rega)");
+		line("_ : compiler.assembler.register = inline emit_register(regb)");
+		emitU16(0);
+		line("_ : type = compiler.indicate_return(type)");
+		--indent;
+		line("}");
+
+	} else if (name == "typeBase") {
+		tabs(); printName(name); printf(" : base_type_t = {\n");
+		++indent;
+		line("rega : compiler.assembler.register = compiler.assembler.register_for(comptime.u64, size_bits)");
+		line("regb : compiler.assembler.register = compiler.assembler.register_for(comptime.u64, align_bits)");
+		line("regret : compiler.assembler.register = compiler.assembler.return_register(type)");
+		emitOpcodeId(name);
+		line("_ : compiler.assembler.register = inline emit_register(regret)");
+		line("_ : compiler.assembler.register = inline emit_register(rega)");
+		line("_ : compiler.assembler.register = inline emit_register(regb)");
+		emitU16(0);
+		line("_ : type = compiler.indicate_return(type)");
+		--indent;
+		line("}");
+
+	} else if (name == "unreflectAlias") {
+		tabs(); printName(name); printf(" : unreflect_alias_t = {\n");
+		++indent;
+		line("rega : compiler.assembler.register = compiler.assembler.register_for(u64, e)");
+		line("regret : compiler.assembler.register = compiler.assembler.return_register(type)");
+		emitOpcodeId(name);
+		line("_ : compiler.assembler.register = inline emit_register(regret)");
+		line("_ : compiler.assembler.register = inline emit_register(rega)");
+		emitU32(0);
+		line("_ : type = compiler.indicate_return(type)");
+		--indent;
+		line("}");
+
+	} else if (name == "halt" || name == "breakpoint") {
 		tabs(); printName(name); printf(" : zero_parameters_t = {\n");
 		++indent;
 		emitOpcodeId(name);
@@ -351,6 +564,42 @@ private void emitInstruction(const(char)[] name) {
 	}
 }
 
+/// The `Flags` bits `type_set_flags` takes, written out from the compiler's
+/// own enum so a regeneration is what keeps the two in step - the same reason
+/// the instruction ids above are generated rather than typed.
+///
+/// `standard.mizu.doir` spells every modifier as one of these, which is what
+/// P1 (flags are a set, applying twice is applying once) buys: five modifiers,
+/// one instruction, five constants.
+private void emitFlagConstants() {
+	static immutable struct Bit { string name; ushort value; }
+	static immutable Bit[9] bits = [
+		Bit("exported", Flags.Export),
+		Bit("comptime", Flags.Comptime),
+		Bit("always_comptime", Flags.AlwaysComptime),
+		Bit("union", Flags.Union),
+		Bit("pure", Flags.Pure),
+		// `inline` and `flatten` are grammar keywords; these are the names
+		// `standard.doir` gives the same two bits anyway.
+		Bit("forcibly_inline", Flags.Inline),
+		Bit("always_flatten", Flags.Flatten),
+		Bit("never_monomorphize", Flags.NeverMonomorphize),
+		Bit("no_comptime", Flags.NoComptime),
+	];
+
+	line("flags : namespace = {");
+	++indent;
+	// `mizu.comptime.u64`, not `comptime.u64`: by R-Qual a dotted path resolves
+	// its first segment outward through the scope chain, and `comptime` is one
+	// of the constants in this very block.
+	foreach (b; bits) {
+		tabs();
+		printf("%.*s : mizu.comptime.u64 = %u\n", cast(int) b.name.length, b.name.ptr, cast(uint) b.value);
+	}
+	--indent;
+	line("}");
+}
+
 /// The schedule declaration, as a `"""` string handed to
 /// `compiler.run_schedule` here and to `compiler.override_fallback_schedule`
 /// at the bottom of the file - the first runs it on `mizu.doir` itself, the
@@ -397,6 +646,35 @@ extern(C) int main(int argc, char** argv) @trusted {
 	line("branch_immediate_t : type = (a: u64, immediate: comptime.u64) -> u64");
 	line("_ : type = compiler.always_inline(branch_immediate_t)");
 	line("_ : type = compiler.never_monomorphize(branch_immediate_t)");
+	blank();
+
+	line("// The two crossings between a register and the entity behind it. Every");
+	line("// other reflection instruction below is plain `u64` in and `u64` out, so");
+	line("// these are the only two the type system has to say anything about:");
+	line("// `reflect` takes a `type` and hands back the entity id that was already");
+	line("// in the register, `unreflect_alias` turns an entity back into a name for");
+	line("// it (M-Flag's second half, and what makes a modifier a modifier).");
+	line("reflect_t : type = (T : type) -> u64");
+	line("_ : type = compiler.always_inline(reflect_t)");
+	line("_ : type = compiler.never_monomorphize(reflect_t)");
+	line("unreflect_alias_t : type = (e : u64) -> type");
+	line("_ : type = compiler.always_inline(unreflect_alias_t)");
+	line("_ : type = compiler.never_monomorphize(unreflect_alias_t)");
+	line("base_type_t : type = (size_bits : comptime.u64, align_bits : comptime.u64) -> type");
+	line("_ : type = compiler.always_inline(base_type_t)");
+	line("_ : type = compiler.never_monomorphize(base_type_t)");
+	line("// `standard.doir`'s `modifier_function` and `constructor_function`, which");
+	line("// share a signature - one edits and one allocates, and only the");
+	line("// instruction knows which.");
+	line("type_modifier_t : type = (T : type) -> type");
+	line("_ : type = compiler.always_inline(type_modifier_t)");
+	line("_ : type = compiler.never_monomorphize(type_modifier_t)");
+	line("type_query_t : type = (T : type) -> u64");
+	line("_ : type = compiler.always_inline(type_query_t)");
+	line("_ : type = compiler.never_monomorphize(type_query_t)");
+	line("type_with_number_t : type = (T : type, n : comptime.u64) -> type");
+	line("_ : type = compiler.always_inline(type_with_number_t)");
+	line("_ : type = compiler.never_monomorphize(type_with_number_t)");
 	blank();
 
 	line("// The block is comptime, but it is not decoration: `execute` and");
@@ -469,8 +747,8 @@ extern(C) int main(int argc, char** argv) @trusted {
 		emitInstruction(name);
 	}
 
-	// DOIR's own four, namespaced so a program spells them
-	// `mizu.doir.execute` and so on.
+	// DOIR's own, namespaced so a program spells them `mizu.doir.execute`
+	// and so on.
 	blank();
 	line("doir : namespace = {");
 	++indent;
@@ -478,6 +756,8 @@ extern(C) int main(int argc, char** argv) @trusted {
 		if (i) blank();
 		emitInstruction(name);
 	}
+	blank();
+	emitFlagConstants();
 	--indent;
 	line("}");
 	blank();

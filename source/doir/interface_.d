@@ -56,6 +56,10 @@ mixin template RelationBody(size_t N = dynamicExtent) {
 		RelationType.swapEntities(self.relation, indices, a, b);
 	}
 
+	static void remapEntities(ref typeof(this) self, ref EntityComponentIndices indices, const(EntityId)[] remap) @nogc nothrow {
+		RelationType.remapEntities(self.relation, indices, remap);
+	}
+
 	static if (N == dynamicExtent)
 	static void finalize(ref typeof(this) self) @nogc nothrow {
 		RelationType.finalize(self.relation);
@@ -75,19 +79,25 @@ mixin template RelationBody(size_t N = dynamicExtent) {
 struct Flags {
 	enum : ushort {
 		None = 0,
-		Valueless = (1 << 1),
-		Namespace = (1 << 2),
 
-		Export = (1 << 3),
-		Comptime = (1 << 4),
-		AlwaysComptime = (1 << 5),
-		NoComptime = (1 << 6), // Marks an object as never being comptime... currently unexposed
-		Constant = (1 << 7),
-		Union = (1 << 8),
-		Pure = (1 << 9),
-		Inline = (1 << 10),
-		Flatten = (1 << 11),
-		Tail = (1 << 12),
+		// What kind of declaration this is. `verify.structure` dispatches on
+		// these, and no modifier may say them.
+		Valueless = (1 << 0),
+		Namespace = (1 << 1),
+
+		// The modifiers. `tools/mizu_gen` writes nine of these out as the
+		// constants `compiler.type.set_flags` takes, so their values reach the
+		// language: renumbering here means regenerating `mizu.doir`.
+		Export = (1 << 2),
+		Comptime = (1 << 3),
+		AlwaysComptime = (1 << 4),
+		NoComptime = (1 << 5), // Marks an object as never being comptime... currently unexposed
+		Constant = (1 << 6),
+		Union = (1 << 7),
+		Pure = (1 << 8),
+		Inline = (1 << 9),
+		Flatten = (1 << 10),
+		Tail = (1 << 11),
 		/// On a *function type*: `sema.monomorphizeFunctions` leaves calls
 		/// through it alone, however comptime their arguments are.
 		///
@@ -97,8 +107,40 @@ struct Flags {
 		/// `comptime_base_type` and so comptime by C-Type, but a copy per
 		/// register is 256 bodies that emit the same bytes with one immediate
 		/// changed. This is how such a function says so.
-		NeverMonomorphize = (1 << 13),
+		NeverMonomorphize = (1 << 12),
+
+		// What the compiler knows about an entity that no modifier said.
+		// `Flags.Internal` below is the pair of them.
+
+		/// No block lists this entity. Set wherever a `Block` is, since a block
+		/// starts out listed by nobody, and left set once it is listed:
+		/// `findParent` reads `Parent` first, so a stale bit on a block that did
+		/// get listed changes nothing. `canon.stripFreestandingBlocks` is what
+		/// eventually takes the genuinely unlisted ones out.
+		///
+		/// Purely so `findParent` can answer "nothing contains it" without
+		/// `findBlock` reading every entity from here to the end of the module
+		/// to discover the same. Measured on the `std.if` call site, since
+		/// merged into `test.doir`: 361,277 of those scans, all of them
+		/// fruitless.
+		Freestanding = (1 << 13),
+
+		/// A hole: `_` written in type position, whose type is unknown and is
+		/// solved forward from whatever the entity is assigned.
+		///
+		/// The solution is written straight into `TypeOf` and the bit cleared.
+		/// The other kind of unsolved type, a `deduced` parameter, is not one of
+		/// these: it is said by the parameter's type being `deduced_type`, and
+		/// its solution belongs to the call site rather than to the parameter
+		/// declaration every call through the type shares (D-Deduce).
+		TypeVariable = (1 << 14),
 	}
+
+	/// The bits a program never writes, only the compiler does. Every check in
+	/// `doir.verify` that compares a flag set exactly strips them first: they
+	/// say where an entity sits and what is still unknown about it, not what
+	/// kind of declaration it is.
+	enum Internal = cast(ushort)(Freestanding | TypeVariable);
 
 	ushort flags = None;
 }
@@ -169,6 +211,16 @@ struct TypeDefinition {
 	size_t unique = 0;
 }
 
+/// Which component slot a type is stored in (M-Attr), as
+/// `std.types.set_attribute_id` pins it.
+///
+/// `standard.doir` pins `meta.source_location.location` to slot 1 and says the
+/// number has to stay in step with the compiler's own `SourceLocation`; this
+/// is the store's side of that agreement.
+struct AttributeId {
+	size_t id = 0;
+}
+
 /// The uniqueness discriminators the builtin types reserve (M-Unique).
 ///
 /// S-Struct compares $⟨"size", "alignment", "unique"⟩$, and `type` and `block`
@@ -219,18 +271,6 @@ struct Monomorphizations {
 /// against its own arguments at those same positions.
 struct MonomorphizedFor {
 	mixin RelationBody!();
-}
-
-/// A hole: `_` written in type position, whose type is unknown and is solved
-/// forward from whatever the entity is assigned.
-///
-/// A tag, deliberately - the solution is written straight into `TypeOf` and the
-/// tag dropped, so there is nothing to store here and nothing for
-/// `canonicalize.sort` to renumber. The other kind of unsolved type, a
-/// `deduced` parameter, is not one of these: it is said by the parameter's type
-/// being `deduced_type`, and its solution belongs to the call site rather than
-/// to the parameter declaration every call through the type shares (D-Deduce).
-struct TypeVariable {
 }
 
 /// A pointer (or, with a non-zero `size`, an array) to `related[0]`.
@@ -336,6 +376,13 @@ struct Lookup {
 		if (self.entityValue == a) self.entityValue = b;
 		else if (self.entityValue == b) self.entityValue = a;
 	}
+
+	/// Ditto for `reorderEntities`, which relabels against the whole permutation
+	/// once instead of calling the above for each of its O(n) transpositions.
+	static void remapEntities(ref Lookup self, const(EntityId)[] remap) @nogc nothrow {
+		if (!self.resolvedFlag) return;
+		if (self.entityValue < remap.length) self.entityValue = remap[self.entityValue];
+	}
 }
 
 /// Taken by value: a `Lookup` is three words, and by-value lets the
@@ -351,6 +398,10 @@ mixin template LookupBody() {
 
 	static void swapEntities(ref typeof(this) self, ref EntityComponentIndices indices, EntityId a, EntityId b) @nogc nothrow {
 		Lookup.swapEntities(self.lookup, a, b);
+	}
+
+	static void remapEntities(ref typeof(this) self, ref EntityComponentIndices indices, const(EntityId)[] remap) @nogc nothrow {
+		Lookup.remapEntities(self.lookup, remap);
 	}
 }
 
@@ -392,6 +443,11 @@ struct LookupFunctionInputs {
 	static void swapEntities(ref LookupFunctionInputs self, ref EntityComponentIndices indices, EntityId a, EntityId b) @trusted {
 		foreach (i; 0 .. length(self))
 			Lookup.swapEntities(self.lookups[i], a, b);
+	}
+
+	static void remapEntities(ref LookupFunctionInputs self, ref EntityComponentIndices indices, const(EntityId)[] remap) @trusted {
+		foreach (i; 0 .. length(self))
+			Lookup.remapEntities(self.lookups[i], remap);
 	}
 
 	static void finalize(ref LookupFunctionInputs self) {
@@ -765,6 +821,7 @@ BlockBuilder createBlockBuilder(ref Module mod) {
 	out_.mod = &mod;
 	out_.block = addEntity(mod);
 	addComponent!Block(mod, out_.block);
+	getOrAddComponent!Flags(mod, out_.block).flags |= Flags.Freestanding;
 	return out_;
 }
 
@@ -893,11 +950,13 @@ EntityId pushCall(TType, TFunc, TArg)(ref BlockBuilder b, InternedString name, T
 BlockBuilder attachSubblock(ref Module mod, EntityId to, EntityId type) {
 	addComponent!TypeOf(mod, to).related[0] = type;
 	addComponent!Block(mod, to);
+	getOrAddComponent!Flags(mod, to).flags |= Flags.Freestanding;
 	return BlockBuilder(to, &mod);
 }
 BlockBuilder attachSubblock(ref Module mod, EntityId to, InternedString typeLookup) {
 	addComponent!LookupTypeOf(mod, to).lookup = typeLookup;
 	addComponent!Block(mod, to);
+	getOrAddComponent!Flags(mod, to).flags |= Flags.Freestanding;
 	return BlockBuilder(to, &mod);
 }
 BlockBuilder pushSubblock(ref BlockBuilder b, InternedString name, EntityId type) {
@@ -916,6 +975,7 @@ FunctionBuilder attachFunction(ref Module mod, EntityId to, EntityId functionTyp
 
 	addComponent!TypeOf(mod, to).related[0] = functionType;
 	addComponent!Block(mod, to);
+	getOrAddComponent!Flags(mod, to).flags |= Flags.Freestanding;
 	if (hasComponent!FunctionReturnType(mod, functionType))
 		addComponent!FunctionReturnType(mod, to).related[0] = getComponent!FunctionReturnType(mod, functionType).related[0];
 	else
@@ -965,6 +1025,7 @@ EntityId pushValuelessFunction(ref BlockBuilder b, InternedString name, EntityId
 BlockBuilder attachType(ref Module mod, EntityId to) {
 	addComponent!TypeDefinition(mod, to);
 	addComponent!Block(mod, to);
+	getOrAddComponent!Flags(mod, to).flags |= Flags.Freestanding;
 	return BlockBuilder(to, &mod);
 }
 BlockBuilder pushType(ref BlockBuilder b, InternedString name) {
@@ -1043,7 +1104,7 @@ EntityId pushAlias(ref BlockBuilder b, InternedString name, InternedString refLo
 
 /// `math : namespace = { built block... }`
 BlockBuilder attachNamespace(ref Module mod, EntityId to) {
-	addComponent!Flags(mod, to).flags = Flags.Namespace;
+	addComponent!Flags(mod, to).flags = Flags.Namespace | Flags.Freestanding;
 	addComponent!Block(mod, to);
 	return BlockBuilder(to, &mod);
 }
@@ -1213,6 +1274,9 @@ Detailed findDetailedSourceLocation(ref Module mod, EntityId subtree) {
 /// this?" note attached; the loop here has the same semantics without the
 /// stack depth.
 EntityId findBlock(ref Module mod, EntityId e, EntityId mustContain = invalidEntity) @trusted {
+	// Hoisted: nothing in the loop adds an entity, and a failed search reads it
+	// once per entity scanned.
+	immutable limit = entityCount(mod);
 	for (;;) {
 		if (hasComponent!Block(mod, e)) {
 			auto block = &getComponent!Block(mod, e);
@@ -1220,7 +1284,7 @@ EntityId findBlock(ref Module mod, EntityId e, EntityId mustContain = invalidEnt
 			foreach (i; 0 .. daLength(block.related))
 				if (block.related[i] == mustContain) return e;
 		}
-		if (e > entityCount(mod)) return invalidEntity;
+		if (e > limit) return invalidEntity;
 		++e;
 	}
 }
@@ -1230,6 +1294,10 @@ EntityId findBlock(ref Module mod, EntityId e, EntityId mustContain = invalidEnt
 EntityId findParent(ref Module mod, EntityId e) {
 	if (hasComponent!Parent(mod, e))
 		return findBlock(mod, getComponent!Parent(mod, e).related[0]);
+	// Checked after `Parent`, so listing a block later overrides the flag. The
+	// answer is the one the scan below arrives at anyway; the scan just reads
+	// every entity from `e` to the end of the module to get there.
+	if (flagsSet(mod, e, Flags.Freestanding)) return invalidEntity;
 	return findBlock(mod, e, e);
 }
 
@@ -1284,7 +1352,14 @@ private EntityId findNameInBlock(ref Module mod, EntityId blockEntity, const(cha
 /// With `strict`, the search starts in the block that actually contains
 /// `searchStart` rather than the nearest block at or after it.
 EntityId resolveLookupName(ref Module mod, InternedString lookup, EntityId searchStart, bool strict = false) @trusted {
-	auto blockEntity = findBlock(mod, searchStart, strict ? searchStart : invalidEntity);
+	// `findParent`, not `findBlock(mod, searchStart, searchStart)`: both answer
+	// "which block contains `searchStart`", but the scan reads every entity from
+	// `searchStart` to the end of the module to get there, while `Parent` already
+	// records it. Measured on the `std.if` call site, since merged into
+	// `test.doir`: 14,194 strict calls, 15,474 entities scanned each, 219M of
+	// findBlock's 266M iterations - and the cached answer agreed with the scan
+	// in every one of them.
+	auto blockEntity = strict ? findParent(mod, searchStart) : findBlock(mod, searchStart);
 	if (blockEntity == invalidEntity) return blockEntity;
 
 	auto namespaces = splitSlices(lookup.view, ".");
@@ -1525,6 +1600,12 @@ void copyComponents(ref Module mod, EntityId out_, EntityId subtree, bool copyBl
 	if (hasComponent!Flags(mod, subtree))
 		getOrAddComponent!Flags(mod, out_) = getComponent!Flags(mod, subtree);
 
+	// Up here with `Name` and `Flags` rather than in the `TypeDefinition`
+	// branch below: a pinned type reached through an alias has the tag and no
+	// definition of its own.
+	if (hasComponent!AttributeId(mod, subtree))
+		getOrAddComponent!AttributeId(mod, out_) = getComponent!AttributeId(mod, subtree);
+
 	if (hasComponent!TypeOf(mod, subtree) || hasComponent!LookupTypeOf(mod, subtree)) {
 		// Type == back link
 		if (hasComponent!TypeOf(mod, subtree))
@@ -1655,6 +1736,7 @@ private EntityId deepCopyBuildStructure(ref Module mod, EntityId subtree,
 
 	if (hasComponent!Block(mod, subtree)) {
 		addComponent!Block(mod, out_);
+		getOrAddComponent!Flags(mod, out_).flags |= Flags.Freestanding;
 		for (size_t i = 0; i < daLength(getComponent!Block(mod, subtree).related); ++i) {
 			immutable child = getComponent!Block(mod, subtree).related[i];
 			immutable copied = deepCopyBuildStructure(mod, child, substitutions, reverseSubstitutions);
@@ -1879,6 +1961,27 @@ ref BlockBuilder buildBuiltinBlock(return ref BlockBuilder self) @trusted {
 		typeOnly[], tInterned, true, tOnlyNames[]);
 	pushFunction(compiler, internIn(*mod, "indicate_return"), returnT, true).end();
 	pushFunction(compiler, internIn(*mod, "indicate_yield"), returnT, true).end();
+
+	// `return v`, as against `indicate_return(T)` above. The marker says only
+	// what a function hands back; this says *which register* it hands back, by
+	// giving `v` the block's own register in `opt.pinRegisters`.
+	//
+	// Both are needed, and they cannot be one declaration. An emitted
+	// instruction has already written its result into the return register, so
+	// every body in `mizu.doir` wants the marker and nothing else. A body that
+	// computes its result over several instructions, or has two exit points -
+	// `if` - has no way to name the register it means without this. That is
+	// WF-Term's `return`, and what `standard.doir` declares `return` and `yield`
+	// to be.
+	//
+	// `-> T` differs between the two: the marker returns the type it was passed,
+	// this returns the type of the value it was given.
+	Lookup[2] returnValueParams = [Lookup(deduced), Lookup(tInterned)];
+	InternedString[2] returnValueNames = [tInterned, internIn(*mod, "value")];
+	immutable returnValueT = pushFunctionType(compiler, internIn(*mod, "return_value_t"),
+		returnValueParams[], tInterned, true, returnValueNames[]);
+	pushFunction(compiler, internIn(*mod, "return"), returnValueT, true).end();
+	pushFunction(compiler, internIn(*mod, "yield"), returnValueT, true).end();
 
 	// `-> type`, not `-> T` as `return_t` above has it: a constructor hands back
 	// the type it allocated and a modifier a name for the one it edited, so both

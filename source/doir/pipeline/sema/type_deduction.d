@@ -4,7 +4,7 @@
 /// A call's `deduced` parameters are *solved, not supplied* (D-Deduce): they
 /// are absent from the call site, so `f(x)` against `(T: deduced type, v: T)`
 /// arrives an argument short and leaves elaborated to `f(tau, x)`. A `_` in
-/// type position is a hole `introduceTypeVariables` tagged, and is solved from
+/// type position is a hole `introduceTypeVariables` flagged, and is solved from
 /// whatever the entity was assigned - which for a call means its return type,
 /// and a `-> T` return type means whatever `T` was just solved to. That
 /// dependency is the reason the two are one pass rather than two: they have to
@@ -288,7 +288,7 @@ bool deduceTypes(ref Module mod, EntityId subtree) @trusted {
 	// Before the hole below, which may be reading a `-> T` off this very call.
 	deduceArguments(mod, subtree);
 
-	if (!hasComponent!TypeVariable(mod, subtree)) return true;
+	if (!flagsSet(mod, subtree, Flags.TypeVariable)) return true;
 
 	immutable solution = solveHole(mod, subtree);
 	if (solution == invalidEntity) return true;
@@ -298,7 +298,7 @@ bool deduceTypes(ref Module mod, EntityId subtree) @trusted {
 	// was still a variable, and nothing would come back to finish it.
 	if (isTypeVariable(mod, solution)) return true;
 
-	removeComponent!TypeVariable(mod, subtree);
+	getComponent!Flags(mod, subtree).flags &= ~cast(ushort) Flags.TypeVariable;
 	addComponent!TypeOf(mod, subtree).related[0] = solution;
 
 	// Something downstream of this entity may now be solvable in turn.
@@ -323,7 +323,7 @@ unittest { // a hole on a call takes the callee's return type
 
 	immutable two = find(r.mod, r.root, "%2");
 	assert(two != invalidEntity);
-	assert(!hasComponent!TypeVariable(r.mod, two));
+	assert(!flagsSet(r.mod, two, Flags.TypeVariable));
 	assert(hasComponent!TypeOf(r.mod, two));
 }
 
@@ -336,10 +336,10 @@ unittest {
 
 	immutable e = pushCommon(f.mod, f.root, internIn(f.mod, "hole"));
 	addComponent!Number(f.mod, e).value = 1;
-	addComponent!TypeVariable(f.mod, e);
+	getOrAddComponent!Flags(f.mod, e).flags |= Flags.TypeVariable;
 
 	assert(deduceTypes(f.mod, e));
-	assert(hasComponent!TypeVariable(f.mod, e));
+	assert(flagsSet(f.mod, e, Flags.TypeVariable));
 	assert(!hasComponent!TypeOf(f.mod, e));
 }
 
@@ -355,7 +355,7 @@ unittest { // a solved hole asks the fixpoint for another round
 	EntityId[1] args = [one];
 	immutable call = pushCall(block, internIn(f.mod, "c"), byte_, emit, args[]);
 	removeComponent!TypeOf(f.mod, call);
-	addComponent!TypeVariable(f.mod, call);
+	getOrAddComponent!Flags(f.mod, call).flags |= Flags.TypeVariable;
 
 	fixedPointChanged() = false;
 	assert(deduceTypes(f.mod, call));

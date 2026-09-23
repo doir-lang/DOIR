@@ -31,7 +31,10 @@ bool bubbleComptime(ref Module mod, EntityId subtree) @trusted {
 		foreach (i; 0 .. daLength(inputs.related)) {
 			immutable e = inputs.related[i];
 			if (!flagsSet(mod, e, Flags.Comptime)) {
-				if (hasComponent!TypeDefinition(mod, e)) continue; // All types are compile time known
+				// Through the alias: A-Transparent, an alias to a type is a
+				// type. `byte : alias = u8` used to make `pointer(byte)` a
+				// runtime call where `pointer(u8)` was a comptime one.
+				if (hasComponent!TypeDefinition(mod, resolveAlias(mod, e))) continue; // All types are compile time known
 				comptime = false;
 				break;
 			}
@@ -44,6 +47,22 @@ bool bubbleComptime(ref Module mod, EntityId subtree) @trusted {
 		// rather than asserting before it gets the chance.
 		if (!hasComponent!TypeOf(mod, function_)) return true;
 		immutable ft = resolveAlias(mod, getComponent!TypeOf(mod, function_).related[0]);
+
+		// A function that *emits* rather than computes says so on its type, and
+		// nothing below overrides it. `std.if` is the case: its arguments are a
+		// condition and two quoted blocks, all three of which are usually
+		// compile time known - so this pass would mark the call comptime and the
+		// evaluator would run `if` on the VM, assembling a program out of the
+		// branch instructions it exists to emit. Whether a call can be folded is
+		// a property of the callee, not of how much its caller happens to know.
+		if (flagsSet(mod, ft, Flags.NoComptime)) {
+			if (flagsSet(mod, subtree, Flags.Comptime)) {
+				getComponent!Flags(mod, subtree).flags &= ~cast(ushort) Flags.Comptime;
+				fixedPointChanged() = true;
+			}
+			return true;
+		}
+
 		immutable comptimeFunction = flagsSet(mod, ft, Flags.Comptime);
 
 		immutable isComptime = flagsSet(mod, subtree, Flags.Comptime);
@@ -90,7 +109,7 @@ bool validateComptime(ref Module mod, EntityId subtree) @trusted {
 	foreach (i; 0 .. daLength(inputs.related)) {
 		immutable e = inputs.related[i];
 		if (!flagsSet(mod, e, Flags.Comptime)) {
-			if (hasComponent!TypeDefinition(mod, e)) continue; // All types are compile time known
+			if (hasComponent!TypeDefinition(mod, resolveAlias(mod, e))) continue; // All types are compile time known
 			nonComptimeInput = i;
 			break;
 		}

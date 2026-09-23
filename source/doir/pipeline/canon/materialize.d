@@ -65,6 +65,7 @@ private bool materializeFunctionTypeParameters(ref Module mod, EntityId ft) @tru
 	if (!refersToOwnParameters(mod, ft)) return false;
 
 	addComponent!Block(mod, ft);
+	getOrAddComponent!Flags(mod, ft).flags |= Flags.Freestanding;
 	FunctionBuilder builder;
 	builder.builder = BlockBuilder(ft, &mod);
 	pushParameters(builder, ft);

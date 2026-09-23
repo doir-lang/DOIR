@@ -1,0 +1,935 @@
+// The standard interface, implemented against `mizu.doir`.
+//
+// `standard.doir` declares the interface; this file is the half that says what
+// each name *is*. Compile it with `test_standard_mizu.doir`, which
+// early_includes `mizu.doir` ahead of it - almost every name below is one of
+// that file's.
+//
+// ---------------------------------------------------------------------------
+// What a line in this file is
+// ---------------------------------------------------------------------------
+// Most of them are renamings: a name from `standard.doir` bound to a
+// `mizu.doir` primitive of the same arity. The reflection half is nothing but
+// renamings and could not be anything else, which is what discharges R-Square
+// below - the checked and unchecked halves of the interface are one
+// instruction under two names rather than two paths to keep in agreement.
+//
+// The rest have bodies, which they can have because `compiler.return` is
+// nameable from here. A DOIR function returns by saying which register it
+// hands back (WF-Term), and that - not arithmetic, not emission - is the only
+// thing a body ever needed the assembler layer for. Three kinds appear:
+//
+//   - control flow (`if`, `while`): an inlined function that emits branches
+//     around blocks the caller quoted, which `execute` splices in where they
+//     stand;
+//   - the dispatch (`add` and everything after it): an inlined function that
+//     asks `T` which of Mizu's three readings of a 64 bit register it wants,
+//     and emits the matching instruction;
+//   - nothing, still. What is left as a TODO below is what Mizu has no
+//     instruction for, or what no instruction can reach the store with - not
+//     what the layering forbids.
+//
+// That last line is the finding, and it has moved: the file used to record
+// that `standard.doir` could not be implemented against `mizu.doir` at all
+// without a way to return. It can, and the holes that remain are the backend's
+// rather than the language's.
+//
+// ---------------------------------------------------------------------------
+// The `compiler.*` names this file uses
+// ---------------------------------------------------------------------------
+// `compiler.return` and `compiler.yield`, which say which register a body
+// hands back (WF-Term, see `return` below); `compiler.assembler.pin_register`,
+// which is how two arms of a construct agree on where their result lands;
+// `compiler.base_type`, the one type constructor whose result can be asked
+// about afterwards (see `f64`); and `compiler.byte_pointer`, the type of a
+// string literal. Every one of them is a construct of the language rather than
+// of the backend - `compiler.override_fallback_schedule` at the bottom is the
+// exception that proves it, and is the compiler being told about the backend
+// rather than the other way round. Everything else below is `mizu.doir`'s.
+//
+// ---------------------------------------------------------------------------
+// The semantics this file is written against
+// ---------------------------------------------------------------------------
+// See `standard.doir`'s own header, which this one does not repeat. The rule
+// names (M-Flag, M-Ctor, R-Qual, ...) are `doir.spec.typ`'s.
+
+// ---------------------------------------------------------------------------
+// The assembler layer's types
+// ---------------------------------------------------------------------------
+// `standard.doir` assumes `u1`, `u8` and `pointer_sized` are given to it. All
+// three are `mizu.u64`, because a Mizu register *is* 64 bits and there is
+// nothing narrower for them to be: every instruction reads and writes whole
+// registers, and the only narrowing in the machine is what a `stack_store_u8`
+// writes to memory.
+//
+// Aliases rather than `type_base` types of the widths their names claim.
+// Declaring a real 8 bit type is possible - `mizu.doir.type_base` does it - but
+// it buys a name for something the backend cannot represent, and S-Struct then
+// (correctly) refuses to pass it to arithmetic that wants 64 bits, with no
+// widening conversion anywhere to get it back. A backend with narrower
+// registers would declare them properly here; this one has one width.
+u1 : alias = mizu.u64
+u8 : alias = mizu.u64
+pointer_sized : alias = mizu.u64
+
+// ---------------------------------------------------------------------------
+// The assembler layer's numeric kinds
+// ---------------------------------------------------------------------------
+// Mizu has one register width and three readings of it - unsigned, two's
+// complement signed, and IEEE double - with a different instruction per
+// reading and nothing in a `mizu.u64` that says which one a program meant. So
+// `std.add` and its neighbours cannot be renamings the way the reflection
+// half of this file is: each has to ask its type which reading it wants and
+// emit the matching instruction.
+//
+// `attribute_id` is where the answer is kept (M-Attr): it is the one number a
+// type already carries, so the three kinds are a single tag rather than two
+// bits, and unsigned is the *absence* of one - `type_attribute_id` answers
+// zero for a type that was never pinned to a slot. The ids are interned names
+// rather than literals, which is what `intern_name` is for; a program that
+// pins its own types to slots draws from the same space and will not collide.
+unsigned_kind : pointer_sized = 0
+signed_name : compiler.byte_pointer = "signed"
+signed_kind : pointer_sized = mizu.doir.intern_name(signed_name)
+float_name : compiler.byte_pointer = "float"
+float_kind : pointer_sized = mizu.doir.intern_name(float_name)
+
+// `type_base` rather than `alias`, and no `unique`. The tag has to land on an
+// entity of its own - `set_attribute_id` acts through aliases (P3), so tagging
+// a name for `mizu.u64` would tag `mizu.u64`, and every unsigned type with it.
+// A fresh `type_base` of the same layout is a distinct entity without being a
+// distinct type: S-Struct compares <size, alignment, unique>, so `f64` still
+// agrees with `mizu.u64` and can be handed to the instructions below.
+//
+// `unique` is what the names deserve and what a real backend would write, and
+// it is exactly what this file cannot afford - it is the `u8`/`u1` argument
+// above again. A unique `f64` stops agreeing with `mizu.u64`, and every
+// instruction in `mizu.doir` takes `mizu.u64`, so the type would have nothing
+// to be passed to. The cost of not doing it is that S-Struct lets an `f64` and
+// a `u64` convert silently; nothing performs that conversion today either
+// (see `<divergences>`), so today the two costs cancel.
+//
+// `compiler.base_type` rather than `mizu.doir.type_base`, which is the same
+// constructor on the VM and is what the note above `u1` points at. The VM one
+// cannot be used *and then asked about*: every comptime evaluation writes its
+// result back as a `ComptimeNumber` on the call, `type_base`'s result is the
+// call's own entity id, and the next `canon.sort` renumbers every entity in
+// the module - so the type is left holding the id it used to have. The
+// argument loader reads a `ComptimeNumber` in preference to the live entity,
+// so `attribute.get_id_of_type(f64)` then asks about whatever now lives at
+// that id. A `compiler.base_type` is folded by `opt.foldBaseTypes` instead,
+// which leaves a type and no number.
+%64 : pointer_sized = 64
+i64 : type = compiler.base_type(%64, %64)
+_ : type = mizu.doir.type_set_attribute_id(i64, signed_kind)
+f64 : type = compiler.base_type(%64, %64)
+_ : type = mizu.doir.type_set_attribute_id(f64, float_kind)
+
+std : namespace = {
+	// -----------------------------------------------------------------------
+	// Operations on types
+	// -----------------------------------------------------------------------
+	types : namespace = {
+		// A modifier edits the type it is handed and yields an alias to it
+		// (M-Flag); a constructor allocates a new one and leaves its argument
+		// untouched (M-Ctor). One signature, because only the instruction knows
+		// which of the two it is doing.
+		export modifier_function : alias = mizu.type_modifier_t
+		export constructor_function : alias = mizu.type_modifier_t
+
+		export set_attribute_id : alias = mizu.doir.type_set_attribute_id
+		export array : alias = mizu.doir.type_array
+
+		export comptime : alias = mizu.doir.type_comptime
+		export never_monomorphize : alias = mizu.doir.type_never_monomorphize
+		export pointer : alias = mizu.doir.type_pointer
+		export union : alias = mizu.doir.type_union
+
+		// M-Unique. The one modifier that does not act through aliases, which
+		// is the instruction's business rather than anything visible here.
+		export unique : alias = mizu.doir.type_make_unique
+
+		export size_function : alias = mizu.type_query_t
+		export size_bits : alias = mizu.doir.type_size_bits
+		export align_bits : alias = mizu.doir.type_align_bits
+
+		// Every query sharing this signature asks a question *about a type*,
+		// and a type is compile time known (C-Type), so every answer is. Saying
+		// so is not decoration: `sema.bubbleComptime` runs once, in
+		// `canonicalizeSchedule`, and by then the query it would have marked is
+		// still inside a function body where nothing can evaluate it - so
+		// without the flag on the signature, `opt.inlineFunctions` reaches the
+		// call at the site that instantiated it first and replaces it with the
+		// *bytes of the instruction*. The arithmetic below reads these answers
+		// at compile time to choose what to emit, and an emitted
+		// `type_attribute_id` is not an answer.
+		//
+		// Through the alias, onto `mizu.type_query_t` itself (P3), which is
+		// what every other query in this file is declared with.
+		_ : type = comptime(size_function)
+
+		// TODO: `pack` has nothing to set. Every other modifier here is one bit
+		// of `doir.interface_.Flags`, and there is no `Pack` bit - the layout
+		// modifiers were never implemented, so C-Order (layout modifiers do not
+		// commute, lexical order decides) has nothing to order yet.
+		// export pack : alias = ...
+
+		// Placeholder, as in `standard.doir`: T-Self has no resolution rule.
+		export self : alias = u8
+	}
+
+	export byte : alias = u8
+	export byte_pointer : type = types.pointer(byte)
+	export null_terminated_byte_pointer : alias = byte_pointer
+	export index : alias = pointer_sized
+
+	// I-Import. `early_include` is a builtin of the language rather than of the
+	// compiler namespace, so it can be renamed from here.
+	export import : alias = early_include
+
+	// -----------------------------------------------------------------------
+	// Reflection: the entity store, exposed to the program
+	// -----------------------------------------------------------------------
+	meta : namespace = {
+		export entity : alias = pointer_sized
+
+		// The two crossings. `reflect` is an identity on the register - a
+		// comptime argument of type `type` reaches the VM as its entity id
+		// already - and exists so that crossing is a call the program makes.
+		export reflect : alias = mizu.doir.reflect
+		export unreflect_alias : alias = mizu.doir.unreflect_alias
+
+		// TODO: `unreflect` needs to splice an entity's *value* into the call
+		// that asked for it, the way `mizu.doir.execute` splices a block. No
+		// instruction does that yet.
+		// export unreflect : alias = ...
+
+		export rename : alias = mizu.doir.entity_rename
+
+		// R-Square, discharged by construction: `meta.types.M(reflect(T))` and
+		// `reflect(std.types.M(T))` are not two paths that have to be kept in
+		// agreement here, they are the same instruction under two names. The
+		// unchecked half of the interface collapses into the checked one
+		// because neither can be a function with a body.
+		types : namespace = {
+			export is : alias = mizu.doir.type_is
+			export set_attribute_id : alias = mizu.doir.type_set_attribute_id
+			export modifier_function : alias = mizu.type_modifier_t
+			export constructor_function : alias = mizu.type_modifier_t
+			export array : alias = mizu.doir.type_array
+			export comptime : alias = mizu.doir.type_comptime
+			export pointer : alias = mizu.doir.type_pointer
+			export union : alias = mizu.doir.type_union
+			export unique : alias = mizu.doir.type_make_unique
+			export size_bits : alias = mizu.doir.type_size_bits
+			export align_bits : alias = mizu.doir.type_align_bits
+		}
+
+		// Seven queries rather than a `location` aggregate with a `get` that
+		// returns it: a returned struct needs a function body (see the header),
+		// so each field is asked for separately, of the entity directly.
+		source_location : namespace = {
+			export get_file : alias = mizu.doir.source_location_file
+			export get_start_byte : alias = mizu.doir.source_location_start_byte
+			export get_end_byte : alias = mizu.doir.source_location_end_byte
+			export get_start_line : alias = mizu.doir.source_location_start_line
+			export get_start_column : alias = mizu.doir.source_location_start_column
+			export get_end_line : alias = mizu.doir.source_location_end_line
+			export get_end_column : alias = mizu.doir.source_location_end_column
+		}
+	}
+
+	// -----------------------------------------------------------------------
+	// Operations on functions
+	// -----------------------------------------------------------------------
+	function : namespace = {
+		export forcibly_inline : alias = mizu.doir.type_forcibly_inline
+		export always_flatten : alias = mizu.doir.type_always_flatten
+
+		// The one flag that says a function *cannot* be folded. A construct that
+		// emits code rather than computing a value needs it: its arguments are
+		// usually compile time known, and without this the evaluator runs it on
+		// the VM instead of letting it emit.
+		export never_comptime : alias = mizu.doir.type_no_comptime
+
+		// TODO: `abi_rename` is `(T: deduced type, function: T, new_name: ...)`
+		// - three parameters, where an `Opcode` has two operands and a result.
+		// `meta.rename` is the two-parameter form it would be built out of.
+
+		// TODO: `add_overload` is blocked upstream of the instruction set:
+		// `add_overload_t` returns `_`, so there is no type for an overload set
+		// and nothing for D-Deduce to solve. See `<divergences>`.
+	}
+
+	// -----------------------------------------------------------------------
+	// Diagnostics
+	// -----------------------------------------------------------------------
+	// Two parameters, not three: the message and the entity to point at have
+	// already spent both of an `Opcode`'s operands, so `standard.doir`'s `help`
+	// string has nowhere to go. The location is the entity itself rather than a
+	// `location` value, for the reason `meta.source_location` above gives.
+	diagnostic : namespace = {
+		export info : alias = mizu.doir.diagnostic_info
+		export warning : alias = mizu.doir.diagnostic_warning
+		export error : alias = mizu.doir.diagnostic_error
+	}
+
+	attribute : namespace = {
+		export get_id_of_type : alias = mizu.doir.type_attribute_id
+		export get_id_of_name : alias = mizu.doir.intern_name
+
+		// TODO: `get`, `add` and `get_or_add` attach a component chosen by a
+		// runtime id. libECRS types its components at compile time, so there is
+		// no store operation for them to be an instruction over yet.
+
+		// TODO: `get_id` is the overload set of the two above, and waits on
+		// `add_overload`.
+	}
+
+	// -----------------------------------------------------------------------
+	// Values
+	// -----------------------------------------------------------------------
+	// TODO: `cast` is a dispatch on the width of `Tout` across
+	// `mizu.convert_to_u8` / `_u16` / `_u32` / `_u64` and the float converts,
+	// which is a body. `mizu.convert_to_u64` is the identity case and the only
+	// one nameable from here.
+	export cast : alias = mizu.convert_to_u64
+
+	// `mizu.convert_to_u64` is `registers[out] = registers[a]` - a plain
+	// register copy, which is what a POD copy is. V-Copy.
+	export copy : alias = mizu.convert_to_u64
+
+	// TODO: `move` invalidates its argument (V-Move) and is otherwise `copy`.
+	// Nothing enforces the invalidation yet - that needs liveness - so binding
+	// it to the same instruction would be a claim this file cannot make.
+
+	// -----------------------------------------------------------------------
+	// Control flow
+	// -----------------------------------------------------------------------
+	// `execute` splices a quoted block into the call that ran it, at compile
+	// time. Everything below is built out of it: a control flow construct is an
+	// inlined function that emits the branches and lets `execute` put the
+	// caller's blocks between them.
+	export execute : alias = mizu.doir.execute
+	export execute_if : alias = mizu.doir.execute_if
+
+	// The one `compiler.*` name in this file, and it is a language construct
+	// rather than a backend one: WF-Term's `return`, which says *which register*
+	// a body hands back. Nothing below the language can spell it - an emitted
+	// instruction can only write to the return register, which is no help to a
+	// body with two exit points. `standard.doir` declares `return` and `yield`
+	// with exactly this signature.
+	export return : alias = compiler.return
+	export yield : alias = compiler.yield
+
+	// -----------------------------------------------------------------------
+	// `if`
+	// -----------------------------------------------------------------------
+	// The shape every construct here takes: an inlined function whose body is
+	// half object level and half meta level. `find_label`, `set_if_equal` and
+	// `branch_to` are instructions the program will run; the two `execute`s are
+	// the compiler's, and splice the caller's blocks in where they stand.
+	//
+	// That split is the reason this file nominates a schedule of its own. A
+	// meta-level call reading a `block` *parameter* has nothing to read until a
+	// call site binds one, so it can only run after `inlineFunctions` has
+	// substituted the arguments - which is later than `mizu.doir`'s schedule
+	// evaluates anything.
+	//
+	// Both arms name their result with `return`, which is what puts them in one
+	// register: the union is untagged (nothing records which branch ran), so
+	// either they agree or the result is discarded.
+	if_t : type = (condition: u1, then: block, else: block) -> _
+	_ : type = function.forcibly_inline(if_t)
+	// Emits; never runs. A condition and two quoted blocks are all comptime as
+	// often as not, and without this `sema.bubbleComptime` marks every call
+	// compile time known and the evaluator assembles a program out of the very
+	// branch instructions this exists to emit.
+	_ : type = function.never_comptime(if_t)
+	export if : if_t = {
+		// `x0` reads as zero on every Mizu machine, so the compare costs no
+		// instruction - only the pin that says which register it is.
+		zero : mizu.u64 = 0
+		_ : _ = compiler.assembler.pin_register(mizu.u64, zero, mizu.x0)
+
+		// Named before the `label()` that defines it (R-Order): a block's
+		// declarations are mutually visible, which is what lets the branch
+		// forward.
+		else_addr : _ = find_label(else_label)
+		end_addr : _ = find_label(end_label)
+		// `mizu.set_if_equal` rather than `is_equal`, which is now the
+		// dispatch below and would be a whole type query to answer a question
+		// this already knows: `condition` is a `u1`.
+		inverted : _ = mizu.set_if_equal(condition, zero)
+		_ : _ = branch_to(inverted, else_addr)
+
+		taken : _ = execute(then)
+		_ : _ = compiler.assembler.pin_register(mizu.u64, taken, mizu.x1)
+		_ : _ = jump_to(end_addr)
+
+		else_label : _ = label()
+		not_taken : _ = execute(else)
+		_ : _ = compiler.assembler.pin_register(mizu.u64, not_taken, mizu.x1)
+
+		end_label : _ = label()
+		_ : _ = return(taken)
+	}
+
+	// -----------------------------------------------------------------------
+	// `while`
+	// -----------------------------------------------------------------------
+	// `if` with one arm, a label above the test, and a jump back to it below
+	// the body. The test is at the top rather than the bottom because the spec
+	// says the loop may run zero times.
+	//
+	// `condition` is a register the caller computed once, not a block, so
+	// re-testing it each time round only means anything if the body writes it
+	// again - which is what the pin is for. `x2` is where an iteration has to
+	// leave the next condition, exactly as `if`'s two arms agree on `x1` for
+	// their result, and a body that never writes it spins forever. The
+	// signature is the defect: `while` should take a `block` for its test the
+	// way `if` takes blocks for its arms, and a pinned register is as close as
+	// the declared one can be brought.
+	//
+	// The spec's result type is `pointer(typeof(body))` - null when the loop
+	// ran zero times - and this hands back the body's register instead.
+	// Nothing here can build that pointer: there is no allocation on this path
+	// and no null to store in it, so the caller cannot tell a loop that ran
+	// zero times from one whose last iteration yielded zero.
+	while_t : type = (condition: u1, body: block) -> _
+	_ : type = function.forcibly_inline(while_t)
+	_ : type = function.never_comptime(while_t)
+	export while : while_t = {
+		zero : mizu.u64 = 0
+		_ : _ = compiler.assembler.pin_register(mizu.u64, zero, mizu.x0)
+		_ : _ = compiler.assembler.pin_register(u1, condition, mizu.x2)
+
+		// Both addresses are found once, above the loop, rather than each time
+		// round it: `find_label` searches the program, and the program does not
+		// move.
+		top_addr : _ = find_label(top_label)
+		end_addr : _ = find_label(end_label)
+
+		top_label : _ = label()
+		inverted : _ = mizu.set_if_equal(condition, zero)
+		_ : _ = branch_to(inverted, end_addr)
+
+		value : _ = execute(body)
+		_ : _ = compiler.assembler.pin_register(mizu.u64, value, mizu.x1)
+		_ : _ = jump_to(top_addr)
+
+		end_label : _ = label()
+		_ : _ = return(value)
+	}
+
+	// TODO: `defer` is not this shape, which is why it is still here. `if` and
+	// `while` emit around a block the caller handed them; `defer` has to emit
+	// its block at every exit point of the block that *called* it - after the
+	// last statement, and ahead of each `return` and `yield` above it. A callee
+	// cannot see any of that: `execute` splices where the call stands, and
+	// there is no instruction that walks out to the caller's block and splices
+	// once per terminator. The compiler-side pass that does it, or an
+	// instruction that exposes the caller's block the way `block` exposes a
+	// quoted one, is what this waits on.
+
+	// -----------------------------------------------------------------------
+	// Mizu Core
+	// -----------------------------------------------------------------------
+	// `label` and `find_label` take a name in `standard.doir` and a 32 bit
+	// immediate in Mizu, with only the first four characters significant.
+	// `label_to_immediate` is the fold between them, which
+	// `opt.mizu.materializeLabels` otherwise does compiler-side.
+	export label : alias = mizu.label
+	export find_label : alias = mizu.find_label
+	export label_to_immediate : alias = mizu.doir.label_to_immediate
+
+	export halt : alias = mizu.halt
+
+	export debug_print : alias = mizu.debug_print
+	export debug_print_binary : alias = mizu.debug_print_binary
+
+	// TODO: `load` and `store` dispatch on the size of `T` across the four
+	// `stack_load_u*` / `stack_store_u*`. These are the 64 bit case.
+	export load : alias = mizu.stack_load_u64
+	export store : alias = mizu.stack_store_u64
+
+	pointer : namespace = {
+		// TODO: Mizu has no instruction that dereferences a pointer. The
+		// closest is `unsafe.copy_memory`, which reads its *output* register as
+		// the destination pointer and so cannot be bound at all under the
+		// calling convention `mizu.doir` emits. A `pointer_load_u{8,16,32,64}`
+		// / `pointer_store_u{8,16,32,64}` family - the `stack_load_*` code with
+		// `sp + offset` replaced by the register - is what these two want.
+
+		// Registers are already immutable (SSA); memory reached through a
+		// pointer is the only thing that is not.
+		export immutable : alias = mizu.doir.type_comptime
+	}
+
+	stack : namespace = {
+		export push : alias = mizu.stack_push
+		export pop : alias = mizu.stack_pop
+		export bottom : alias = mizu.pointer_to_stack_bottom
+		export to_pointer : alias = mizu.pointer_to_stack
+
+		// TODO: `allocate(T)` is `push(size_bits(T) / 8)` followed by
+		// `to_pointer(0)` - two instructions, so a body.
+
+		export allocate_bytes : alias = mizu.allocate
+		export free_bytes : alias = mizu.free_allocated
+	}
+
+	export jump_relative : alias = mizu.jump_relative
+	export jump_to : alias = mizu.jump_to
+
+	export branch_relative : alias = mizu.branch_relative
+	export branch_to : alias = mizu.branch_to
+
+	// -----------------------------------------------------------------------
+	// Arithmetic and comparison: the dispatch
+	// -----------------------------------------------------------------------
+	// A Mizu register is 64 bits and nothing in it says how to read them, so
+	// every operation from here to the end of the file is an emitter rather
+	// than a renaming: it asks `T` which of the three kinds it is and emits the
+	// matching instruction. `standard.doir` writes each of these as one
+	// `(T: deduced type, ...)` function, which is what forces the question -
+	// the alternative, an overload set per operation, waits on `add_overload`.
+	//
+	// The shape every one of them repeats:
+	//
+	//   - one quoted block per instruction, each yielding its result;
+	//   - one comptime condition per block, read off `T`'s attribute id;
+	//   - one `execute_if` per block, which splices the block into itself when
+	//     the condition holds and deletes itself when it does not.
+	//
+	// Exactly one condition is true, so exactly one instruction is emitted and
+	// the others never reach the machine. Everything above the `execute_if`s
+	// is folded before the program exists: `kind` is a question about a type,
+	// and the comparisons against it have two compile time known operands.
+	//
+	// Every surviving `execute_if` is named by a `return`. That is all `return`
+	// does - it gives its argument the enclosing block's register (WF-Term) -
+	// so the arms agree on where the result lands without any of them knowing
+	// which one ran, exactly as `if`'s two arms do, and the deleted ones name a
+	// register nothing emits. Inside an arm, `yield` does the same one level
+	// down: it puts the instruction's result in the register of the
+	// `execute_if` that spliced it.
+	//
+	// Two things this leans on, both argued at the schedule at the bottom of
+	// the file. `opt.inlineFunctions` has to leave the chain
+	// `kind` -> condition -> `execute_if` for the evaluator instead of
+	// replacing each link with the bytes of the instruction that computes it.
+	// And the arms are quoted blocks declared inside a function body, so they
+	// have to travel with a copy of that body - one arm per instantiation, each
+	// naming that instantiation's arguments.
+	//
+	// The conditions are written in `mizu.set_if_*` rather than in `is_equal`
+	// below, which would be a call to the very dispatch being defined.
+	binary_t : type = (T: deduced type, a: T, b: T) -> T
+	_ : type = function.forcibly_inline(binary_t)
+	// Emits; never runs. For `if`'s reason: arithmetic on two compile time
+	// known operands is the common case, and without this the evaluator folds
+	// the call and the dispatch never emits anything.
+	_ : type = function.never_comptime(binary_t)
+	// A comparison answers `u1` whatever it compared, so its result type is not
+	// its argument type and it needs a signature of its own.
+	compare_t : type = (T: deduced type, a: T, b: T) -> u1
+	_ : type = function.forcibly_inline(compare_t)
+	_ : type = function.never_comptime(compare_t)
+	predicate_t : type = (T: deduced type, v: T) -> u1
+	_ : type = function.forcibly_inline(predicate_t)
+	_ : type = function.never_comptime(predicate_t)
+
+	// Two's complement is what makes this a two-way question rather than a
+	// three-way one: one instruction adds signed and unsigned alike, and the
+	// same goes for `subtract` and `multiply`. `divide`, `modulus` and the
+	// ordering comparisons are where signedness starts to cost an instruction.
+	export add : binary_t = {
+		float_arm : block = {
+			v : _ = mizu.add_f64(a, b)
+			_ : _ = yield(v)
+		}
+		integer_arm : block = {
+			v : _ = mizu.add(a, b)
+			_ : _ = yield(v)
+		}
+		kind : index = attribute.get_id_of_type(T)
+		floating : u1 = mizu.set_if_equal(kind, float_kind)
+		integral : u1 = mizu.set_if_not_equal(kind, float_kind)
+		float_result : _ = execute_if(float_arm, floating)
+		integer_result : _ = execute_if(integer_arm, integral)
+		_ : _ = return(float_result)
+		_ : _ = return(integer_result)
+	}
+
+	export subtract : binary_t = {
+		float_arm : block = {
+			v : _ = mizu.subtract_f64(a, b)
+			_ : _ = yield(v)
+		}
+		integer_arm : block = {
+			v : _ = mizu.subtract(a, b)
+			_ : _ = yield(v)
+		}
+		kind : index = attribute.get_id_of_type(T)
+		floating : u1 = mizu.set_if_equal(kind, float_kind)
+		integral : u1 = mizu.set_if_not_equal(kind, float_kind)
+		float_result : _ = execute_if(float_arm, floating)
+		integer_result : _ = execute_if(integer_arm, integral)
+		_ : _ = return(float_result)
+		_ : _ = return(integer_result)
+	}
+
+	export multiply : binary_t = {
+		float_arm : block = {
+			v : _ = mizu.multiply_f64(a, b)
+			_ : _ = yield(v)
+		}
+		integer_arm : block = {
+			v : _ = mizu.multiply(a, b)
+			_ : _ = yield(v)
+		}
+		kind : index = attribute.get_id_of_type(T)
+		floating : u1 = mizu.set_if_equal(kind, float_kind)
+		integral : u1 = mizu.set_if_not_equal(kind, float_kind)
+		float_result : _ = execute_if(float_arm, floating)
+		integer_result : _ = execute_if(integer_arm, integral)
+		_ : _ = return(float_result)
+		_ : _ = return(integer_result)
+	}
+
+	// Two arms, not three, though this is where signedness starts to matter:
+	// Mizu has `divide` and `divide_f64` and nothing between them - no
+	// `divide_signed`, unlike the shifts and the ordering comparisons - so a
+	// signed `T` gets the unsigned instruction, which is wrong for every
+	// negative operand. Naming the hole is all a dispatch can do about it; see
+	// the note under `modulus`.
+	export divide : binary_t = {
+		float_arm : block = {
+			v : _ = mizu.divide_f64(a, b)
+			_ : _ = yield(v)
+		}
+		integer_arm : block = {
+			v : _ = mizu.divide(a, b)
+			_ : _ = yield(v)
+		}
+		kind : index = attribute.get_id_of_type(T)
+		floating : u1 = mizu.set_if_equal(kind, float_kind)
+		integral : u1 = mizu.set_if_not_equal(kind, float_kind)
+		float_result : _ = execute_if(float_arm, floating)
+		integer_result : _ = execute_if(integer_arm, integral)
+		_ : _ = return(float_result)
+		_ : _ = return(integer_result)
+	}
+
+	// Not a dispatch, and this is the rule the ones above follow: an operation
+	// dispatches exactly where Mizu has more than one instruction to dispatch
+	// *to*. `modulus` has one - integer, unsigned - and no float or signed
+	// counterpart, so every arm this could grow would either emit the same
+	// instruction under a different condition or emit nothing at all, and an
+	// arm that emits nothing leaves the result register unwritten. A rename
+	// that is wrong for two of the three kinds is at least visibly a rename.
+	//
+	// TODO: `modulus_f64`, `divide_signed` and `modulus_signed` are what this
+	// and `divide`'s integer arm are waiting on. They are Mizu's to add.
+	export modulus : alias = mizu.modulus
+
+	// Four comparisons, not six: the set is closed under swapping operands, so
+	// `a > b` is `is_less(b, a)` and `a <= b` is `is_greater_equal(b, a)`.
+	//
+	// Equality is two-way - the bit patterns compare the same signed or
+	// unsigned, and only the float instruction differs, because it has NaN to
+	// account for. Ordering is three-way.
+	export is_equal : compare_t = {
+		float_arm : block = {
+			v : _ = mizu.set_if_equal_f64(a, b)
+			_ : _ = yield(v)
+		}
+		integer_arm : block = {
+			v : _ = mizu.set_if_equal(a, b)
+			_ : _ = yield(v)
+		}
+		kind : index = attribute.get_id_of_type(T)
+		floating : u1 = mizu.set_if_equal(kind, float_kind)
+		integral : u1 = mizu.set_if_not_equal(kind, float_kind)
+		float_result : _ = execute_if(float_arm, floating)
+		integer_result : _ = execute_if(integer_arm, integral)
+		_ : _ = return(float_result)
+		_ : _ = return(integer_result)
+	}
+
+	export is_not_equal : compare_t = {
+		float_arm : block = {
+			v : _ = mizu.set_if_not_equal_f64(a, b)
+			_ : _ = yield(v)
+		}
+		integer_arm : block = {
+			v : _ = mizu.set_if_not_equal(a, b)
+			_ : _ = yield(v)
+		}
+		kind : index = attribute.get_id_of_type(T)
+		floating : u1 = mizu.set_if_equal(kind, float_kind)
+		integral : u1 = mizu.set_if_not_equal(kind, float_kind)
+		float_result : _ = execute_if(float_arm, floating)
+		integer_result : _ = execute_if(integer_arm, integral)
+		_ : _ = return(float_result)
+		_ : _ = return(integer_result)
+	}
+
+	export is_less : compare_t = {
+		float_arm : block = {
+			v : _ = mizu.set_if_less_f64(a, b)
+			_ : _ = yield(v)
+		}
+		signed_arm : block = {
+			v : _ = mizu.set_if_less_signed(a, b)
+			_ : _ = yield(v)
+		}
+		unsigned_arm : block = {
+			v : _ = mizu.set_if_less(a, b)
+			_ : _ = yield(v)
+		}
+		kind : index = attribute.get_id_of_type(T)
+		floating : u1 = mizu.set_if_equal(kind, float_kind)
+		signed : u1 = mizu.set_if_equal(kind, signed_kind)
+		unsigned : u1 = mizu.set_if_equal(kind, unsigned_kind)
+		float_result : _ = execute_if(float_arm, floating)
+		signed_result : _ = execute_if(signed_arm, signed)
+		unsigned_result : _ = execute_if(unsigned_arm, unsigned)
+		_ : _ = return(float_result)
+		_ : _ = return(signed_result)
+		_ : _ = return(unsigned_result)
+	}
+
+	export is_greater_equal : compare_t = {
+		float_arm : block = {
+			v : _ = mizu.set_if_greater_equal_f64(a, b)
+			_ : _ = yield(v)
+		}
+		signed_arm : block = {
+			v : _ = mizu.set_if_greater_equal_signed(a, b)
+			_ : _ = yield(v)
+		}
+		unsigned_arm : block = {
+			v : _ = mizu.set_if_greater_equal(a, b)
+			_ : _ = yield(v)
+		}
+		kind : index = attribute.get_id_of_type(T)
+		floating : u1 = mizu.set_if_equal(kind, float_kind)
+		signed : u1 = mizu.set_if_equal(kind, signed_kind)
+		unsigned : u1 = mizu.set_if_equal(kind, unsigned_kind)
+		float_result : _ = execute_if(float_arm, floating)
+		signed_result : _ = execute_if(signed_arm, signed)
+		unsigned_result : _ = execute_if(unsigned_arm, unsigned)
+		_ : _ = return(float_result)
+		_ : _ = return(signed_result)
+		_ : _ = return(unsigned_result)
+	}
+
+	// The signed comparisons `standard.doir` does not declare, kept because
+	// they are what `is_less`'s signed arm emits and a program that knows its
+	// operands are signed should not have to tag a type to say so.
+	export is_less_signed : alias = mizu.set_if_less_signed
+	export is_greater_equal_signed : alias = mizu.set_if_greater_equal_signed
+
+	// Float only, and aliases for `modulus`'s reason: there is no integer
+	// `max`, `min` or `sqrt` in Mizu's core to dispatch to. `max` and `min` are
+	// a comparison and a branch away - which this file can now write, but not
+	// without a label, and a label inside a body inlined at two call sites is
+	// what the schedule's third note is about. Integer `sqrt` is not
+	// synthesizable at all.
+	export max : alias = mizu.max_f64
+	export min : alias = mizu.min_f64
+	export sqrt : alias = mizu.sqrt_f64
+
+	export shift_left : alias = mizu.shift_left
+	export shift_right : alias = mizu.shift_right_logical
+	export shift_right_arithmetic : alias = mizu.shift_right_arithmetic
+	export bitwise_xor : alias = mizu.bitwise_xor
+	export bitwise_or : alias = mizu.bitwise_or
+	export bitwise_and : alias = mizu.bitwise_and
+	// No bitwise_not: it is bitwise_xor against an all-ones register.
+
+	// The sign predicates dispatch; `is_infinity` and `is_nan` cannot, because
+	// only a float has either, so for an integer the honest answer is a
+	// constant rather than an instruction - and there is no way to *return a
+	// constant* here. An arm has to yield a register, and nothing loads one
+	// without an instruction to load it with.
+	export is_negative : predicate_t = {
+		float_arm : block = {
+			r : _ = mizu.set_if_negative_f64(v)
+			_ : _ = yield(r)
+		}
+		// Two's complement: negative is the top bit, which is what
+		// `set_if_less_signed` against `x0` reads. `mizu.x0` is zero on every
+		// Mizu machine, so this is one instruction and no constant.
+		signed_arm : block = {
+			zero : mizu.u64 = 0
+			_ : _ = compiler.assembler.pin_register(mizu.u64, zero, mizu.x0)
+			r : _ = mizu.set_if_less_signed(v, zero)
+			_ : _ = yield(r)
+		}
+		// An unsigned value is never negative, and `set_if_less` against zero
+		// is how that constant gets into a register.
+		unsigned_arm : block = {
+			zero : mizu.u64 = 0
+			_ : _ = compiler.assembler.pin_register(mizu.u64, zero, mizu.x0)
+			r : _ = mizu.set_if_less(v, zero)
+			_ : _ = yield(r)
+		}
+		kind : index = attribute.get_id_of_type(T)
+		floating : u1 = mizu.set_if_equal(kind, float_kind)
+		signed : u1 = mizu.set_if_equal(kind, signed_kind)
+		unsigned : u1 = mizu.set_if_equal(kind, unsigned_kind)
+		float_result : _ = execute_if(float_arm, floating)
+		signed_result : _ = execute_if(signed_arm, signed)
+		unsigned_result : _ = execute_if(unsigned_arm, unsigned)
+		_ : _ = return(float_result)
+		_ : _ = return(signed_result)
+		_ : _ = return(unsigned_result)
+	}
+
+	export is_positive : predicate_t = {
+		float_arm : block = {
+			r : _ = mizu.set_if_positive_f64(v)
+			_ : _ = yield(r)
+		}
+		signed_arm : block = {
+			zero : mizu.u64 = 0
+			_ : _ = compiler.assembler.pin_register(mizu.u64, zero, mizu.x0)
+			r : _ = mizu.set_if_greater_equal_signed(v, zero)
+			_ : _ = yield(r)
+		}
+		unsigned_arm : block = {
+			zero : mizu.u64 = 0
+			_ : _ = compiler.assembler.pin_register(mizu.u64, zero, mizu.x0)
+			r : _ = mizu.set_if_greater_equal(v, zero)
+			_ : _ = yield(r)
+		}
+		kind : index = attribute.get_id_of_type(T)
+		floating : u1 = mizu.set_if_equal(kind, float_kind)
+		signed : u1 = mizu.set_if_equal(kind, signed_kind)
+		unsigned : u1 = mizu.set_if_equal(kind, unsigned_kind)
+		float_result : _ = execute_if(float_arm, floating)
+		signed_result : _ = execute_if(signed_arm, signed)
+		unsigned_result : _ = execute_if(unsigned_arm, unsigned)
+		_ : _ = return(float_result)
+		_ : _ = return(signed_result)
+		_ : _ = return(unsigned_result)
+	}
+
+	// Float only. An integer is neither, and saying so takes a constant this
+	// file has no way to produce - see the note above `is_negative`.
+	export is_infinity : alias = mizu.set_if_infinity_f64
+	export is_nan : alias = mizu.set_if_nan_f64
+
+	// The float instructions, reachable without going through the dispatch -
+	// and the conversions, which nothing above can reach at all. `standard.doir`
+	// never named any of them because it assumed one overload set per
+	// operation.
+	//
+	// Named `float` rather than `f64`, which is what it was: `f64` is now a
+	// type at the root, and by R-Unqual a bare `f64` anywhere inside `std`
+	// would find this namespace instead and the type would be unspellable from
+	// the whole file.
+	float : namespace = {
+		export add : alias = mizu.add_f64
+		export subtract : alias = mizu.subtract_f64
+		export multiply : alias = mizu.multiply_f64
+		export divide : alias = mizu.divide_f64
+		export is_equal : alias = mizu.set_if_equal_f64
+		export is_not_equal : alias = mizu.set_if_not_equal_f64
+		export is_less : alias = mizu.set_if_less_f64
+		export is_greater_equal : alias = mizu.set_if_greater_equal_f64
+		export from_unsigned : alias = mizu.convert_to_f64
+		export from_signed : alias = mizu.convert_signed_to_f64
+		export to_unsigned : alias = mizu.convert_from_f64
+		export to_signed : alias = mizu.convert_signed_from_f64
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The schedule
+// ---------------------------------------------------------------------------
+// `mizu.doir`'s own schedule is left exactly as it is: it lowers a program
+// written in Mizu instructions, and that is all it has to do. This one is the
+// same list with the four changes the standard interface needs, and it is
+// nominated from here rather than there because they are this layer's
+// requirements, not the backend's. Nomination is outermost-then-bottom-most, so
+// including this file after `mizu.doir` is what makes it win.
+//
+//   1. `comptimeEvaluateVisitor` after `inlineFunctions`. A meta-level call
+//      inside a function body - `std.execute(t)` on a `block` parameter - reads
+//      a value that only a call site can supply, so it cannot run until
+//      inlining has substituted one in. Every control flow construct below is
+//      built this way, which is why `mizu.doir` does not need the pass and this
+//      file cannot do without it.
+//   2. Registers again afterwards, because a body copied into a call site is
+//      new entities and a copy carries no `AssignedRegister`.
+//   3. `materializeLabels` after inlining rather than before. A label id is
+//      what `find_label` searches for, a copy does not carry one, and two
+//      inlinings of one `if` must not answer to the same label.
+//   4. `stripFreestandingBlocks` once more, after the evaluation. The dispatch
+//      arms are quoted blocks declared inside a function body, which
+//      `canon.stripFreestandingBlocks` leaves where they are so that a copy of
+//      the body brings them along; once a call site has been inlined and its
+//      dispatch resolved, the copies are ordinary module-scope quoted blocks
+//      with nothing left to splice them.
+schedule : compiler.byte_pointer = """
+	sequential(
+		depthFirst(nameReuse),
+		depthFirst(functionArity),
+		breadthFirst(foldBaseTypes),
+		depthFirst(typeCheck),
+		depthFirst(computeTypeProperties),
+
+		applyGlobally(sequential(
+			sort,
+			depthFirst(pinRegisters),
+			breadthFirst(allocateRegisters),
+			depthFirst(pinRegisters)
+		)),
+
+		breadthFirst(computeCompilerNamespace!false),
+		depthFirst(materializeImmediates),
+		sorted(monomorphizeFunctions, false),
+		breadthFirst(inlineFunctions),
+
+		// One walk does a whole dispatch: it is depth first, so it reaches
+		// `kind` before the comparison that reads it and the comparison before
+		// the `execute_if` that reads *that*.
+		depthFirst(comptimeEvaluateVisitor),
+		// The dispatch arms, now that the dispatch has chosen between them.
+		// `canon.stripFreestandingBlocks` leaves a quoted block declared inside
+		// a function body alone, because a copy of that body has to bring its
+		// blocks with it - `std.add`'s arms name its parameters. The copies it
+		// brought are at module scope and spent by the time the line above is
+		// done.
+		//
+		// Which is also why no arm here holds a comptime call: an arm is walked
+		// whether or not it was chosen, so a fold with an effect - a
+		// `diagnostic.error` on the kind that has no instruction - fires from
+		// the arm that was about to be deleted. Every arm in this file emits
+		// and does nothing else.
+		breadthFirst(stripFreestandingBlocks),
+
+		applyGlobally(sequential(
+			depthFirst(pinRegisters),
+			breadthFirst(allocateRegisters),
+			depthFirst(pinRegisters)
+		)),
+		depthFirst(materializeLabels),
+		// `materializeLabels` does not emit a whole label instruction: it emits
+		// the operand half and an `inline mizu.label_op()` for the opcode's
+		// eight bytes, since the instruction id is `mizu.doir`'s to know and not
+		// the compiler's. So it owes an inliner afterwards. `mizu.doir` pays
+		// that by running it *before* `inlineFunctions`; moving it after, as
+		// point 3 above does, means paying it here instead - without this line
+		// each label emits eight bytes rather than sixteen and every
+		// instruction after it decodes against the wrong boundary.
+		breadthFirst(inlineFunctions),
+		breadthFirst(computeCompilerNamespace!false),
+		breadthFirst(computeCompilerNamespace!true)
+	)
+"""
+_ : compiler.pointer_sized = compiler.override_fallback_schedule(schedule)

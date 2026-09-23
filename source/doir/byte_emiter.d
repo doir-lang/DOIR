@@ -30,6 +30,13 @@ private void emitNumberAssign(ref ubyte** values, ref Module mod, EntityId subtr
 	// `compiler.emit`.
 	auto number = comptimeNumber(mod, subtree);
 	if (!number.isNull) {
+		// A folded call keeps its `TypeOf`; one that *replaced* itself does not.
+		// A comptime instruction that turns its own call into a type or an alias
+		// (`mizu.doir.type_pointer`, the M-Flag family) leaves both the
+		// `ComptimeNumber` the evaluator writes back and no declared type, and
+		// an entity with no declared type is certainly not a byte.
+		if (!hasComponent!TypeOf(mod, subtree)) return;
+
 		immutable byteType = resolveLookupName(mod, internIn(mod, "compiler.byte"), 1);
 		if (resolveAlias(mod, getComponent!TypeOf(mod, subtree).related[0]) != byteType) return;
 
@@ -38,6 +45,8 @@ private void emitNumberAssign(ref ubyte** values, ref Module mod, EntityId subtr
 	}
 
 	if (hasComponent!DString(mod, subtree)) {
+		if (!hasComponent!TypeOf(mod, subtree)) return;
+
 		immutable bytePointer = resolveLookupName(mod, internIn(mod, "compiler.byte_pointer"), 1);
 		if (resolveAlias(mod, getComponent!TypeOf(mod, subtree).related[0]) != bytePointer) return;
 
