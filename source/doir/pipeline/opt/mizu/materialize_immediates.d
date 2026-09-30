@@ -1,6 +1,10 @@
 /// `opt.mizu.materializeImmediates`: expands a `mizu.load_immediate` call
 /// into the byte sequence that encodes the instruction. Ported from
 /// opt/mizu/materialize_immediates.hpp.
+///
+/// `mizu.load_u64_immediate` and `mizu.load_f64_immediate` expand here too:
+/// they are the same encoding done twice, since a Mizu immediate is 32 bits
+/// wide and the second instruction carries the half that did not fit.
 module doir.pipeline.opt.mizu.materialize_immediates;
 
 import core.stdc.stdio : snprintf;
@@ -29,6 +33,8 @@ bool materializeImmediates(ref Module mod, EntityId subtree) @trusted {
 	immutable loadImmediateOp = resolveCached(mod, "mizu.load_immediate_op", 1);
 	immutable loadUpperImmediate = resolveCached(mod, "mizu.load_upper_immediate", 1);
 	immutable loadUpperImmediateOp = resolveCached(mod, "mizu.load_upper_immediate_op", 1);
+	immutable loadU64Immediate = resolveCached(mod, "mizu.load_u64_immediate", 1);
+	immutable loadF64Immediate = resolveCached(mod, "mizu.load_f64_immediate", 1);
 
 	immutable function_ = resolveAlias(mod, getComponent!Call(mod, subtree).related[0]);
 	// `invalidEntity` is 0, and it is what both an unresolved callee and an
@@ -39,69 +45,114 @@ bool materializeImmediates(ref Module mod, EntityId subtree) @trusted {
 	// inputs" against a synthesized entity, which aborts in
 	// `findSourceLocation`. An unresolved callee is not any of these.
 	if (function_ == invalidEntity) return true;
-	if (!(function_ == loadImmediate || function_ == loadUpperImmediate)) return true;
+	if (!(function_ == loadImmediate || function_ == loadUpperImmediate
+		|| function_ == loadU64Immediate || function_ == loadF64Immediate)) return true;
+
+	immutable(char)[] name = function_ == loadUpperImmediate ? "load_upper_immediate"
+		: function_ == loadU64Immediate ? "load_u64_immediate"
+		: function_ == loadF64Immediate ? "load_f64_immediate" : "load_immediate";
 
 	if (!hasComponent!FunctionInputs(mod, subtree)) {
-		expectsXInputs(mod, subtree, "load_immediate", "two");
+		expectsXInputs(mod, subtree, name, "two");
 		return false;
 	}
 
 	auto inputs = resolvedInputs(mod, subtree);
 	scope(exit) fp.dynarray.free(inputs);
 	if (daLength(inputs) != 2) {
-		expectsXInputs(mod, subtree, "load_immediate", "two");
+		expectsXInputs(mod, subtree, name, "two");
 		return false;
 	}
 
 	auto constant = comptimeNumber(mod, inputs[1]);
 	if (constant.isNull) {
 		// TODO: It would probably be good to relax this constraint in the future
-		parameterError(mod, subtree, "load_immediate", 0, " must evaluate to a numeric constant");
+		parameterError(mod, subtree, name, 0, " must evaluate to a numeric constant");
 		return false;
 	}
 
 	immutable target = inputs[1];
-	immutable uint value = cast(uint) constant.get;
+
+	// TODO: Some sort of actual register allocation logic would be nice
+	// Asked before the surgery below rather than halfway through it, so a
+	// rejected call is left intact the way every rejection above leaves it.
+	if (!hasComponent!AssignedRegister(mod, target)) {
+		noAssociatedRegister(mod, subtree, target);
+		return false;
+	}
+	immutable r = getComponent!AssignedRegister(mod, target).reg;
+
+	// `load_immediate` and `load_upper_immediate` encode the one instruction
+	// they name and truncate to it - `opt.mizu.comptimeEvaluate` pairs them by
+	// hand off two entities. The `_u64`/`_f64` forms take the whole value and
+	// split it themselves: an integer straight across (`real` carries a 64 bit
+	// mantissa, so the conversion is exact over the range), a float as the bit
+	// pattern of the double rather than its value.
+	immutable bool splits = function_ == loadU64Immediate || function_ == loadF64Immediate;
+	ulong value;
+	if (function_ == loadF64Immediate) {
+		immutable double d = cast(double) constant.get;
+		value = *cast(const(ulong)*) &d;
+	} else if (function_ == loadU64Immediate)
+		value = cast(ulong) constant.get;
+	else
+		value = cast(uint) constant.get;
 
 	immutable type = getComponent!TypeOf(mod, subtree).related[0];
 	removeComponent!TypeOf(mod, subtree);
 	removeComponent!Call(mod, subtree);
 	auto builder = attachSubblock(mod, subtree, type);
 	{
-		EntityId[1] opInputs = [u64];
-		immutable c = function_ == loadImmediate
-			? pushCall(builder, InternedString("_"), u64, loadImmediateOp, opInputs[])
-			: pushCall(builder, InternedString("_"), u64, loadUpperImmediateOp, opInputs[]);
-		getOrAddComponent!Flags(mod, c).flags = Flags.Inline;
-
-		// TODO: Some sort of actual register allocation logic would be nice
-		if (!hasComponent!AssignedRegister(mod, target)) {
-			noAssociatedRegister(mod, subtree, target);
-			return false;
-		}
-		immutable r = getComponent!AssignedRegister(mod, target).reg;
 		getOrAddComponent!AssignedRegister(mod, subtree).reg = r;
 
-		immutable ubyte low = cast(ubyte)(r & 0xFF);
-		EntityId[1] emitInputs;
-		emitInputs[0] = pushNumber(builder, internIn(mod, "low"), byteType, low);
-		pushCall(builder, InternedString("_"), byteType, emit, emitInputs[]);
+		/// One instruction: the `_op` call, the register, the 32 bit immediate,
+		/// and the padding out to the operand width. `tag` keeps the two
+		/// copies' declaration names apart.
+		void encode(EntityId op, uint immediate, const(char)[] tag) @trusted {
+			EntityId[1] opInputs = [u64];
+			immutable c = pushCall(builder, InternedString("_"), u64, op, opInputs[]);
+			getOrAddComponent!Flags(mod, c).flags = Flags.Inline;
 
-		immutable ubyte high = cast(ubyte)((r >> 8) & 0xFF);
-		emitInputs[0] = pushNumber(builder, internIn(mod, "high"), byteType, high);
-		pushCall(builder, InternedString("_"), byteType, emit, emitInputs[]);
+			char[32] buffer;
+			EntityId[1] emitInputs;
 
-		auto bytes = (cast(const(ubyte)*) &value)[0 .. uint.sizeof];
-		foreach (i; 0 .. bytes.length) {
-			char[24] buffer;
-			immutable n = snprintf(buffer.ptr, buffer.length, "%%%zu", i);
-			emitInputs[0] = pushNumber(builder, internIn(mod, buffer[0 .. n]), byteType, cast(int) bytes[i]);
+			immutable nLow = snprintf(buffer.ptr, buffer.length, "low%.*s",
+				cast(int) tag.length, tag.ptr);
+			emitInputs[0] = pushNumber(builder, internIn(mod, buffer[0 .. nLow]), byteType,
+				cast(ubyte)(r & 0xFF));
 			pushCall(builder, InternedString("_"), byteType, emit, emitInputs[]);
+
+			immutable nHigh = snprintf(buffer.ptr, buffer.length, "high%.*s",
+				cast(int) tag.length, tag.ptr);
+			emitInputs[0] = pushNumber(builder, internIn(mod, buffer[0 .. nHigh]), byteType,
+				cast(ubyte)((r >> 8) & 0xFF));
+			pushCall(builder, InternedString("_"), byteType, emit, emitInputs[]);
+
+			auto bytes = (cast(const(ubyte)*) &immediate)[0 .. uint.sizeof];
+			foreach (i; 0 .. bytes.length) {
+				immutable n = snprintf(buffer.ptr, buffer.length, "%%%zu%.*s",
+					i, cast(int) tag.length, tag.ptr);
+				emitInputs[0] = pushNumber(builder, internIn(mod, buffer[0 .. n]), byteType,
+					cast(int) bytes[i]);
+				pushCall(builder, InternedString("_"), byteType, emit, emitInputs[]);
+			}
+
+			immutable nZero = snprintf(buffer.ptr, buffer.length, "zero%.*s",
+				cast(int) tag.length, tag.ptr);
+			emitInputs[0] = pushNumber(builder, internIn(mod, buffer[0 .. nZero]), byteType, 0);
+			foreach (_; 0 .. 2) // Need to fill in another uint16_t
+				pushCall(builder, InternedString("_"), byteType, emit, emitInputs[]);
 		}
 
-		emitInputs[0] = pushNumber(builder, internIn(mod, "zero"), byteType, 0);
-		foreach (_; 0 .. 2) // Need to fill in another uint16_t
-			pushCall(builder, InternedString("_"), byteType, emit, emitInputs[]);
+		if (splits) {
+			encode(loadImmediateOp, cast(uint) value, "");
+			// `load_immediate` clears the whole register, so the upper half has
+			// to follow it - and only when there is one, which is what makes a
+			// value that fits cost a single instruction.
+			if (value >> 32) encode(loadUpperImmediateOp, cast(uint)(value >> 32), "_upper");
+		} else
+			encode(function_ == loadImmediate ? loadImmediateOp : loadUpperImmediateOp,
+				cast(uint) value, "");
 
 		EntityId[1] yieldInputs = [u64];
 		pushCall(builder, InternedString("_"), u64, indicateYield, yieldInputs[]);
@@ -127,14 +178,46 @@ version (unittest) {
 	import tests.pipeline_helper : makeModuleWithBuiltins, PipelineResult, withMizu;
 
 
-	/// `mizu.load_immediate(args...)` pushed into the fixture's root block.
-	private EntityId pushLoadImmediate(ref PipelineResult f, const(EntityId)[] args) {
+	/// `<callee>(args...)` pushed into the fixture's root block.
+	private EntityId pushLoad(ref PipelineResult f, const(char)[] callee, const(EntityId)[] args) {
 		auto block = BlockBuilder(f.root, &f.mod);
 		immutable u64 = resolveLookupName(f.mod, internIn(f.mod, "mizu.u64"), f.root);
-		immutable loadImmediate = resolveLookupName(f.mod,
-			internIn(f.mod, "mizu.load_immediate"), f.root);
-		assert(loadImmediate != invalidEntity);
-		return pushCall(block, InternedString("_"), u64, loadImmediate, args);
+		immutable function_ = resolveLookupName(f.mod, internIn(f.mod, callee), f.root);
+		assert(function_ != invalidEntity);
+		return pushCall(block, InternedString("_"), u64, function_, args);
+	}
+
+	/// `mizu.load_immediate(args...)` pushed into the fixture's root block.
+	private EntityId pushLoadImmediate(ref PipelineResult f, const(EntityId)[] args) {
+		return pushLoad(f, "mizu.load_immediate", args);
+	}
+
+	/// The declaration named `name` among `expanded`'s children, or
+	/// `invalidEntity`. The expansion names the bytes it pushes, which is how a
+	/// test reads an encoded immediate back out of it.
+	private EntityId declaration(ref Module mod, EntityId expanded, const(char)[] name) {
+		auto interned = internIn(mod, name);
+		auto block = &getComponent!Block(mod, expanded);
+		foreach (i; 0 .. daLength(block.related)) {
+			immutable e = block.related[i];
+			if (hasComponent!Name(mod, e) && getComponent!Name(mod, e).value == interned)
+				return e;
+		}
+		return invalidEntity;
+	}
+
+	/// The 32 bit immediate the instruction tagged `tag` encodes.
+	private uint encodedImmediate(ref Module mod, EntityId expanded, const(char)[] tag) {
+		uint value;
+		foreach (size_t i; 0 .. 4) {
+			char[32] buffer;
+			immutable n = snprintf(buffer.ptr, buffer.length, "%%%zu%.*s",
+				i, cast(int) tag.length, tag.ptr);
+			immutable e = declaration(mod, expanded, buffer[0 .. n]);
+			assert(e != invalidEntity);
+			value |= cast(uint)(cast(ulong) getComponent!Number(mod, e).value) << (8 * i);
+		}
+		return value;
 	}
 }
 
@@ -179,6 +262,66 @@ unittest { // a value the compiler only worked out is expanded just the same
 	assert(materializeImmediates(f.mod, call));
 	assert(hasComponent!Block(f.mod, call));
 	assert(getComponent!AssignedRegister(f.mod, call).reg == 5);
+	assert(!diagnostics().hasErrors());
+	diagnostics().clear();
+}
+
+unittest { // `load_u64_immediate` is one instruction while the value fits...
+	auto f = withMizu("immediates.doir");
+	scope(exit) freeModule(f.mod);
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable u64 = resolveLookupName(f.mod, internIn(f.mod, "mizu.u64"), f.root);
+	immutable value = pushNumber(block, internIn(f.mod, "v"), u64, 0x89ABCDEF);
+	getOrAddComponent!AssignedRegister(f.mod, value).reg = 5;
+
+	EntityId[2] args = [u64, value];
+	immutable call = pushLoad(f, "mizu.load_u64_immediate", args[]);
+
+	assert(materializeImmediates(f.mod, call));
+	assert(getComponent!AssignedRegister(f.mod, call).reg == 5);
+	assert(encodedImmediate(f.mod, call, "") == 0x89ABCDEF);
+	assert(declaration(f.mod, call, "%0_upper") == invalidEntity);
+	assert(!diagnostics().hasErrors());
+	diagnostics().clear();
+}
+
+unittest { // ...and two once it does not
+	auto f = withMizu("immediates.doir");
+	scope(exit) freeModule(f.mod);
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable u64 = resolveLookupName(f.mod, internIn(f.mod, "mizu.u64"), f.root);
+	immutable value = pushNumber(block, internIn(f.mod, "v"), u64, 0x1234_5678_9ABC_DEF0);
+	getOrAddComponent!AssignedRegister(f.mod, value).reg = 5;
+
+	EntityId[2] args = [u64, value];
+	immutable call = pushLoad(f, "mizu.load_u64_immediate", args[]);
+
+	assert(materializeImmediates(f.mod, call));
+	assert(encodedImmediate(f.mod, call, "") == 0x9ABCDEF0);
+	assert(encodedImmediate(f.mod, call, "_upper") == 0x1234_5678);
+	assert(!diagnostics().hasErrors());
+	diagnostics().clear();
+}
+
+unittest { // `load_f64_immediate` encodes the double's bits rather than its value
+	auto f = withMizu("immediates.doir");
+	scope(exit) freeModule(f.mod);
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable u64 = resolveLookupName(f.mod, internIn(f.mod, "mizu.u64"), f.root);
+	immutable value = pushNumber(block, internIn(f.mod, "v"), u64, 5.5);
+	getOrAddComponent!AssignedRegister(f.mod, value).reg = 5;
+
+	EntityId[2] args = [u64, value];
+	immutable call = pushLoad(f, "mizu.load_f64_immediate", args[]);
+
+	assert(materializeImmediates(f.mod, call));
+	// 5.5 is 0x4016000000000000, so the low half is a whole instruction's
+	// worth of zeroes that the upper one still has to follow.
+	assert(encodedImmediate(f.mod, call, "") == 0);
+	assert(encodedImmediate(f.mod, call, "_upper") == 0x4016_0000);
 	assert(!diagnostics().hasErrors());
 	diagnostics().clear();
 }

@@ -211,6 +211,17 @@ struct TypeDefinition {
 	size_t unique = 0;
 }
 
+/// Where a field begins inside the aggregate that declares it, in bits.
+///
+/// Written by `sema.computeTypeProperties` on the same walk that lays the
+/// aggregate out, so a field's offset and its type's size cannot disagree.
+/// Bits rather than bytes because every other size in the store is bits -
+/// `compiler.base_type(size, align)` takes them - and a field is not obliged
+/// to land on a byte boundary. A union's fields all read zero.
+struct FieldOffset {
+	size_t offsetBits = 0;
+}
+
 /// Which component slot a type is stored in (M-Attr), as
 /// `std.types.set_attribute_id` pins it.
 ///
@@ -1319,7 +1330,37 @@ EntityId findFunctionInsideOf(ref Module mod, EntityId subtree) {
 	return invalidEntity;
 }
 
-private EntityId findNamespace(ref Module mod, EntityId blockEntity, const(char)[] name) @trusted {
+/// Finds the scope a dotted segment names: a namespace, or an aggregate type,
+/// which R-Qual does not distinguish. An aggregate `type = { f : T ... }` is a
+/// `TypeDefinition` with a `Block` of form-7 field declarations, so `vec2.x`
+/// reaches the field the same way `ns.member` reaches the member.
+///
+/// The `Block` is what makes a segment descendable, and it is why the two
+/// other `TypeDefinition` shapes are not: a function type carries
+/// `FunctionInputs`/`FunctionReturnType` and a pointer carries `Pointer`,
+/// neither of which is a block of names. A function *definition* has a body
+/// but no `TypeDefinition`, so a call's parameters stay unreachable through a
+/// dot as well.
+/// Whether `e` is a field of an aggregate: a form-7 declaration whose parent
+/// is a `type = { ... }`.
+///
+/// A field is a declaration *inside* a type rather than a value - it names a
+/// position in a layout - so there is nothing to know about it at runtime, and
+/// `sema.bubbleComptime` and `sema.validateComptime` both count it compile time
+/// known for the same reason they count a type one (C-Type).
+bool isAggregateField(ref Module mod, EntityId e) @trusted {
+	if (!hasComponent!TypeOf(mod, e)) return false;
+	if (hasComponent!TypeDefinition(mod, e)) return false;
+	if (!hasComponent!Parent(mod, e)) return false;
+
+	immutable owner = getComponent!Parent(mod, e).related[0];
+	if (!hasComponent!TypeDefinition(mod, owner)) return false;
+	if (!hasComponent!Block(mod, owner)) return false;
+	// A function type's block holds its parameters, which a call site binds.
+	return !hasComponent!FunctionInputs(mod, owner);
+}
+
+private EntityId findQualifiedScope(ref Module mod, EntityId blockEntity, const(char)[] name) @trusted {
 	auto block = &getComponent!Block(mod, blockEntity);
 	foreach (i; 0 .. daLength(block.related)) {
 		immutable e = block.related[i];
@@ -1332,7 +1373,8 @@ private EntityId findNamespace(ref Module mod, EntityId blockEntity, const(char)
 		// component on whatever we return, which an `Alias` entity doesn't
 		// have.
 		immutable resolved = resolveAlias(mod, e);
-		if (flagsSet(mod, resolved, Flags.Namespace))
+		if (!hasComponent!Block(mod, resolved)) continue;
+		if (flagsSet(mod, resolved, Flags.Namespace) || hasComponent!TypeDefinition(mod, resolved))
 			return resolved;
 	}
 	return invalidEntity;
@@ -1373,7 +1415,7 @@ EntityId resolveLookupName(ref Module mod, InternedString lookup, EntityId searc
 	if (segmentCount > 0) {
 		EntityId namespaceEntity = blockEntity;
 		do {
-			namespaceEntity = findNamespace(mod, blockEntity, namespaces[0]);
+			namespaceEntity = findQualifiedScope(mod, blockEntity, namespaces[0]);
 
 			if (namespaceEntity == invalidEntity) {
 				if (hasComponent!Parent(mod, blockEntity))
@@ -1394,7 +1436,7 @@ EntityId resolveLookupName(ref Module mod, InternedString lookup, EntityId searc
 		} while (namespaceEntity == invalidEntity);
 
 		foreach (i; 1 .. segmentCount) {
-			namespaceEntity = findNamespace(mod, namespaceEntity, namespaces[i]);
+			namespaceEntity = findQualifiedScope(mod, namespaceEntity, namespaces[i]);
 			if (namespaceEntity == invalidEntity) return invalidEntity;
 		}
 
@@ -1605,6 +1647,8 @@ void copyComponents(ref Module mod, EntityId out_, EntityId subtree, bool copyBl
 	// definition of its own.
 	if (hasComponent!AttributeId(mod, subtree))
 		getOrAddComponent!AttributeId(mod, out_) = getComponent!AttributeId(mod, subtree);
+	if (hasComponent!FieldOffset(mod, subtree))
+		getOrAddComponent!FieldOffset(mod, out_) = getComponent!FieldOffset(mod, subtree);
 
 	if (hasComponent!TypeOf(mod, subtree) || hasComponent!LookupTypeOf(mod, subtree)) {
 		// Type == back link
@@ -1955,6 +1999,7 @@ ref BlockBuilder buildBuiltinBlock(return ref BlockBuilder self) @trusted {
 	orFlags(*mod, truncateToByteT, Flags.Comptime);
 	pushValuelessFunction(compiler, internIn(*mod, "truncate_to_byte"), truncateToByteT);
 
+
 	Lookup[1] typeOnly = [Lookup(type)];
 	InternedString[1] tOnlyNames = [tInterned];
 	immutable returnT = pushFunctionType(compiler, internIn(*mod, "return_t"),
@@ -2219,7 +2264,7 @@ unittest { // what name resolution finds, and what it does with what it cannot
 }
 
 unittest {
-	// Resolves a dotted path through an alias to a namespace. `findNamespace`
+	// Resolves a dotted path through an alias to a namespace. `findQualifiedScope`
 	// used to check the Namespace flag directly on the entity it found by name,
 	// without resolving through an alias first - so `ns2 : alias = ns` could not
 	// be used as a namespace segment in `ns2.val` at all.

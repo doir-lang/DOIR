@@ -137,7 +137,7 @@ private static immutable string[92] program = [
 /// DOIR's own four, which the generated file nests in a `doir` namespace of
 /// its own so they read as `mizu.doir.execute` rather than sitting beside
 /// Mizu's instructions as `mizu.doir_execute`.
-private static immutable string[36] doirProgram = [
+private static immutable string[37] doirProgram = [
 	"setModule",
 	"attachComptimeNumberI64",
 	"execute",
@@ -157,7 +157,7 @@ private static immutable string[36] doirProgram = [
 	"typeComptime",
 	"typeUnion",
 	"typeNeverMonomorphize",
-	"typeForciblyInline",
+	"typeAlwaysInline",
 	"typeAlwaysFlatten",
 	"typeNoComptime",
 	"typePure",
@@ -179,6 +179,11 @@ private static immutable string[36] doirProgram = [
 	"diagnosticInfo",
 	"diagnosticWarning",
 	"diagnosticError",
+
+	// Last, because `doirLookup` numbers by declaration order and the ids
+	// below are baked into the generated file: a name inserted above this one
+	// renumbers everything after it.
+	"fieldOffsetBits",
 ];
 
 private static immutable string[50] singleOperandOps = [
@@ -208,8 +213,18 @@ private static immutable string[50] singleOperandOps = [
 /// same either way, which is why `standard.mizu.doir` can alias both straight
 /// through with no body of its own.
 private static immutable string[9] typeModifierOps = [
-	"typeComptime", "typeUnion", "typeNeverMonomorphize", "typeForciblyInline",
+	"typeComptime", "typeUnion", "typeNeverMonomorphize", "typeAlwaysInline",
 	"typeAlwaysFlatten", "typeNoComptime", "typePure", "typeMakeUnique", "typePointer",
+];
+
+/// `(T : deduced type, field : T) -> u64`: asks a *field* something.
+///
+/// `deduced` rather than a fixed parameter type because the argument is a
+/// field of whatever type its aggregate declared it, and S-Struct compares
+/// layouts - a `u64` parameter would take a 64 bit field and reject an 8 bit
+/// one. D-Deduce solves `T` off the argument and asks nothing of its layout.
+private static immutable string[1] fieldQueryOps = [
+	"fieldOffsetBits",
 ];
 
 /// `(T : type) -> u64`: asks a type something instead of editing it.
@@ -268,7 +283,9 @@ private static immutable string[33] scheduleBody = [
 	"\t\tsorted(monomorphizeFunctions, false),",
 	"\t\tbreadthFirst(inlineFunctions),",
 	"\t\tbreadthFirst(computeCompilerNamespace!true),",
-	"\t\tdebugPrint",
+	// Left commented out rather than dropped: printing the whole lowered
+	// module is the first thing wanted when a backend pass misbehaves.
+	"\t\t//debugPrint",
 	"\t)",
 ];
 
@@ -436,6 +453,19 @@ private void emitInstruction(const(char)[] name) {
 		--indent;
 		line("}");
 
+	} else if (isIn(fieldQueryOps, name)) {
+		tabs(); printName(name); printf(" : field_query_t = {\n");
+		++indent;
+		line("rega : compiler.assembler.register = compiler.assembler.register_for(u64, field)");
+		line("regret : compiler.assembler.register = compiler.assembler.return_register(u64)");
+		emitOpcodeId(name);
+		line("_ : compiler.assembler.register = inline emit_register(regret)");
+		line("_ : compiler.assembler.register = inline emit_register(rega)");
+		emitU32(0);
+		line("_ : u64 = compiler.indicate_return(u64)");
+		--indent;
+		line("}");
+
 	} else if (isIn(typeQueryOps, name)) {
 		tabs(); printName(name); printf(" : type_query_t = {\n");
 		++indent;
@@ -581,7 +611,7 @@ private void emitFlagConstants() {
 		Bit("pure", Flags.Pure),
 		// `inline` and `flatten` are grammar keywords; these are the names
 		// `standard.doir` gives the same two bits anyway.
-		Bit("forcibly_inline", Flags.Inline),
+		Bit("always_inline", Flags.Inline),
 		Bit("always_flatten", Flags.Flatten),
 		Bit("never_monomorphize", Flags.NeverMonomorphize),
 		Bit("no_comptime", Flags.NoComptime),
@@ -672,6 +702,18 @@ extern(C) int main(int argc, char** argv) @trusted {
 	line("type_query_t : type = (T : type) -> u64");
 	line("_ : type = compiler.always_inline(type_query_t)");
 	line("_ : type = compiler.never_monomorphize(type_query_t)");
+	line("// Asks a *field* rather than a type, so `u64` in rather than `type` in:");
+	line("// what the register carries is the field's entity, the same crossing");
+	line("// every reflection instruction below makes. Plain `u64` rather than a");
+	line("// `deduced` parameter matching the field's own type - which is what");
+	line("// S-Struct would want - because a `deduced` parameter gives the function");
+	line("// type a materialized parameter block, and a type carrying one does not");
+	line("// take `type_comptime`. Every type in this layer is 64 bits wide, so");
+	line("// there is nothing for S-Struct to reject here; a backend with narrower");
+	line("// registers would need the deduced form and the fix behind it.");
+	line("field_query_t : type = (field : u64) -> u64");
+	line("_ : type = compiler.always_inline(field_query_t)");
+	line("_ : type = compiler.never_monomorphize(field_query_t)");
 	line("type_with_number_t : type = (T : type, n : comptime.u64) -> type");
 	line("_ : type = compiler.always_inline(type_with_number_t)");
 	line("_ : type = compiler.never_monomorphize(type_with_number_t)");
@@ -718,6 +760,14 @@ extern(C) int main(int argc, char** argv) @trusted {
 
 	line("load_immediate : load_immediate_t = {}");
 	line("load_upper_immediate : load_immediate_t = {}");
+	line("// A Mizu immediate is 32 bits, so a value wider than that takes both");
+	line("// instructions - and `load_upper_immediate` on its own would encode the");
+	line("// *low* half of whatever it is handed, since the pass that expands it");
+	line("// truncates. These two do the pair, picking the halves apart themselves:");
+	line("// `load_u64_immediate` reads the value as an integer, `load_f64_immediate`");
+	line("// as the bit pattern of the double, which is what a float immediate is.");
+	line("load_u64_immediate : load_immediate_t = {}");
+	line("load_f64_immediate : load_immediate_t = {}");
 	line("label : () -> compiler.assembler.register = {}");
 	blank();
 

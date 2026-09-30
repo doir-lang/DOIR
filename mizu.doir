@@ -48,6 +48,18 @@ mizu : namespace = {
 	type_query_t : type = (T : type) -> u64
 	_ : type = compiler.always_inline(type_query_t)
 	_ : type = compiler.never_monomorphize(type_query_t)
+	// Asks a *field* rather than a type, so `u64` in rather than `type` in:
+	// what the register carries is the field's entity, the same crossing
+	// every reflection instruction below makes. Plain `u64` rather than a
+	// `deduced` parameter matching the field's own type - which is what
+	// S-Struct would want - because a `deduced` parameter gives the function
+	// type a materialized parameter block, and a type carrying one does not
+	// take `type_comptime`. Every type in this layer is 64 bits wide, so
+	// there is nothing for S-Struct to reject here; a backend with narrower
+	// registers would need the deduced form and the fix behind it.
+	field_query_t : type = (field : u64) -> u64
+	_ : type = compiler.always_inline(field_query_t)
+	_ : type = compiler.never_monomorphize(field_query_t)
 	type_with_number_t : type = (T : type, n : comptime.u64) -> type
 	_ : type = compiler.always_inline(type_with_number_t)
 	_ : type = compiler.never_monomorphize(type_with_number_t)
@@ -88,6 +100,14 @@ mizu : namespace = {
 
 	load_immediate : load_immediate_t = {}
 	load_upper_immediate : load_immediate_t = {}
+	// A Mizu immediate is 32 bits, so a value wider than that takes both
+	// instructions - and `load_upper_immediate` on its own would encode the
+	// *low* half of whatever it is handed, since the pass that expands it
+	// truncates. These two do the pair, picking the halves apart themselves:
+	// `load_u64_immediate` reads the value as an integer, `load_f64_immediate`
+	// as the bit pattern of the double, which is what a float immediate is.
+	load_u64_immediate : load_immediate_t = {}
+	load_f64_immediate : load_immediate_t = {}
 	label : () -> compiler.assembler.register = {}
 
 	load_immediate_op : immediate_op_t = {
@@ -1524,7 +1544,7 @@ mizu : namespace = {
 			_ : type = compiler.indicate_return(type)
 		}
 
-		type_forcibly_inline : type_modifier_t = {
+		type_always_inline : type_modifier_t = {
 			rega : compiler.assembler.register = compiler.assembler.register_for(type, T)
 			regret : compiler.assembler.register = compiler.assembler.return_register(type)
 			%215 : compiler.byte_pointer = "\x93\x00\x00\x00\x00\x00\x00\x00"
@@ -1800,13 +1820,25 @@ mizu : namespace = {
 			_ : u64 = compiler.indicate_return(u64)
 		}
 
+		field_offset_bits : field_query_t = {
+			rega : compiler.assembler.register = compiler.assembler.register_for(u64, field)
+			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
+			%259 : compiler.byte_pointer = "\xa9\x00\x00\x00\x00\x00\x00\x00"
+			_ : compiler.byte = compiler.emit_bytes(%259)
+			_ : compiler.assembler.register = inline emit_register(regret)
+			_ : compiler.assembler.register = inline emit_register(rega)
+			%260 : compiler.byte_pointer = "\x00\x00\x00\x00"
+			_ : compiler.byte = compiler.emit_bytes(%260)
+			_ : u64 = compiler.indicate_return(u64)
+		}
+
 		flags : namespace = {
 			exported : mizu.comptime.u64 = 4
 			comptime : mizu.comptime.u64 = 8
 			always_comptime : mizu.comptime.u64 = 16
 			union : mizu.comptime.u64 = 128
 			pure : mizu.comptime.u64 = 256
-			forcibly_inline : mizu.comptime.u64 = 512
+			always_inline : mizu.comptime.u64 = 512
 			always_flatten : mizu.comptime.u64 = 1024
 			never_monomorphize : mizu.comptime.u64 = 4096
 			no_comptime : mizu.comptime.u64 = 32

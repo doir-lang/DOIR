@@ -35,6 +35,7 @@ private enum modules = [
 	"doir.pipeline.canon.lookup",
 	"doir.pipeline.canon.process_early_include",
 	"doir.pipeline.canon.materialize",
+	"doir.pipeline.canon.merge_namespaces",
 	"doir.pipeline.canon.comptime",
 	"doir.pipeline.canon.sort",
 	"doir.pipeline.opt.materialize_aliases",

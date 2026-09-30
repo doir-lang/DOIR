@@ -35,6 +35,7 @@ bool bubbleComptime(ref Module mod, EntityId subtree) @trusted {
 				// type. `byte : alias = u8` used to make `pointer(byte)` a
 				// runtime call where `pointer(u8)` was a comptime one.
 				if (hasComponent!TypeDefinition(mod, resolveAlias(mod, e))) continue; // All types are compile time known
+				if (isAggregateField(mod, e)) continue; // ...and so is a field of one
 				comptime = false;
 				break;
 			}
@@ -110,6 +111,7 @@ bool validateComptime(ref Module mod, EntityId subtree) @trusted {
 		immutable e = inputs.related[i];
 		if (!flagsSet(mod, e, Flags.Comptime)) {
 			if (hasComponent!TypeDefinition(mod, resolveAlias(mod, e))) continue; // All types are compile time known
+			if (isAggregateField(mod, e)) continue; // ...and so is a field of one
 			nonComptimeInput = i;
 			break;
 		}

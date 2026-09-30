@@ -1,14 +1,11 @@
 // Compiles `standard.mizu.doir`, the implementation half of the standard
 // interface.
 //
-// Only two lines belong to the driver: `mizu.doir` has to be early_included
-// first, because every name in `standard.mizu.doir` is one of its. The
+// One line belongs to the driver: `standard.mizu.doir` early_includes
+// `mizu.doir` itself, and naming it here again would redefine `mizu`. The
 // standard interface then names no `compiler.*` symbol at all - unlike
 // `test_standard.doir`, which has to hand `standard.doir` the `u1`, `u8` and
 // `pointer_sized` it assumes, since only `compiler.base_type` could make them.
-
-mizu_path : compiler.byte_pointer = "./mizu.doir"
-_ : compiler.byte = early_include(mizu_path)
 
 path : compiler.byte_pointer = "./standard.mizu.doir"
 _ : compiler.byte = early_include(path)

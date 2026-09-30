@@ -204,7 +204,7 @@ Control flow is done via functions.
 
 ```doir
 %12 : f32 = inline add(%4, %4)
-inline_add_t : type = function.forcibly_inline((i32, i32) -> i32)
+inline_add_t : type = functions.always_inline((i32, i32) -> i32)
 auto_inlined_add : inline_add_t = { ... }
 ```
 
@@ -213,7 +213,7 @@ undesirable the function can instead be flattened:
 
 ```doir
 %12alt : f32 = flatten add(%4, %4)
-flatten_add_t : type = function.always_flatten((i32, i32) -> i32)
+flatten_add_t : type = functions.always_flatten((i32, i32) -> i32)
 ```
 
 A call can require tail-call optimization instead. Functions are tail-call
@@ -228,7 +228,7 @@ error diagnostic when this particular call cannot be.
 
 ```doir
 %14 : byte_pointer = "some_mangled_add\0"
-_ : _ = function.abi_rename(add, %14)
+_ : _ = functions.abi_rename(add, %14)
 ```
 
 == Compile time
@@ -243,14 +243,14 @@ comp_pow : (mantissa : comp_i32, base : i32) = {
 	pi32 : type = type.pointer(i32)
 	x : pi32 = stack.allocate(i32)     // a pointer to stack memory
 	%1 : i32 = 0
-	%2 : i32 = pointer.load(x)         // values can be loaded from pointers
+	%2 : i32 = pointers.load(x)         // values can be loaded from pointers
 	%3 : i32 = subtract(%2, %1)
-	%4 : i32 = pointer.store(x, %3)    // NOTE: %3 == %4
+	%4 : i32 = pointers.store(x, %3)    // NOTE: %3 == %4
 	// Registers are all single static assignment, so there is no `const`.
 	// Pointers can be marked immutable, which makes a store an error.
-	const_pi32 : type = pointer.immutable(pi32)
+	const_pi32 : type = pointers.immutable(pi32)
 	%5 : const_pi32 = cast(x)
-	%6 : void = pointer.store(%5, %3)  // Error!
+	%6 : void = pointers.store(%5, %3)  // Error!
 
 	_ : _ = return()
 }
@@ -290,8 +290,8 @@ list : (T : type) -> type = {
 int_list : type = list(i32)
 %13 : _ = bss.allocate(int_list)
 unique_int_list : type = type.unique(int_list)
-%14 : int_list = pointer.load(%13)         // Perfectly fine
-%15 : unique_int_list = pointer.load(%13)  // Error!
+%14 : int_list = pointers.load(%13)         // Perfectly fine
+%15 : unique_int_list = pointers.load(%13)  // Error!
 %16 : unique_int_list = cast(%14)          // Perfectly fine
 ```
 
@@ -432,7 +432,7 @@ implements it, and #status("broke") where the sources disagree.
 )[
   Part I opens with it, and settles it: "registers are all single static
   assignment, thus there is no concept of `const` in the language". This is why
-  `const` is absent, why `pointer.immutable` exists, and why naming a register
+  `const` is absent, why `pointers.immutable` exists, and why naming a register
   is not copying it (@copying). Immutability is not a modifier you apply to
   values -- it is what a value already is. Only memory reached through a pointer
   can change, so only pointers need a way to forbid it.
@@ -569,6 +569,20 @@ $B_(i+1) = "Parent"(B_i)$, terminating at the root.
   namespace of `standard.doir` must spell out `std.types.comptime`: written
   inside `meta`, a bare `types.` finds `meta.types`, whose `comptime` takes an
   `entity` rather than a `type`.
+
+  $"nsIn"$ reads *scope*, not namespace: an aggregate is descended into on the
+  same terms, so `vec2.x` reaches a field exactly as `ns.member` reaches a
+  member. What makes a segment descendable is carrying a `Block` of names --
+  which a namespace and a `type = { f : T ... }` both do, and which the other
+  two `TypeDefinition` shapes do not: a function type carries
+  `FunctionInputs`/`FunctionReturnType` and a pointer carries `Pointer`. A
+  function *definition* has a body but no `TypeDefinition`, so a call's
+  parameters stay unreachable through a dot.
+
+  A field so named denotes the *declaration*, not a value -- there is nothing
+  to read at runtime -- which is why it is compile time known for the same
+  reason a type is (C-Type), and why `types.field_offset_bits` is the thing
+  that consumes one.
 ]
 
 #rule("R-Order", "Order independence", "impl",
@@ -578,6 +592,24 @@ $B_(i+1) = "Parent"(B_i)$, terminating at the root.
   mutually visible regardless of order*; forward and mutually recursive
   references are legal. Note the contrast with @comptime's C-Order: *names are
   order-free, effects are not.*
+]
+
+#rule("R-Merge", "Namespaces of one name merge", "impl",
+  $ (N_1, N_2 in "children"(B) quad "Name"(N_1) = "Name"(N_2) quad N_1, N_2 : "Namespace")
+   / (B "lists one" N "with" "children"(N) = "children"(N_1) dot.c "children"(N_2)) $,
+)[
+  A namespace may be reopened: two declarations of one name in one block are
+  two halves of one namespace, merged into the first of them before any lookup
+  is resolved, in declaration order. `early_include` is what makes this
+  load-bearing -- two included files that both declare `std : namespace` splice
+  two `std` entities into the same block, and R-Qual takes the first segment it
+  finds by name, so without the merge every member of the second is
+  unreachable. An `export` on either half exports the merged namespace.
+
+  *Types are deliberately excluded*, though R-Qual descends into them alike:
+  two `type = { ... }` of one name are a redefinition, which `sema.nameReuse`
+  answers, and unioning their fields would invent a layout neither declaration
+  asked for.
 ]
 
 #rule("R-Mangle", "Namespaces are a name prefix", "impl",
@@ -605,6 +637,26 @@ $B_(i+1) = "Parent"(B_i)$, terminating at the root.
   meaningful operation rather than a curiosity. A type's identity is its layout
   together with its discriminator, and nothing else -- not the entity that
   happens to carry it, and not the name it was declared under.
+]
+
+#rule("S-Field", "Field offsets", "impl",
+  $ ("children"(T) = ⟨f_1, ..., f_n⟩ quad o_1 = 0 quad
+     o_(i+1) = "alignUp"(o_i + "size"(f_i), "align"(f_(i+1))))
+   / ("offset"(f_i) = o_i quad quad "offset"(f_i) = 0 "if" "Union" in Phi(T)) $,
+)[
+  A field's offset is the running total of the fields before it, each padded up
+  to its own alignment -- the same walk that gives the aggregate its size, so
+  the two cannot disagree about where a field sits. `sema.computeTypeProperties`
+  writes the answer onto each field as a `FieldOffset`, and
+  `types.field_offset_bits` is what reads it. Bits, not bytes: every size in the
+  store is bits, and a field is not obliged to land on a byte boundary.
+
+  Only a form-7 declaration is a field. Anything else inside the braces -- a
+  nested type, an alias, a comptime call the evaluator has not stripped --
+  describes the type rather than occupying space in it.
+
+  `types.field_pointer(object, f)` is this offset added to a runtime address:
+  the offset folds (a field's position is compile time known), the add does not.
 ]
 
 #note("The kinds are not structural; `void` is")[
@@ -717,12 +769,12 @@ a name for the type it just edited.
     [`type.comptime`], [$Phi := Phi union {"AlwaysComptime"}$], [#status("impl")],
     [`type.union`], [$Phi := Phi union {"Union"}$ -- the aggregate's fields overlap], [#status("spec")],
     [`type.pack`], [Recomputes size/alignment to the tightest layout], [#status("spec")],
-    [`function.forcibly_inline`], [$Phi := Phi union {"Inline"}$], [#status("impl")],
+    [`functions.always_inline`], [$Phi := Phi union {"Inline"}$], [#status("impl")],
     [`never_monomorphize`], [$Phi := Phi union {"NeverMonomorphize"}$ -- calls through this
      function type are not specialized], [#status("impl")],
-    [`function.always_flatten`], [$Phi := Phi union {"Flatten"}$], [#status("spec")],
-    [`pointer.immutable`], [$Phi := Phi union {"Constant"}$ -- stores through it become errors], [#status("spec")],
-    [`function.abi_rename`], [Rewrites the emitted symbol name], [#status("spec")],
+    [`functions.always_flatten`], [$Phi := Phi union {"Flatten"}$], [#status("spec")],
+    [`pointers.immutable`], [$Phi := Phi union {"Constant"}$ -- stores through it become errors], [#status("spec")],
+    [`functions.abi_rename`], [Rewrites the emitted symbol name], [#status("spec")],
     [`type.set_attribute_id`], [Records which component slot the type occupies], [#status("spec")],
     table.hline(stroke: 0.6pt + hair),
   ),
@@ -880,7 +932,7 @@ There is one per level, and the value-level one is already enforced.
 
   Both are *overload sets* (T-Overload), not single functions. The members in
   `standard.doir` are the defaults every POD type uses; a type that owns
-  something attaches its own with `function.add_overload`, and the call site
+  something attaches its own with `functions.add_overload`, and the call site
   selects by argument type. This is where a copy constructor lives, and it is
   why `copy` and `move` had to be ordinary declarations rather than builtins:
   a builtin could not be extended.
@@ -1055,7 +1107,7 @@ of this type is". The `type` and `block` builtins carry both.
   is what elaboration means here. The file compiles clean under
   `test_standard.doir`, the assembler layer its header assumes. One line is
   commented out and is not about `deduced`:
-  `get_id : _ = function.add_overload(...)` reads its type off a return type
+  `get_id : _ = functions.add_overload(...)` reads its type off a return type
   declared `_`, so the hole has nothing to take.
 ]
 
@@ -1107,7 +1159,7 @@ reflection: nothing survives into the emitted binary.
    "get_or_add"(v, "id") = C_"id" (v) "if defined, else add" $,
 )[
   Attaching an attribute to a value is attaching a component to an entity.
-  `attribute.get_id` is overloaded to take either a type or a name string, so a
+  `attributes.get_id` is overloaded to take either a type or a name string, so a
   program can find a slot statically or by string.
 ]
 
@@ -1157,7 +1209,7 @@ named before it can be passed.
 
 Three keywords may prefix a call, and each has a type-level counterpart applying
 the same flag permanently via M-Flag: `inline` with
-`function.forcibly_inline`, `flatten` with `function.always_flatten`, and
+`functions.always_inline`, `flatten` with `functions.always_flatten`, and
 `tail`, which has none -- functions are tail-optimized automatically whenever
 possible, and the annotation only raises a diagnostic when this call cannot be.
 
@@ -1189,7 +1241,7 @@ possible, and the annotation only raises a diagnostic when this call cannot be.
   Part I says an entire namespace can be exported at once. *The propagation is
   not implemented* -- the parser sets the flag on the namespace entity alone, so
   its members would be stripped. `standard.doir` therefore exports the members
-  of `diagnostic` individually rather than relying on this.
+  of `diagnostics` individually rather than relying on this.
 ]
 
 #rule("I-Import", "Import is position-sensitive", "spec",
@@ -1357,7 +1409,7 @@ rest are outstanding.
       type, and one in `meta`. Now `meta.source_location.location`.], [WF-Kind],
     [`meta.unreflect_alias_t`], [Built from `unreflect_t_nocomp` -- the wrong
       `_nocomp`.], [--],
-    [`pointer.immutable`], [Typed `type.type_modifier_function`; no such name
+    [`pointers.immutable`], [Typed `type.type_modifier_function`; no such name
       exists.], [R-Qual],
     [`meta.reflect_t`, `unreflect_*`, `meta.types.is_t`], [Missing `: type =`,
       so each declared a valueless *value* rather than a type.], [D-Decl],
@@ -1372,7 +1424,7 @@ rest are outstanding.
     [`attribute.*`, Mizu core], [Nothing in either was exported, so importing
       the standard interface gave no arithmetic. The public surface is now
       exported; `_t` helper types stay internal.], [D-Export],
-    [`%0`--`%5` in `attribute`], [Positional names for the two `get_id`
+    [`%0`--`%5` in `attributes`], [Positional names for the two `get_id`
       overloads. Now named after what they take.], [--],
     table.hline(stroke: 0.6pt + hair),
   ),
@@ -1463,6 +1515,44 @@ rest are outstanding.
   is a value, so a loop can only re-test it if the body overwrites the register
   it was computed into, which is what the implementation pins it for. A
   `block`, as `if` takes for its arms, is the fix.
+
+/ An instruction that reads machine state folds when handed constants: whether
+  a call may be folded is a
+  property of its callee, and `mizu.doir` gives every one-operand instruction
+  the same `one_parameters_t` -- so `pointer_to_stack`, `stack_push`/`pop`,
+  `pointer_to_stack_bottom`, `pointer_to_register` and `allocate` are folded on
+  the same terms as arithmetic. `std.stack.allocate(T)` is where it shows:
+  `stack_push_immediate` is emitted and the stack really moves, but
+  `pointer_to_stack(0)` has a constant argument, so the evaluator runs it and
+  bakes *the comptime VM's* stack address into the program. The fix is a
+  never-comptime function type for the instructions whose result is machine
+  state rather than a value; it belongs in `tools/mizu_gen.d`, since the type
+  and the flag are both generated.
+
+/ A `deduced` parameter and `type.comptime` do not compose: a function type
+  whose
+  parameter refers to another of its parameters -- `(T : deduced type, x : T)`
+  -- is materialized as a `TypeDefinition` carrying a `Block` of those
+  parameters rather than a plain `FunctionInputs`/`FunctionReturnType` pair, and
+  such a type does not take `type_comptime`, so every call to it is inlined
+  instead of folded. `mizu.doir.field_offset_bits` wanted that signature -- a
+  field of whatever width its aggregate declared it, which is what S-Struct
+  would ask for -- and is declared `(field : u64) -> u64` instead. Harmless in
+  the Mizu layer, where every type is 64 bits wide, and a defect for any
+  backend with narrower registers: `types.field_pointer` cannot take an 8 bit
+  field there. The same restriction is why its `field` parameter is
+  `comptime.u64` rather than deduced.
+
+/ A type query run before `foldBaseTypes` answers zero:
+  `types.size_bits` and `types.field_offset_bits` reach the VM during
+  `canonicalizeSchedule`'s comptime fixpoint, and a field's *type* is still an
+  unfolded `compiler.base_type(64, 64)` call with no `TypeDefinition` at that
+  point -- so the layout computes as zero and the query answers zero, silently.
+  Inside a function body the question is deferred until after inlining, which is
+  past `foldBaseTypes`, and that is the only reason `field_pointer` gets the
+  right offset; the same call written at module scope does not. Either fold base
+  types ahead of the fixpoint or make a layout query that cannot be answered yet
+  decline rather than answer zero.
 
 / `defer` has no way to reach its caller's exit points (@control-flow):
   `execute` splices a block where the call stands, which is what `if` and

@@ -19,6 +19,7 @@ import doir.verify;
 import doir.pipeline.canon.comptime;
 import doir.pipeline.canon.lookup;
 import doir.pipeline.canon.materialize;
+import doir.pipeline.canon.merge_namespaces;
 import doir.pipeline.canon.override_fallback_schedule;
 import doir.pipeline.canon.process_early_include;
 import doir.pipeline.canon.sort;
@@ -189,6 +190,12 @@ bool canonicalizeSchedule(ref Module mod, EntityId root, ref BlockBuilder* build
 			sorted!materializeFunctionTypesAndParameters(currentCanonicalizeRoot, false),
 		)),
 		&moduleSystem!sortSystem,
+
+		// Before any lookup is resolved: `findQualifiedScope` returns the first
+		// entity of a name, so a second `std : namespace` spliced in by another
+		// `early_include` has to be folded into the first while a dotted path
+		// still has a chance of finding either half.
+		depthFirst!mergeNamespaces(),
 
 		depthFirst!(resolveLookupsVisitor!true)(),
 		depthFirst!materializeFunctionTypesAndParameters(),
@@ -449,10 +456,11 @@ unittest {
 	assert(root != invalidEntity);
 	assert(!diagnostics().hasErrors());
 
-	// `u8 : alias = mizu.u64`. A Mizu register is 64 bits and there is nothing
-	// narrower for it to be, so the name is a rename rather than a type of the
-	// width it claims - see the file's own note.
-	immutable u8 = resolveAlias(mod, resolveLookupName(mod, internIn(mod, "u8"), root));
+	// `std.u8 : alias = mizu.u64`. A Mizu register is 64 bits and there is
+	// nothing narrower for it to be, so the name is a rename rather than a type
+	// of the width it claims - see the file's own note. `std` declares it
+	// itself; only `standard.doir` takes it from an assembler layer above.
+	immutable u8 = resolveAlias(mod, resolveLookupName(mod, internIn(mod, "std.u8"), root));
 	assert(u8 != invalidEntity);
 	assert(hasComponent!TypeDefinition(mod, u8));
 	assert(getComponent!TypeDefinition(mod, u8).size == 64);

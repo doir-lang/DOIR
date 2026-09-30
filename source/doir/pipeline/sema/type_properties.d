@@ -125,16 +125,37 @@ private void computeLayout(ref Module mod, EntityId type, size_t depth) @trusted
 		if (fieldAlignment > alignment) alignment = fieldAlignment;
 
 		// M-Flag's `type.union`: the fields overlap rather than following one
-		// another, so the aggregate is as big as its largest member.
+		// another, so the aggregate is as big as its largest member - and they
+		// all begin at zero.
 		if (union_) {
+			getOrAddComponent!FieldOffset(mod, field).offsetBits = 0;
 			if (fieldSize > size) size = fieldSize;
 		} else {
-			size = alignUp(size, fieldAlignment) + fieldSize;
+			size = alignUp(size, fieldAlignment);
+			getOrAddComponent!FieldOffset(mod, field).offsetBits = size;
+			size += fieldSize;
 		}
 	}
 
 	definition.alignment = alignment;
 	definition.size = alignUp(size, alignment);
+}
+
+
+/// The bit offset of `field` within the aggregate that declares it, as
+/// `computeLayout` recorded it while laying that aggregate out.
+///
+/// `size_t.max` when `field` is not a field of an aggregate, which is what
+/// `mizu.doir.field_offset_bits` reports on rather than guessing at zero.
+///
+/// The layout is computed here if nothing has yet, so an offset can be asked
+/// for without waiting for `computeTypeProperties` to come round to the type.
+size_t fieldOffsetBits(ref Module mod, EntityId field) @trusted {
+	if (!isAggregateField(mod, field)) return size_t.max;
+
+	computeLayout(mod, getComponent!Parent(mod, field).related[0], 0);
+	if (!hasComponent!FieldOffset(mod, field)) return size_t.max;
+	return getComponent!FieldOffset(mod, field).offsetBits;
 }
 
 
@@ -202,6 +223,67 @@ unittest { // an aggregate is the sum of its fields, padded to their alignment
 	assert(computeTypeProperties(f.mod, padded));
 	assert(getComponent!TypeDefinition(f.mod, padded).size == 64);
 	assert(getComponent!TypeDefinition(f.mod, padded).alignment == 32);
+}
+
+unittest { // every field records where it begins, on the same walk
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = pushBase(block, "b8", 8, 8);
+	immutable word = pushBase(block, "w32", 32, 32);
+
+	immutable padded = pushType(block, internIn(f.mod, "padded")).end();
+	immutable small = pushField(f.mod, padded, "small", byte_);
+	immutable large = pushField(f.mod, padded, "large", word);
+
+	assert(computeTypeProperties(f.mod, padded));
+	// The byte starts at zero; the word's own alignment pads it out to 32
+	// rather than letting it follow at 8, which is the same sum the size is
+	// computed from.
+	assert(getComponent!FieldOffset(f.mod, small).offsetBits == 0);
+	assert(getComponent!FieldOffset(f.mod, large).offsetBits == 32);
+	assert(fieldOffsetBits(f.mod, small) == 0);
+	assert(fieldOffsetBits(f.mod, large) == 32);
+
+	// The type itself is not a field of anything, and neither is a base type.
+	assert(fieldOffsetBits(f.mod, padded) == size_t.max);
+	assert(fieldOffsetBits(f.mod, byte_) == size_t.max);
+}
+
+unittest { // a union's fields all begin at zero, being overlapped (M-Flag)
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = pushBase(block, "b8", 8, 8);
+	immutable word = pushBase(block, "w32", 32, 32);
+
+	immutable either = pushType(block, internIn(f.mod, "either")).end();
+	getOrAddComponent!Flags(f.mod, either).flags |= Flags.Union;
+	immutable a = pushField(f.mod, either, "a", byte_);
+	immutable b = pushField(f.mod, either, "b", word);
+
+	assert(computeTypeProperties(f.mod, either));
+	assert(fieldOffsetBits(f.mod, a) == 0);
+	assert(fieldOffsetBits(f.mod, b) == 0);
+}
+
+unittest { // an offset can be asked for before the layout pass reaches the type
+	auto f = makeModuleWithBuiltins();
+	scope(exit) freeModule(f.mod);
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable word = pushBase(block, "w32", 32, 32);
+
+	immutable pair = pushType(block, internIn(f.mod, "pair")).end();
+	pushField(f.mod, pair, "a", word);
+	immutable second = pushField(f.mod, pair, "b", word);
+
+	// No `computeTypeProperties` call: `fieldOffsetBits` lays the type out
+	// itself, which is what lets a comptime query run ahead of the pass.
+	assert(!hasComponent!FieldOffset(f.mod, second));
+	assert(fieldOffsetBits(f.mod, second) == 32);
 }
 
 unittest { // a union is as big as its largest field, not their sum (M-Flag)

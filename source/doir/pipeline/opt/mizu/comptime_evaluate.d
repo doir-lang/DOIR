@@ -38,6 +38,10 @@ private __gshared bool evaluating;
 /// `u8`, and an argument spelled either way reaches the VM as the same entity
 /// id. And a `TypeDefinition` counts on its own - a type built by an
 /// instruction rather than declared `: type` has no `TypeOf` left to read.
+///
+/// A field of an aggregate counts too, and travels as its entity id the way a
+/// type does: it names a position in a layout rather than a value, which is
+/// what `mizu.doir.field_offset_bits` asks about.
 bool comptimeValueAvailable(ref Module mod, EntityId subtree) {
 	immutable compiler = resolveCached(mod, "compiler", 1, true);
 	immutable type = resolveCached(mod, "type", 1, true);
@@ -47,6 +51,7 @@ bool comptimeValueAvailable(ref Module mod, EntityId subtree) {
 	return hasComponent!Number(mod, e) || hasComponent!DString(mod, e)
 		|| hasComponent!ComptimeNumber(mod, e) || hasComponent!ComptimeString(mod, e)
 		|| hasComponent!TypeDefinition(mod, e)
+		|| isAggregateField(mod, e)
 		|| (hasComponent!TypeOf(mod, e)
 			&& (getComponent!TypeOf(mod, e).related[0] == type
 				|| getComponent!TypeOf(mod, e).related[0] == blockType));
@@ -142,7 +147,7 @@ private bool evaluableCall(ref Module mod, EntityId subtree) @trusted {
 	// clears the mark for the same reason, and asking again here is not belt and
 	// braces: the two passes are in one `fixedPoint`, and within a round
 	// `bubbleComptime` walks the whole module before this one does. A modifier
-	// call that sets the flag - `std.function.never_comptime(if_t)` - is folded by
+	// call that sets the flag - `std.functions.never_comptime(if_t)` - is folded by
 	// *this* walk, so in the round that sets it `bubbleComptime` has already been
 	// past with the flag still absent, and the call it marked comptime is standing
 	// right there. `std.if` was evaluated exactly once that way, which was once too
@@ -368,6 +373,11 @@ bool comptimeEvaluate(ref Module mod, EntityId subtree, SystemFunction mizuSched
 				|| (hasComponent!TypeOf(mod, e)
 					&& (getComponent!TypeOf(mod, e).related[0] == blockType
 						|| getComponent!TypeOf(mod, e).related[0] == type)))
+				value = resolveAlias(mod, e);
+			// A field of an aggregate travels as its entity id for the same
+			// reason a type does: it names a position in a layout rather than a
+			// value, and `mizu.doir.field_offset_bits` asks the store where.
+			else if (isAggregateField(mod, e))
 				value = resolveAlias(mod, e);
 			else
 				panic("Comptime evaluation of call with non-comptime parameter");

@@ -1,10 +1,9 @@
-path : compiler.byte_pointer = "./mizu.doir"
+path : compiler.byte_pointer = "./standard.mizu.doir"
 _ : compiler.byte = early_include(path)
-std_path : compiler.byte_pointer = "./standard.mizu.doir"
-_ : compiler.byte = early_include(std_path)
 _ : compiler.assembler.register = compiler.assembler.begin_register_allocation()
 
 u64 : alias = mizu.u64
+u1 : alias = mizu.u64
 
 blk : block = {
 	q : u64 = 1234
@@ -62,4 +61,4 @@ _ : _ = std.jump_to(after_addr)
 	_ : u64 = std.debug_print(skipped)
 after : compiler.assembler.register = std.label()
 
-_ : u64 = std.halt()
+_ : _ = std.halt()

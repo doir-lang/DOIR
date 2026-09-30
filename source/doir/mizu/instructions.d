@@ -297,7 +297,7 @@ extern(C) void* typeNeverMonomorphize(Opcode* pc, ulong* registers, RegistersAnd
 	mixin(mizuNext);
 }
 
-extern(C) void* typeForciblyInline(Opcode* pc, ulong* registers, RegistersAndStack* env, ubyte* sp) @trusted {
+extern(C) void* typeAlwaysInline(Opcode* pc, ulong* registers, RegistersAndStack* env, ubyte* sp) @trusted {
 	setFlagsAndAlias(pc, registers, env, Flags.Inline);
 	mixin(mizuNext);
 }
@@ -427,7 +427,7 @@ extern(C) void* typeArray(Opcode* pc, ulong* registers, RegistersAndStack* env, 
 	mixin(mizuNext);
 }
 
-/// `std.function.abi_rename`: the emitted name, and nothing else about the
+/// `std.functions.abi_rename`: the emitted name, and nothing else about the
 /// entity, changes.
 extern(C) void* entityRename(Opcode* pc, ulong* registers, RegistersAndStack* env, ubyte* sp) @trusted {
 	auto mod = &storedModule(env);
@@ -554,6 +554,31 @@ extern(C) void* diagnosticError(Opcode* pc, ulong* registers, RegistersAndStack*
 	auto mod = &storedModule(env);
 	emitDiagnostic(*mod, cast(EntityId) registers[pc.b], Kind.error, registers[pc.a]);
 	registers[pc.out_] = 0;
+	mixin(mizuNext);
+}
+
+
+// --- layout -----------------------------------------------------------------
+
+/// Where a field begins inside the aggregate that declares it, in bits.
+///
+/// Declared last on purpose: `doirLookup` numbers these by declaration order,
+/// and `mizu.doir` bakes those numbers in, so anything inserted above here
+/// renumbers every instruction below it.
+///
+/// The register holds the field's *entity*, not a value - a field names a
+/// position in a layout and has nothing to read at runtime - which is why
+/// `opt.mizu.comptimeEvaluate` passes an aggregate field the way it passes a
+/// type. `sema.fieldOffsetBits` is the answer, read off the `FieldOffset` that
+/// `sema.computeTypeProperties` wrote while laying the type out; `0` for
+/// anything that is not a field, which is all a register can say.
+extern(C) void* fieldOffsetBits(Opcode* pc, ulong* registers, RegistersAndStack* env, ubyte* sp) @trusted {
+	import doir.pipeline.sema.type_properties : offsetOf = fieldOffsetBits;
+
+	auto mod = &storedModule(env);
+	immutable e = resolveAlias(*mod, cast(EntityId) registers[pc.a]);
+	immutable offset = offsetOf(*mod, e);
+	registers[pc.out_] = offset == size_t.max ? 0 : offset;
 	mixin(mizuNext);
 }
 

@@ -107,6 +107,23 @@ std : namespace = {
 		export size_bits : size_function
 		export align_bits : size_function
 
+		// Asks a *field* rather than a type: where it begins inside the
+		// aggregate that declares it, in bits. Its argument is the field
+		// declaration a dotted `vec2.x` resolves to (R-Qual descends into an
+		// aggregate the way it does a namespace), which is an entity rather
+		// than a value - so `pointer_sized`, as `meta.entity` is.
+		field_function : type = (field: pointer_sized) -> pointer_sized
+		_ : type = comptime(field_function)
+		export field_offset_bits : field_function
+
+		// The address of a field of `object`, which is the one operation here
+		// that emits: the offset folds at compile time and the add does not.
+		// `-> byte_pointer` rather than `pointer(typeof(field))` for the same
+		// reason `stack.allocate` gives one back - the declared type at the use
+		// site is what narrows it, and S-Struct lets it.
+		field_pointer_t : type = (Tobj : deduced type, object: Tobj, field: pointer_sized) -> byte_pointer
+		export field_pointer : field_pointer_t
+
 		// Placeholder. `self` is meant to denote the type currently being
 		// constructed (T-Self), which no enclosing-scope rule reaches - inside a
 		// type-returning function there is no enclosing type definition yet.
@@ -222,9 +239,9 @@ std : namespace = {
 	// -----------------------------------------------------------------------
 	// Operations on functions
 	// -----------------------------------------------------------------------
-	function : namespace = {
+	functions : namespace = {
 		// NOTE: Every function in this namespace will error if not provided a function or function type
-		export forcibly_inline : types.modifier_function // Body substituted at the call site, in a new block
+		export always_inline : types.modifier_function // Body substituted at the call site, in a new block
 		export always_flatten : types.modifier_function // Inlined WITHOUT that new block
 
 		// A modifier on the set (M-Flag): edits `overload_set` in place and
@@ -242,7 +259,7 @@ std : namespace = {
 		export abi_rename : abi_rename_t
 	}
 
-	diagnostic : namespace = {
+	diagnostics : namespace = {
 		// Exported individually rather than by exporting the namespace: the rule
 		// that an exported namespace exports its contents (D-ExportNS) is not
 		// implemented, so relying on it would strip these names.
@@ -251,7 +268,7 @@ std : namespace = {
 		export error : (message: null_terminated_byte_pointer, help: null_terminated_byte_pointer, location: meta.source_location.location)
 	}
 
-	attribute : namespace = {
+	attributes : namespace = {
 		get_id_of_type_t : type = (T: type) -> index
 		_ : type = types.comptime(get_id_of_type_t)
 		get_id_of_type : get_id_of_type_t
@@ -265,7 +282,7 @@ std : namespace = {
 		// parameters, not return types), and `get_id` is left unsolved. It
 		// needs `add_overload` to declare what it returns - an overload set is
 		// a value of *some* type - before this line can come back.
-		// export get_id : _ = function.add_overload(get_id_of_type, get_id_of_name)
+		// export get_id : _ = functions.add_overload(get_id_of_type, get_id_of_name)
 
 		// Attaching an attribute to a value is attaching a component to an
 		// entity - the store, spelled in the source language.
@@ -290,7 +307,7 @@ std : namespace = {
 	//
 	// Both are OVERLOAD SETS (T-Overload), not single functions: these members
 	// are the defaults every POD type uses, and a type that owns something
-	// attaches its own with `function.add_overload`, which edits the set in
+	// attaches its own with `functions.add_overload`, which edits the set in
 	// place. This is where a copy constructor lives. By C-Order the set grows
 	// from the line the overload is added, so calls above it resolve to the
 	// default and calls below it to the new member.
@@ -344,7 +361,7 @@ std : namespace = {
 	export load : (T : deduced type, stack_offset : index) -> T
 	export store : (T : deduced type, value : T, stack_offset : index) -> T
 
-	pointer : namespace = {
+	pointers : namespace = {
 		export load : (Tptr : deduced type, Tvalue : deduced type, pointer : Tptr) -> Tvalue // NOTE: Errors if Tptr != pointer(Tvalue)
 		export store : (Tptr : deduced type, Tvalue : deduced type, pointer : Tptr, value : Tvalue) -> Tvalue
 

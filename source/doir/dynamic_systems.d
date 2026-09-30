@@ -100,6 +100,7 @@ private enum string[] passModules = [
 	"doir.pipeline.canon.comptime",
 	"doir.pipeline.canon.lookup",
 	"doir.pipeline.canon.materialize",
+	"doir.pipeline.canon.merge_namespaces",
 	"doir.pipeline.canon.override_fallback_schedule",
 	"doir.pipeline.canon.process_early_include",
 	"doir.pipeline.canon.sort",
