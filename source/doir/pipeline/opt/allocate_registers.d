@@ -3,7 +3,7 @@
 /// `pin_register` call right after it. Ported from opt/allocate_registers.hpp.
 module doir.pipeline.opt.allocate_registers;
 
-import ecrs.storage : EntityId;
+import ecrs.storage : EntityId, invalidEntity;
 
 static import fp.dynarray;
 import fp.dynarray : daLength = length;
@@ -48,8 +48,19 @@ bool allocateRegisters(ref Module mod, EntityId subtree) @trusted {
 		immutable pinRegister = resolveCached(mod, "compiler.assembler.pin_register", 1);
 		immutable register = resolveCached(mod, "compiler.assembler.register", 1);
 
+		// A parameter is not a value, so it was never allocated: until
+		// `opt.liftFunctionBodies` there was no parameter left to allocate for,
+		// because the only bodies that reached the machine were inlined ones
+		// and inlining substitutes the caller's value for the parameter. A
+		// lifted body keeps its parameters, and they are registers - the ones
+		// a calling convention would write into. `findFunctionInsideOf` is what
+		// tells the two apart: a parameter still inside a function belongs to a
+		// declaration nothing jumps to, and allocating for it would renumber
+		// every register in every program for nothing.
+		immutable liftedParameter = hasComponent!FunctionParameter(mod, subtree)
+			&& findFunctionInsideOf(mod, subtree) == invalidEntity;
 		if (!(hasComponent!Number(mod, subtree) || hasComponent!DString(mod, subtree)
-			|| hasComponent!Call(mod, subtree))) return true;
+			|| hasComponent!Call(mod, subtree) || liftedParameter)) return true;
 		if (hasComponent!AssignedRegister(mod, subtree)) return true;
 
 		immutable parent = findParent(mod, subtree);

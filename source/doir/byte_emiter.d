@@ -58,6 +58,12 @@ private void emitNumberAssign(ref ubyte** values, ref Module mod, EntityId subtr
 
 private void emitCall(ref ubyte** values, ref ubyte* out_, ref Module mod, EntityId subtree) @trusted {
 	if (!hasComponent!Call(mod, subtree)) return;
+
+	// A function body is a declaration nothing jumps to, so its bytes would
+	// land in the middle of the caller's stream. A body that *is* jumped to
+	// does not reach here as one: `opt.liftFunctionBodies` has already moved
+	// it out to module scope, labels and all, so this asks what it says it
+	// asks rather than standing in for "and not one with labels".
 	if (findFunctionInsideOf(mod, subtree)) return;
 
 	immutable emit = resolveLookupName(mod, internIn(mod, "compiler.emit"), 1, true);
@@ -78,6 +84,22 @@ private void emitCall(ref ubyte** values, ref ubyte* out_, ref Module mod, Entit
 	}
 }
 
+/// Fills `values` for every constant in the tree, ahead of any emission.
+///
+/// A pass of its own rather than a step inside `emitBlock`, because where a
+/// constant is *declared* has nothing to do with where the instruction naming
+/// it is emitted: `compiler.emit(m.val)` at module scope reads a byte out of a
+/// namespace, and `opt.sinkDeclarations` moves every namespace below the code.
+/// Filling the table lazily during the emitting walk made a `compiler.emit`
+/// that ran before the walk reached its operand an out-of-range index instead.
+private void collectValues(ref ubyte** values, ref Module mod, EntityId subtree) @trusted {
+	for (size_t i = 0; i < daLength(getComponent!Block(mod, subtree).related); ++i) {
+		immutable e = getComponent!Block(mod, subtree).related[i];
+		if (hasComponent!Block(mod, e)) collectValues(values, mod, e);
+		else emitNumberAssign(values, mod, e);
+	}
+}
+
 private void emitBlock(ref ubyte** values, ref ubyte* out_, ref Module mod, EntityId subtree) @trusted {
 	assert(hasComponent!Block(mod, subtree));
 
@@ -85,10 +107,8 @@ private void emitBlock(ref ubyte** values, ref ubyte* out_, ref Module mod, Enti
 		immutable e = getComponent!Block(mod, subtree).related[i];
 		if (hasComponent!Block(mod, e))
 			emitBlock(values, out_, mod, e);
-		else {
-			emitNumberAssign(values, mod, e);
+		else
 			emitCall(values, out_, mod, e);
-		}
 	}
 }
 
@@ -104,6 +124,7 @@ ubyte* emitAll(ref Module mod, EntityId root) @trusted {
 	}
 
 	ubyte* out_;
+	collectValues(values, mod, root);
 	emitBlock(values, out_, mod, root);
 	return out_;
 }

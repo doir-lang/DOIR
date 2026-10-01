@@ -13,6 +13,9 @@ import fp.dynarray : daLength = length;
 import mizu.opcode : setupEnvironment, startFromEnvironment;
 
 import doir.byte_emiter;
+import mizu.opcode : Reg;
+
+import doir.comptime.program;
 import doir.interface_;
 import doir.mizu.instructions : doirLookup;
 import mizu.portable_format : fromPortable;
@@ -26,12 +29,6 @@ import doir.systems : SystemFunction, fixedPointChanged;
 @nogc nothrow:
 
 
-/// Set while one call is being assembled, lowered and run, so that the pass
-/// does not re-enter itself through the schedule it lowers with. A plain flag
-/// rather than a depth count: there is nothing a nested evaluation could
-/// usefully do, so the only question is in or out.
-private __gshared bool evaluating;
-
 /// True if `subtree` already has a value the compiler can read directly.
 ///
 /// Through aliases (A-Transparent): `byte : alias = u8` is as available as
@@ -42,11 +39,23 @@ private __gshared bool evaluating;
 /// A field of an aggregate counts too, and travels as its entity id the way a
 /// type does: it names a position in a layout rather than a value, which is
 /// what `mizu.doir.field_offset_bits` asks about.
+///
+/// A parameter never counts, whatever it is declared as. This is the whole of
+/// what the pass used to say by refusing every call inside a function body: a
+/// parameter is a name a call site binds, and until one does there is nothing
+/// to read. The two clauses below that go by declared type would otherwise
+/// take one on trust - a `T: type` or a `blk: block` parameter looks exactly
+/// like the argument that will replace it - and `std.execute(blk)` on one
+/// aborted in `inlineInto`, a parameter having no `Block` to splice.
+/// `opt.inlineFunctions` substitutes the arguments in, and from then on
+/// `resolveAlias` lands on the argument rather than the parameter.
 bool comptimeValueAvailable(ref Module mod, EntityId subtree) {
 	immutable compiler = resolveCached(mod, "compiler", 1, true);
 	immutable type = resolveCached(mod, "type", 1, true);
 	immutable blockType = resolveCached(mod, "block", 1, true);
 	immutable e = resolveAlias(mod, subtree);
+
+	if (hasComponent!FunctionParameter(mod, e)) return false;
 
 	return hasComponent!Number(mod, e) || hasComponent!DString(mod, e)
 		|| hasComponent!ComptimeNumber(mod, e) || hasComponent!ComptimeString(mod, e)
@@ -73,29 +82,22 @@ private static immutable string[7] requiredForEvaluation = [
 	"mizu.doir.attach_comptime_number_i64",
 ];
 
-/// The instructions `comptimeEvaluate` must not run.
+/// The instructions `comptimeEvaluate` must not run and that cannot say so on
+/// their own type.
 ///
-/// The program it builds holds one call and a `halt`, assembled fresh for
-/// that one call - so an instruction that moves the program counter has
-/// nowhere in *that* program to move to. `jump_to` is handed an address in
-/// the real one (address 0, for a label whose instruction has not been
-/// emitted yet), and the VM leaves for it, taking the compiler with it;
-/// `find_label` is the other half of the same story, scanning the throwaway
-/// program for a label that only exists in the real one and folding its
-/// "not found" 0 back into the caller as though it were an address. `halt`
-/// would end the program before it started, and a `label`'s value is
-/// `opt.mizu.materializeLabels`' to hand out rather than anything the VM
-/// computes.
-private static immutable string[9] neverComptime = [
-	"mizu.halt",
+/// Every other one does: `mizu.doir` declares `_effect_t` twins of its
+/// instruction shapes carrying `compiler.no_comptime`, and `sema.bubbleComptime`
+/// will not mark a call whose callee's type has that flag - which is the right
+/// place for it, since whether a call may be folded is a property of its
+/// callee, and an alias such as `std.jump_to` inherits a type for free where it
+/// would not match a name here.
+///
+/// `mizu.label` is what is left. It is declared with an anonymous function
+/// type (`() -> compiler.assembler.register`), so there is nothing to hang a
+/// flag on, and its value is `opt.mizu.materializeLabels`' to hand out rather
+/// than anything the VM computes.
+private static immutable string[1] neverComptime = [
 	"mizu.label",
-	"mizu.find_label",
-	"mizu.jump_relative",
-	"mizu.jump_relative_immediate",
-	"mizu.jump_to",
-	"mizu.branch_relative",
-	"mizu.branch_relative_immediate",
-	"mizu.branch_to",
 ];
 
 /// Evaluates `subtree` by assembling it into a throwaway block and running it
@@ -109,20 +111,11 @@ private bool evaluableCall(ref Module mod, EntityId subtree) @trusted {
 	if (!hasComponent!Call(mod, subtree)) return false;
 	if (!flagsSet(mod, subtree, Flags.Comptime)) return false;
 
-	// Not while another call is being evaluated. Lowering the throwaway block
-	// runs the fallback schedule, which now holds this pass too, and the block
-	// holds a comptime call by construction - so without this the first
-	// evaluation would recurse into itself forever.
-	if (evaluating) return false;
-
-	// Not inside a function that has not been instantiated. A comptime call in
-	// a body reads the body's *parameters*, which have no value until a call
-	// site binds them - `std.execute(t)` on a `block` parameter used to abort in
-	// `inlineInto`, since a parameter has no `Block` to splice.
-	// `opt.inlineFunctions` substitutes the arguments in, and this pass runs
-	// after it (see `mizuSchedule`), which is when such a call can be run.
-	// `opt.computeShiftRight` declines the same way and for the same reason.
-	if (findFunctionInsideOf(mod, subtree)) return false;
+	// Nothing here about being inside a function body. What that used to stand
+	// for - a body's parameters have no value until a call site binds them -
+	// `comptimeValueAvailable` now says exactly, and the difference is a body
+	// nothing inlines: `opt.liftFunctionBodies` emits one, so the dispatch
+	// inside it has to fold the way the same dispatch does at module scope.
 
 	immutable calledFunction = resolveAlias(mod, getComponent!Call(mod, subtree).related[0]);
 	// Nothing to run if the call has no target. `invalidEntity` is 0, so
@@ -170,343 +163,328 @@ private bool evaluableCall(ref Module mod, EntityId subtree) @trusted {
 	return true;
 }
 
-/// Whether `subtree` is the evaluator's - a comptime call it is entitled to
-/// run - whether or not it can run it yet, and whether or not it already has.
+// ---------------------------------------------------------------------------
+// Regions
+// ---------------------------------------------------------------------------
+//
+// A *region* is a connected set of comptime calls the evaluator runs as one
+// Mizu program: the call asked about, every call that feeds it an argument,
+// and so on inward. The alternative - and what this pass used to be - is one
+// program per call, each one folding its result into the store so that the
+// call above it has a constant to read on a later round of the fixpoint.
+//
+// One program per region is not an optimization. `opt.inlineFunctions` runs
+// before this pass and has to be told which calls to leave alone, and with one
+// program per call that question had no honest answer: nothing is folded when
+// the inliner asks, so "can the evaluator run this?" was false for every link
+// of a chain but the innermost, and the pass answered with a *prediction*
+// instead - every argument is available now or is itself a predicted call, to
+// a depth of eight. The inliner acts on the answer irrevocably, so a call that
+// was predicted and then never became runnable was stranded: never inlined,
+// never folded. Which of the two passes won came down to entity numbering.
+//
+// A region makes the question answerable. The evaluator commits to running the
+// whole set, so an argument that is itself an owned call is one it *will*
+// supply rather than one it hopes somebody folds first, and "claimed" and
+// "will be folded" become the same predicate - exact, and with no depth bound,
+// since the argument graph is acyclic (see @comptime's note).
+
+/// How many calls one region may hold.
 ///
-/// Public because `opt.inlineFunctions` asks, and this rather than
-/// `comptimeEvaluationPending` is the question that pass has. A call the
-/// evaluator owns must not be inlined out from under it: inlining replaces the
-/// call with its body, and the body of a `mizu.doir` instruction is the *bytes
-/// of that instruction*, which in the emitted program would mean editing the
-/// entity store at runtime.
+/// Each call's result has to stay live until everything that reads it has run,
+/// so the register file is the limit. A region that would go over is declined
+/// rather than split: the outer call then folds on a later round of the
+/// fixpoint, once this one has folded its arguments - which is the old
+/// one-call-at-a-time behaviour, kept as the fallback for programs big enough
+/// to need it.
+private enum size_t maximumRegionSize = maximumResults;
+
+/// Where `collectRegion` builds.
 ///
-/// The two questions came apart over a chain. One `depthFirst` walk of the
-/// evaluator folds a whole chain, because post-order reaches an argument
-/// before the call that reads it - but the inliner runs before any of that, so
-/// when it asks, every link past the first still has an unfolded call for an
-/// argument. Asking `comptimeEvaluationPending` there answered "not runnable,
-/// inline it" and cost the chain every link but the innermost: `std.add`'s
-/// dispatch reads its type's tag, compares it, and only then has a condition
-/// to pick a block with, and it was the comparison that went. So an argument
-/// that is itself a claimed call counts as one the evaluator will supply.
+/// One array reused rather than one per question: `opt.inlineFunctions` asks
+/// `comptimeEvaluationClaims` once per call in the module, and the answer is
+/// usually "no", so a fresh allocation per question is a lot of malloc for a
+/// walk that touches nothing.
+private __gshared EntityId* regionScratch;
+
+/// A comptime call this pass is entitled to run: everything `evaluableCall`
+/// asks, and a callee that bottoms out in a Mizu instruction.
 ///
-/// Only such an argument, which is why this is not simply
-/// `comptimeEvaluationPending` without its argument check. `mizu.emit_register`
-/// is a comptime call whose argument is a `compiler.assembler.return_register`
-/// - folded by `opt.computeCompilerNamespace`, never by the evaluator, which
-/// declines the whole `compiler` namespace - and standing down for that one
-/// left every instruction in `mizu.doir` two bytes short of its operand.
+/// The second half is what the old one-program-per-call path discovered by
+/// building a program that decoded to nothing and jumping the VM into it.
+private bool ownedCall(ref Module mod, EntityId subtree) @trusted {
+	if (!evaluableCall(mod, subtree)) return false;
+	immutable callee = resolveAlias(mod, getComponent!Call(mod, subtree).related[0]);
+	return instructionOf(mod, callee) !is null;
+}
+
+/// Collects the region rooted at `subtree` into `region`, arguments before the
+/// call that reads them, and answers whether it is complete - whether every
+/// argument is either a value the compiler can read now or another call in the
+/// region.
+///
+/// Incomplete is not an error. An argument that is neither is one somebody else
+/// folds - `opt.computeCompilerNamespace` does the whole `compiler` namespace,
+/// and `mizu.emit_register` takes a `compiler.assembler.return_register` - or
+/// one that is genuinely a runtime value, and in both cases the call belongs to
+/// the inliner rather than here.
+/// Set by `collectRegion` when the one thing standing between a region and
+/// running it is a parameter nothing has bound yet. Sticky until an entry point
+/// clears it, which is how a refusal deep in the recursion reaches the top.
+private __gshared bool regionDeferred;
+
+private bool collectRegion(ref Module mod, EntityId subtree, ref EntityId* region) @trusted {
+	if (!ownedCall(mod, subtree)) return false;
+
+	// A DAG rather than a tree: two calls can read the same argument, and the
+	// second reader must not append it again - the program would run it twice,
+	// and the second run would see a store the first had already edited.
+	foreach (i; 0 .. daLength(region))
+		if (region[i] == subtree) return true;
+
+	// Both the register budget and the only thing standing between a malformed
+	// store and an infinite recursion: nothing is appended until the arguments
+	// are done, so depth is bounded by length only because of this.
+	if (daLength(region) >= maximumRegionSize) return false;
+
+	if (hasComponent!FunctionInputs(mod, subtree)) {
+		auto inputs = &getComponent!FunctionInputs(mod, subtree);
+		foreach (i; 0 .. daLength(inputs.related)) {
+			immutable a = resolveAlias(mod, inputs.related[i]);
+			if (comptimeValueAvailable(mod, a)) continue;
+			// Not incomplete, just early. See `comptimeEvaluationClaims`.
+			if (hasComponent!FunctionParameter(mod, a)) {
+				regionDeferred = true;
+				return false;
+			}
+			if (!collectRegion(mod, a, region)) return false;
+		}
+	}
+
+	fp.dynarray.pushBack(region, subtree);
+	return true;
+}
+
+/// Whether `subtree` is the evaluator's - a comptime call it will run, and
+/// which `opt.inlineFunctions` must therefore leave alone.
+///
+/// Inlining replaces a call with its body, and the body of a `mizu.doir`
+/// instruction is the *bytes of that instruction*, which in the emitted
+/// program would mean editing the compiler's entity store at runtime.
 ///
 /// An already-folded call is still claimed. The evaluator leaves the `Call`
 /// where it was and hangs the answer off it as a `ComptimeNumber`, so nothing
 /// else marks it done - and a schedule that runs the inliner again afterwards
 /// (`standard.mizu.doir`'s does, for `materializeLabels`) would otherwise
 /// replace a call whose value is known with the instruction that computes it.
-bool comptimeEvaluationClaims(ref Module mod, EntityId subtree, size_t depth = 8) @trusted {
-	if (!evaluableCall(mod, subtree)) return false;
-
-	if (hasComponent!FunctionInputs(mod, subtree)) {
-		auto inputs = &getComponent!FunctionInputs(mod, subtree);
-		foreach (i; 0 .. daLength(inputs.related)) {
-			immutable e = resolveAlias(mod, inputs.related[i]);
-			if (comptimeValueAvailable(mod, e)) continue;
-			// Bounded rather than exhaustive: arguments form a DAG (SSA), so
-			// this terminates either way, and a chain longer than this asks
-			// the inliner to stand down for a fold several rounds out, which
-			// it has no schedule to wait for.
-			if (depth > 0 && comptimeEvaluationClaims(mod, e, depth - 1)) continue;
-			return false;
-		}
-	}
-
-	return true;
+///
+/// So is a region waiting on a parameter, which cannot run yet and must still
+/// be left alone. A function body is a template: `std.subtract`'s own
+/// declaration holds the `kind` -> condition -> `execute_if` chain written
+/// against its parameter `T`, and inlining copies that body to each call site.
+/// Inline the chain in the template and every copy made afterwards carries the
+/// bytes of the instruction that computes `kind` instead of the call that
+/// folds to it - so whether the dispatch collapses came down to whether the
+/// inliner reached a call site before it reached the declaration. It reached
+/// `test.doir`'s top level first and `std.while`'s body second, which is
+/// exactly the shape the divergence had.
+bool comptimeEvaluationClaims(ref Module mod, EntityId subtree) @trusted {
+	if (!ownedCall(mod, subtree)) return false;
+	fp.dynarray.clear(regionScratch);
+	regionDeferred = false;
+	if (collectRegion(mod, subtree, regionScratch)) return true;
+	return regionDeferred;
 }
 
-/// Whether this pass still owes `subtree` an answer: a call it owns, has not
-/// run yet, and has every argument for *now*.
+/// Whether the evaluator has already answered this call.
+///
+/// Not `comptimeValueAvailable`: its `TypeOf == type` clause is about
+/// *arguments* - a type entity passed to a call is a value the compiler can
+/// read - and this is asked of the call. Asking it of the call as well made
+/// every declaration whose result is a type unevaluable, which is every
+/// modifier there is: M-Flag's whole signature is `(in: type) -> type`.
+private bool alreadyFolded(ref Module mod, EntityId subtree) {
+	return hasComponent!Number(mod, subtree) || hasComponent!DString(mod, subtree)
+		|| hasComponent!ComptimeNumber(mod, subtree)
+		|| hasComponent!ComptimeString(mod, subtree);
+}
+
+/// Whether this pass still owes `subtree` an answer: a call it claims and has
+/// not run yet.
 bool comptimeEvaluationPending(ref Module mod, EntityId subtree) @trusted {
-	if (!evaluableCall(mod, subtree)) return false;
-
-	// Already folded. Not `comptimeValueAvailable`: its `TypeOf == type` clause
-	// is about *arguments* - a type entity passed to a call is a value the
-	// compiler can read - and `subtree` here is the call. Asking it of the call
-	// as well made every declaration whose result is a type unevaluable, which
-	// is every modifier there is: M-Flag's whole signature is
-	// `(in: type) -> type`.
-	if (hasComponent!Number(mod, subtree) || hasComponent!DString(mod, subtree)
-		|| hasComponent!ComptimeNumber(mod, subtree) || hasComponent!ComptimeString(mod, subtree))
-		return false;
-
-	if (hasComponent!FunctionInputs(mod, subtree)) {
-		auto inputs = &getComponent!FunctionInputs(mod, subtree);
-		foreach (i; 0 .. daLength(inputs.related))
-			if (!comptimeValueAvailable(mod, inputs.related[i])) return false;
-	}
-
-	return true;
+	if (alreadyFolded(mod, subtree)) return false;
+	if (!ownedCall(mod, subtree)) return false;
+	// Complete, not merely claimed: a deferred region has nothing to run.
+	fp.dynarray.clear(regionScratch);
+	return collectRegion(mod, subtree, regionScratch);
 }
 
-bool comptimeEvaluate(ref Module mod, EntityId subtree, SystemFunction mizuSchedule) @trusted {
-	if (!comptimeEvaluationPending(mod, subtree)) return true;
 
-	immutable calledFunction = resolveAlias(mod, getComponent!Call(mod, subtree).related[0]);
+// ---------------------------------------------------------------------------
+// Running one
+// ---------------------------------------------------------------------------
 
-	immutable compiler = resolveCached(mod, "compiler", 1, true);
+/// The value an argument travels to the VM as.
+///
+/// A number is itself; a string is its bytes' address; a type, a block and a
+/// field of an aggregate are all their own entity id, which is what makes
+/// `mizu.doir`'s reflection instructions work on a plain register - each names
+/// something in the store rather than holding a value, and the instruction
+/// asks the store.
+private ulong argumentValue(ref Module mod, EntityId e) @trusted {
 	immutable type = resolveCached(mod, "type", 1, true);
 	immutable blockType = resolveCached(mod, "block", 1, true);
-	immutable voidType = resolveCached(mod, "void", 1, true);
-	immutable earlyInclude = resolveCached(mod, "early_include", 5, true);
 
+	if (hasComponent!Number(mod, e))
+		return cast(ulong) getComponent!Number(mod, e).value;
+	if (hasComponent!ComptimeNumber(mod, e))
+		return cast(ulong) getComponent!ComptimeNumber(mod, e).value;
+	if (hasComponent!DString(mod, e))
+		return cast(ulong) cast(size_t) getComponent!DString(mod, e).value.view.ptr;
+	if (hasComponent!ComptimeString(mod, e))
+		return cast(ulong) cast(size_t) getComponent!ComptimeString(mod, e).value.view.ptr;
+	// `TypeDefinition` as well as `TypeOf == type`: an instruction that builds
+	// a type leaves the definition and no declared type.
+	if (hasComponent!TypeDefinition(mod, e) || isAggregateField(mod, e)
+		|| (hasComponent!TypeOf(mod, e)
+			&& (getComponent!TypeOf(mod, e).related[0] == blockType
+				|| getComponent!TypeOf(mod, e).related[0] == type)))
+		return resolveAlias(mod, e);
+
+	// Unreachable: `collectRegion` only completes when every argument is one of
+	// the above or another call in the region, and a region is what gets here.
+	panic("Comptime evaluation of call with non-comptime parameter");
+	return 0;
+}
+
+/// The index of `e` in `region`, or `region.length` if it is not a member.
+private size_t memberIndex(const(EntityId)[] region, EntityId e) {
+	foreach (i, m; region) if (m == e) return i;
+	return region.length;
+}
+
+/// Runs the region rooted at `subtree`: every call in it, in one Mizu program,
+/// arguments before the calls that read them.
+///
+/// `mizuSchedule` is the schedule spliced source is lowered with - any libECRS
+/// system, so the driver can hand over whatever it composed out of
+/// `doir.systems`' walkers.
+bool comptimeEvaluate(ref Module mod, EntityId subtree, SystemFunction mizuSchedule) @trusted {
+	if (!hasComponent!Call(mod, subtree)) return true;
+	if (alreadyFolded(mod, subtree)) return true;
+
+
+	EntityId* region;
+	scope(exit) fp.dynarray.free(region);
+	if (!collectRegion(mod, subtree, region)) return true;
+
+	immutable setModuleOp = instructionOf(mod,
+		resolveCached(mod, "mizu.doir.set_module", 1, true));
+	immutable attachOp = instructionOf(mod,
+		resolveCached(mod, "mizu.doir.attach_comptime_number_i64", 1, true));
+	// A module that early_include'd no backend has neither, and `evaluableCall`
+	// has already declined on that - but it answers by *name*, and these two
+	// are read out of a body. Decided before `fixedPointChanged` below:
+	// standing down after announcing a change is a fixed point that never
+	// settles.
+	if (setModuleOp is null || attachOp is null) return true;
+
+	// The root, which is the call the walk asked about. Read at build time by
+	// whatever folds a `compiler.current_entity` reference, and not by the
+	// program: an instruction reads the entity it is acting for out of
+	// `currentEntityRegister`, which is set once per call below.
 	immutable compilerCurrentEntity = resolveCached(mod, "compiler.current_entity", 1, true);
-	immutable assemblerPinRegister = resolveCached(mod, "compiler.assembler.pin_register", 1, true);
-	immutable assemblerRegister = resolveCached(mod, "compiler.assembler.register", 1, true);
-
-	immutable mizuNs = resolveCached(mod, "mizu", 1, true);
-	immutable mizuU64 = resolveCached(mod, "mizu.u64", 1, true);
-	immutable mizuHalt = resolveCached(mod, "mizu.halt", 1, true);
-	immutable mizuLoadImmediate = resolveCached(mod, "mizu.load_immediate", 1, true);
-	immutable mizuLoadUpperImmediate = resolveCached(mod, "mizu.load_upper_immediate", 1, true);
-	immutable mizuDoirSetModule = resolveCached(mod, "mizu.doir.set_module", 1, true);
-	immutable mizuDoirAttachComptimeNumberI64 =
-		resolveCached(mod, "mizu.doir.attach_comptime_number_i64", 1, true);
-
-	// Every one of these is needed to assemble the throwaway program below, and
-	// every one of them is `invalidEntity` (0) in a module that never
-	// early_include'd mizu.doir. Building the block anyway emitted bytes that
-	// decode to nothing, and `startFromEnvironment` then jumped the VM into a
-	// wild address - a segfault for any comptime call in a module with no mizu
-	// backend loaded (a zero-argument call is vacuously comptime, so this is
-	// easy to reach). Leave the call alone instead, the way a `compiler.*`
-	// callee is left alone above.
-	if (mizuNs == invalidEntity || mizuU64 == invalidEntity || mizuHalt == invalidEntity
-		|| mizuLoadImmediate == invalidEntity || mizuLoadUpperImmediate == invalidEntity
-		|| mizuDoirSetModule == invalidEntity
-		|| mizuDoirAttachComptimeNumberI64 == invalidEntity)
-		return true;
-
 	getComponent!Number(mod, compilerCurrentEntity).value = subtree;
 
 	fixedPointChanged() = true;
 
-	auto comptimeBlock = createBlockBuilder(mod);
-	{
-		auto related = &getComponent!Block(mod, comptimeBlock.block).related;
-		fp.dynarray.pushBack(*related, type);
-		fp.dynarray.pushBack(*related, voidType);
-		fp.dynarray.pushBack(*related, earlyInclude);
-		fp.dynarray.pushBack(*related, compiler);
-		fp.dynarray.pushBack(*related, mizuNs);
-	}
+	ComptimeProgram program;
+	scope(exit) free(program);
+	begin(program, mod, setModuleOp);
 
-	immutable modPtr = cast(size_t) &mod;
-	auto currentModule = pushNumber(comptimeBlock, InternedString("_"), mizuU64, cast(uint) modPtr);
-	size_t rValue = 1;
-	// Two since the allocator tends to skip 2.
-	auto r = pushNumber(comptimeBlock, InternedString("_"), assemblerRegister, rValue++);
-	{
-		EntityId[3] inputs = [mizuU64, currentModule, r];
-		pushCall(comptimeBlock, InternedString("_"), assemblerRegister, assemblerPinRegister, inputs[]);
-	}
-	{
-		EntityId[2] inputs = [mizuU64, currentModule];
-		pushCall(comptimeBlock, InternedString("_"), assemblerRegister, mizuLoadImmediate, inputs[]);
-	}
-	currentModule = pushNumber(comptimeBlock, InternedString("_"), mizuU64, cast(uint)(modPtr >> 32));
-	{
-		EntityId[3] inputs = [mizuU64, currentModule, r];
-		pushCall(comptimeBlock, InternedString("_"), assemblerRegister, assemblerPinRegister, inputs[]);
-	}
-	{
-		EntityId[2] inputs = [mizuU64, currentModule];
-		pushCall(comptimeBlock, InternedString("_"), assemblerRegister, mizuLoadUpperImmediate, inputs[]);
-	}
-	{
-		EntityId[1] inputs = [currentModule];
-		pushCall(comptimeBlock, InternedString("_"), assemblerRegister, mizuDoirSetModule, inputs[]);
-	}
+	auto members = fp.dynarray.slice(region);
+	Reg[maximumRegionSize] results;
+	foreach (i, call; members) {
+		immutable op = instructionOf(mod,
+			resolveAlias(mod, getComponent!Call(mod, call).related[0]));
 
-	auto currentEntity = pushNumber(comptimeBlock, InternedString("_"), mizuU64, subtree);
-	r = pushNumber(comptimeBlock, InternedString("_"), assemblerRegister, rValue++);
-	{
-		EntityId[2] inputs = [mizuU64, currentEntity];
-		pushCall(comptimeBlock, InternedString("_"), assemblerRegister, mizuLoadImmediate, inputs[]);
-	}
-	{
-		EntityId[3] inputs = [mizuU64, currentEntity, r];
-		pushCall(comptimeBlock, InternedString("_"), assemblerRegister, assemblerPinRegister, inputs[]);
-	}
-
-	EntityId* arguments;
-	scope(exit) fp.dynarray.free(arguments);
-	if (hasComponent!FunctionInputs(mod, subtree)) {
-		immutable count = daLength(getComponent!FunctionInputs(mod, subtree).related);
-		foreach (i; 0 .. count) {
-			auto e = resolveAlias(mod, getComponent!FunctionInputs(mod, subtree).related[i]);
-
-			// Named by position, never after the argument it carries. Two
-			// slots can hold the same entity (`mizu.add(a, a)`) or two
-			// same-named ones, and naming them after their argument put two
-			// children with one name in this block - which is a redefinition to
-			// anything that walks it, `sema.nameReuse` included, now that the
-			// backend runs that as part of lowering.
-			InternedString name;
-			{
-				char[24] buffer;
-				immutable n = snprintf(buffer.ptr, buffer.length, "a%zu", i);
-				name = internIn(mod, buffer[0 .. n]);
+		Reg[2] operands = [0, 0];
+		if (hasComponent!FunctionInputs(mod, call)) {
+			auto inputs = &getComponent!FunctionInputs(mod, call);
+			foreach (j; 0 .. daLength(inputs.related)) {
+				if (j >= operands.length) break;
+				immutable a = resolveAlias(mod, inputs.related[j]);
+				// An argument the region computes is already in a register.
+				// This is the whole point of a region: the value never goes
+				// out to the store and back, so the call above does not have
+				// to wait for a later round of the fixpoint to read it.
+				immutable member = memberIndex(members[0 .. i], a);
+				operands[j] = member < i
+					? results[member]
+					: loadOperand(program, j, argumentValue(mod, a));
 			}
-
-			size_t value;
-			if (hasComponent!Number(mod, e))
-				value = cast(size_t) getComponent!Number(mod, e).value;
-			else if (hasComponent!ComptimeNumber(mod, e))
-				value = cast(size_t) getComponent!ComptimeNumber(mod, e).value;
-			else if (hasComponent!DString(mod, e))
-				value = cast(size_t) getComponent!DString(mod, e).value.view.ptr;
-			else if (hasComponent!ComptimeString(mod, e))
-				value = cast(size_t) getComponent!ComptimeString(mod, e).value.view.ptr;
-			// A type is passed as its entity id, which is what makes
-			// `mizu.doir`'s reflection instructions work on a plain register.
-			// `TypeDefinition` as well as `TypeOf == type`: an instruction that
-			// builds a type leaves the definition and no declared type.
-			else if (hasComponent!TypeDefinition(mod, e)
-				|| (hasComponent!TypeOf(mod, e)
-					&& (getComponent!TypeOf(mod, e).related[0] == blockType
-						|| getComponent!TypeOf(mod, e).related[0] == type)))
-				value = resolveAlias(mod, e);
-			// A field of an aggregate travels as its entity id for the same
-			// reason a type does: it names a position in a layout rather than a
-			// value, and `mizu.doir.field_offset_bits` asks the store where.
-			else if (isAggregateField(mod, e))
-				value = resolveAlias(mod, e);
-			else
-				panic("Comptime evaluation of call with non-comptime parameter");
-
-			// Low half first, then the upper one into the same register, the
-			// way the `Module*` above is loaded. A Mizu immediate is 32 bits
-			// (`opt.mizu.materializeImmediates` casts to `uint`), and a single
-			// `load_immediate` per argument silently truncated every value that
-			// did not fit - which is every *pointer*, so a string argument
-			// reached an instruction as a wild address.
-			e = pushNumber(comptimeBlock, name, mizuU64, cast(uint) value);
-			{
-				EntityId[2] inputs = [mizuU64, e];
-				pushCall(comptimeBlock, InternedString("_"), assemblerRegister, mizuLoadImmediate, inputs[]);
-			}
-			r = pushNumber(comptimeBlock, InternedString("_"), assemblerRegister, rValue++);
-			{
-				EntityId[3] inputs = [mizuU64, e, r];
-				pushCall(comptimeBlock, InternedString("_"), assemblerRegister, assemblerPinRegister, inputs[]);
-			}
-			if (value >> 32) {
-				InternedString upperName;
-				{
-					char[24] buffer;
-					immutable n = snprintf(buffer.ptr, buffer.length, "a%zu_upper", i);
-					upperName = internIn(mod, buffer[0 .. n]);
-				}
-				immutable upper = pushNumber(comptimeBlock, upperName, mizuU64, cast(uint)(value >> 32));
-				{
-					EntityId[3] inputs = [mizuU64, upper, r];
-					pushCall(comptimeBlock, InternedString("_"), assemblerRegister, assemblerPinRegister, inputs[]);
-				}
-				{
-					EntityId[2] inputs = [mizuU64, upper];
-					pushCall(comptimeBlock, InternedString("_"), assemblerRegister, mizuLoadUpperImmediate, inputs[]);
-				}
-			}
-			fp.dynarray.pushBack(arguments, e);
 		}
+
+		setCurrentEntity(program, call);
+		results[i] = callWith(program, op, operands[0], operands[1]);
+		// TODO: Store back string
+		callDiscarding(program, attachOp, currentEntityRegister(), results[i]);
 	}
+	end(program);
 
-	immutable typeOfSubtree = resolveAlias(mod, getComponent!TypeOf(mod, subtree).related[0]);
-	auto name = hasComponent!Name(mod, subtree)
-		? getComponent!Name(mod, subtree).value
-		: wildcardName();
-	auto ret = pushCall(comptimeBlock, name, typeOfSubtree, calledFunction, fp.dynarray.slice(arguments));
-	r = pushNumber(comptimeBlock, InternedString("_"), assemblerRegister, rValue++);
-	{
-		EntityId[3] inputs = [mizuU64, ret, r];
-		pushCall(comptimeBlock, InternedString("_"), assemblerRegister, assemblerPinRegister, inputs[]);
-	}
-
-	// TODO: Store back string
-	{
-		EntityId[2] inputs = [currentEntity, ret];
-		pushCall(comptimeBlock, InternedString("_"), mizuU64, mizuDoirAttachComptimeNumberI64, inputs[]);
-	}
-
-	{
-		EntityId[0] none;
-		pushCall(comptimeBlock, InternedString("_"), mizuU64, mizuHalt, none[]);
-	}
-
-	// printf("Comptime evaluating: %u\n", subtree);
-
-	evaluating = true;
-	scope(exit) evaluating = false;
-
-	immutable backup = newRoot;
-	newRoot = comptimeBlock.block;
-	// Every id here - `comptimeBlock.block`, `backup`, and every id the walk
-	// that reached this call is holding - is an id in the module, and a sort
-	// renumbers all of them. See `canon.sort.sortSuspended`.
-	sortSuspended = true;
-	immutable lowered = mizuSchedule(mod.ctx);
-	sortSuspended = false;
-	newRoot = backup;
-
-	// A lowering schedule that failed has raised its diagnostic, and the stage
-	// hook ends the compile on the way out of this walk. Carrying on would run
-	// the VM over a block the schedule did not finish lowering, and - since
-	// this is reached once per comptime call, with the failure the same every
-	// time - would raise that one diagnostic again for every call in the
-	// module before anything looked at it.
-	if (!lowered) return false;
-
-	auto bytes = emitAll(mod, comptimeBlock.block);
-	scope(exit) fp.dynarray.free(bytes);
-
-	{
-		auto portable = fromPortable!doirLookup(fp.dynarray.slice(bytes));
-		scope(exit) if (portable.program !is null) fp.dynarray.free(portable.program);
-
-		immutable count = daLength(portable.program);
-		// Nothing decoded - there is no entry point to jump to, and handing the
-		// VM a null program counter runs whatever happens to be at address 0.
-		if (count == 0) return true;
-		setupEnvironment(portable.environment, portable.program, portable.program + count);
-		startFromEnvironment(portable.program, portable.environment);
-	}
+	run(program);
 
 	// An instruction may have spliced source into the call it replaced rather
 	// than handing back a number - `mizu.doir.execute` is the whole reason this
-	// pass runs inside the lowering schedule at all. What it splices is a copy
-	// of what the program *wrote*, so it has had none of the lowering the code
-	// around it has: no registers, no materialized immediates, its own calls
-	// still calls. Lower it the same way the block above was, which is also the
-	// same way the module around it is (C-Lower).
-	//
-	// `evaluating` is still set, so this walk will not try to evaluate anything
-	// it finds. That is the intent: the spliced code is the program's, to be
-	// emitted, not more compile time work to do.
-	if (hasComponent!Block(mod, subtree)) {
-		immutable splicedBackup = newRoot;
-		newRoot = subtree;
-		sortSuspended = true;
-		// The walk starts inside the module rather than at its root, so it never
-		// meets the `begin_register_allocation` call that would otherwise turn
-		// allocation on - and spliced code needs registers exactly like the code
-		// around it.
-		immutable wasAllocating = beginRegisterAllocation();
-		immutable ok = mizuSchedule(mod.ctx);
-		endRegisterAllocation(wasAllocating);
-		sortSuspended = false;
-		newRoot = splicedBackup;
-		if (!ok) return false;
-	}
+	// pass runs inside the lowering schedule at all.
+	foreach (call; members)
+		if (hasComponent!Block(mod, call) && !lowerSpliced(mod, call, mizuSchedule))
+			return false;
 
 	return true;
+}
+
+/// Lowers source an instruction spliced into `call`.
+///
+/// What it spliced is a copy of what the program *wrote*, so it has had none
+/// of the lowering the code around it has: no registers, no materialized
+/// immediates, its own calls still calls. Lower it the same way the module
+/// around it is (C-Lower).
+///
+/// Including whatever compile time work it contains. There used to be a flag
+/// suppressing that - `evaluating`, back when building the program for one call
+/// meant running this very schedule over a synthesized block, so re-entering
+/// was infinite by construction (see `doir.comptime.program`). Building the
+/// program directly ended the recursion but the flag outlived it, and what it
+/// then did was tell the inliner this pass did not want the dispatch inside a
+/// `while` body - so the inliner took it, and `std.while` was the only
+/// construct in the repository whose dispatch came out as machine code.
+///
+/// What bounds the nesting now is the source: each splice is finite and
+/// spliced once, so the depth is the program's own nesting of dispatches.
+private bool lowerSpliced(ref Module mod, EntityId call, SystemFunction mizuSchedule) @trusted {
+	immutable splicedBackup = newRoot;
+	newRoot = call;
+	// Every id here - `call`, `splicedBackup`, and every id the walk that
+	// reached this region is holding - is an id in the module, and a sort
+	// renumbers all of them. See `canon.sort.sortSuspended`.
+	//
+	// Saved and put back rather than cleared, because this nests: a splice
+	// holds compile time work of its own, and the inner lowering clearing the
+	// flag let a `sort` run inside the outer one and renumber every id it was
+	// holding, `newRoot` included.
+	immutable suspendedBackup = sortSuspended;
+	sortSuspended = true;
+	// The walk starts inside the module rather than at its root, so it never
+	// meets the `begin_register_allocation` call that would otherwise turn
+	// allocation on - and spliced code needs registers exactly like the code
+	// around it.
+	immutable wasAllocating = beginRegisterAllocation();
+	immutable ok = mizuSchedule(mod.ctx);
+	endRegisterAllocation(wasAllocating);
+	sortSuspended = suspendedBackup;
+	newRoot = splicedBackup;
+	return ok;
 }
 
 
@@ -631,13 +609,19 @@ unittest { // calls the evaluator has nothing to do with are left alone
 }
 
 unittest {
-	// `comptimeEvaluationClaims` is the weaker question, and it is
-	// `opt.inlineFunctions`' one: a chain of comptime calls is folded innermost
-	// first, so when the inliner asks, every link past the first still has an
-	// unfolded call for an argument. Answering with `comptimeEvaluationPending`
-	// left the inliner free to replace the outer link with the bytes of the
-	// instruction that computes it, which is what cost `std.add`'s dispatch its
-	// comparison.
+	// The two questions are one question now. A chain used to fold innermost
+	// first, one program per link, so when `opt.inlineFunctions` asked about
+	// the outer link its argument was still an unfolded call and
+	// `comptimeEvaluationPending` said no - and the inliner, which acts on the
+	// answer irrevocably, replaced the link with the bytes of the instruction
+	// that computes it. That cost `std.add`'s dispatch its comparison, and the
+	// weaker `comptimeEvaluationClaims` that fixed it was a *prediction*, which
+	// went wrong the other way: a call it claimed and the evaluator never
+	// reached was neither inlined nor folded.
+	//
+	// A region runs the whole chain in one program, so the outer link is
+	// runnable the moment the inner one is, and claiming it is a promise the
+	// pass keeps.
 	auto f = withMizu("claims.doir");
 	scope(exit) freeModule(f.mod);
 
@@ -650,18 +634,21 @@ unittest {
 	assert(comptimeEvaluationPending(f.mod, inner));
 	assert(comptimeEvaluationClaims(f.mod, inner));
 
-	// The outer call cannot run - `inner` has no value yet - but it is still
-	// the evaluator's, because `inner` is.
+	// The outer call runs too, although `inner` has no value yet: `inner` is
+	// in its region, so the one program computes both and the result never
+	// goes out to the store and back.
 	EntityId[2] chained = [inner, inner];
 	immutable outer = pushComptimeAdd(f, chained[]);
-	assert(!comptimeEvaluationPending(f.mod, outer));
 	assert(comptimeEvaluationClaims(f.mod, outer));
+	assert(comptimeEvaluationPending(f.mod, outer));
 
-	// Not every unfolded argument, though. A `compiler.assembler.*` call is
-	// `opt.computeCompilerNamespace`'s to fold and never the evaluator's, so a
-	// call reading one has to be inlined rather than waited for - which is
-	// every instruction encoder in `mizu.doir`, each of them reading a
-	// `return_register`.
+	// Not every unfolded argument, though - this is where a region stops. A
+	// `compiler.assembler.*` call is `opt.computeCompilerNamespace`'s to fold
+	// and never the evaluator's, so it cannot join the region and the call
+	// reading it has to be inlined rather than waited for. That is every
+	// instruction encoder in `mizu.doir`, each of them reading a
+	// `return_register`; standing down for one left every instruction two
+	// bytes short of its operand.
 	immutable returnRegister = resolveLookupName(f.mod,
 		internIn(f.mod, "compiler.assembler.return_register"), f.root);
 	immutable registerType = resolveLookupName(f.mod,
@@ -675,6 +662,114 @@ unittest {
 	immutable reader = pushComptimeAdd(f, viaRegister[]);
 	assert(!comptimeEvaluationPending(f.mod, reader));
 	assert(!comptimeEvaluationClaims(f.mod, reader));
+
+	assert(!diagnostics().hasErrors());
+	diagnostics().clear();
+}
+
+unittest { // one program folds a whole chain, in one visit
+	// What the region is for. `add(add(2, 3), add(2, 3))` is three calls and
+	// two levels, and the old pass needed a round of the fixpoint per level:
+	// the inner call folded, and only on the next round did the outer one have
+	// a constant to read. Here the inner result stays in a register and the
+	// outer call reads it, so one visit answers all three.
+	auto f = withMizu("region.doir");
+	scope(exit) freeModule(f.mod);
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.root);
+	immutable two = pushNumber(block, internIn(f.mod, "two"), byte_, 2);
+	immutable three = pushNumber(block, internIn(f.mod, "three"), byte_, 3);
+
+	EntityId[2] leaves = [two, three];
+	immutable inner = pushComptimeAdd(f, leaves[]);
+	// Both readers are the *same* argument entity, so the region is a DAG and
+	// the program must still run `inner` once - twice would be twice the
+	// effect for an instruction that has one.
+	EntityId[2] chained = [inner, inner];
+	immutable outer = pushComptimeAdd(f, chained[]);
+
+	assert(comptimeEvaluate(f.mod, outer, &moduleSystem!mizuSchedule));
+
+	assert(hasComponent!ComptimeNumber(f.mod, inner));
+	assert(getComponent!ComptimeNumber(f.mod, inner).value == 5);
+	// 10, not 5: the outer call read the inner one's register rather than the
+	// store, and neither call ran twice.
+	assert(hasComponent!ComptimeNumber(f.mod, outer));
+	assert(getComponent!ComptimeNumber(f.mod, outer).value == 10);
+
+	assert(!diagnostics().hasErrors());
+	diagnostics().clear();
+}
+
+unittest { // a region stops at an argument that is nobody's to fold
+	// The region is what makes the inliner's question answerable, so the
+	// boundary has to be exact: an argument the evaluator will not supply
+	// leaves the whole chain unclaimed, however comptime it looks.
+	auto f = withMizu("region_edge.doir");
+	scope(exit) freeModule(f.mod);
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable registerType = resolveLookupName(f.mod,
+		internIn(f.mod, "compiler.assembler.register"), f.root);
+	immutable returnRegister = resolveLookupName(f.mod,
+		internIn(f.mod, "compiler.assembler.return_register"), f.root);
+	EntityId[1] typeArg = [resolveLookupName(f.mod, internIn(f.mod, "mizu.u64"), f.root)];
+	immutable regret = pushCall(block, internIn(f.mod, "regret"), registerType,
+		returnRegister, typeArg[]);
+	getOrAddComponent!Flags(f.mod, regret).flags |= Flags.Comptime;
+
+	EntityId[2] viaRegister = [regret, regret];
+	immutable inner = pushComptimeAdd(f, viaRegister[]);
+	EntityId[2] chained = [inner, inner];
+	immutable outer = pushComptimeAdd(f, chained[]);
+
+	// Neither link, and the outer one for the inner one's reason rather than
+	// one of its own.
+	assert(!comptimeEvaluationClaims(f.mod, inner));
+	assert(!comptimeEvaluationClaims(f.mod, outer));
+
+	// And asking does not fold anything: the inliner asks once per call in the
+	// module, so the question has to be free of effects.
+	assert(comptimeEvaluate(f.mod, outer, &moduleSystem!mizuSchedule));
+	assert(!hasComponent!ComptimeNumber(f.mod, outer));
+
+	assert(!diagnostics().hasErrors());
+	diagnostics().clear();
+}
+
+unittest { // a region waiting on a parameter is claimed but not pending
+	// The difference between "not mine" and "not yet". A function body is a
+	// template and its dispatch is written against its parameters, so the
+	// chain cannot run where it is declared - but the inliner reads the claim,
+	// and answering no there let it replace the chain *in the declaration*
+	// with the bytes of the instructions that compute it. Every copy taken
+	// afterwards carried that, so whether `std.add`'s dispatch collapsed came
+	// down to whether the inliner reached a call site before the declaration.
+	auto f = withMizu("region_parameter.doir");
+	scope(exit) freeModule(f.mod);
+
+	auto block = BlockBuilder(f.root, &f.mod);
+	immutable byte_ = resolveLookupName(f.mod, internIn(f.mod, "compiler.byte"), f.root);
+	// A parameter *with* a value, so that nothing but `FunctionParameter`
+	// stands between the region and running: that is the whole claim.
+	immutable parameter = pushNumber(block, internIn(f.mod, "p"), byte_, 1);
+	addComponent!FunctionParameter(f.mod, parameter);
+
+	EntityId[2] viaParameter = [parameter, parameter];
+	immutable inner = pushComptimeAdd(f, viaParameter[]);
+	EntityId[2] chained = [inner, inner];
+	immutable outer = pushComptimeAdd(f, chained[]);
+
+	// Both claimed, so the inliner leaves the chain whole...
+	assert(comptimeEvaluationClaims(f.mod, inner));
+	assert(comptimeEvaluationClaims(f.mod, outer));
+	// ...and neither runnable, so the evaluator does not pretend to have an
+	// answer for a name no call site has bound.
+	assert(!comptimeEvaluationPending(f.mod, inner));
+	assert(!comptimeEvaluationPending(f.mod, outer));
+	assert(comptimeEvaluate(f.mod, outer, &moduleSystem!mizuSchedule));
+	assert(!hasComponent!ComptimeNumber(f.mod, outer));
 
 	assert(!diagnostics().hasErrors());
 	diagnostics().clear();

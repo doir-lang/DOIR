@@ -37,8 +37,43 @@ private void pinReturnValue(ref Module mod, EntityId subtree, EntityId value) @t
 	// it is where this lands.
 	if (!hasComponent!AssignedRegister(mod, block)) return;
 
-	getOrAddComponent!AssignedRegister(mod, value).reg =
-		getComponent!AssignedRegister(mod, block).reg;
+	pinThrough(mod, value, getComponent!AssignedRegister(mod, block).reg);
+}
+
+/// `value` takes `reg`, and so does whatever `value`'s own body hands back.
+///
+/// The relation is transitive, and a depth-first walk only carries it one level:
+/// a block visited before its own register was pinned has nothing to hand down,
+/// and the walk never comes back. So the chain is followed here instead, from
+/// the end that knows the register. Three levels is an ordinary depth - `while`'s
+/// condition block is the branch reading `execute(condition)`, which the block's
+/// `yield` names, which a dispatch arm's `yield` names, which the instruction
+/// that computes it names - and the count is not something the schedule should
+/// have to encode.
+///
+/// `depth` only stops a cycle; a well-formed body has no path back to itself.
+private void pinThrough(ref Module mod, EntityId value, size_t reg, size_t depth = 0) @trusted {
+	enum maxDepth = 64;
+
+	getOrAddComponent!AssignedRegister(mod, value).reg = reg;
+	if (depth >= maxDepth || !hasComponent!Block(mod, value)) return;
+
+	immutable return_ = resolveCached(mod, "compiler.return", 1);
+	immutable yield = resolveCached(mod, "compiler.yield", 1);
+
+	auto related = &getComponent!Block(mod, value).related;
+	foreach (i; 0 .. daLength(*related)) {
+		immutable e = (*related)[i];
+		if (!hasComponent!Call(mod, e) || !hasComponent!FunctionInputs(mod, e)) continue;
+		immutable callee = resolveAlias(mod, getComponent!Call(mod, e).related[0]);
+		if (callee != return_ && callee != yield) continue;
+
+		auto args = &getComponent!FunctionInputs(mod, e);
+		if (daLength(args.related) == 0) continue;
+		immutable inner = resolveAlias(mod, args.related[daLength(args.related) - 1]);
+		if (inner == value || hasComponent!TypeDefinition(mod, inner)) continue;
+		pinThrough(mod, inner, reg, depth + 1);
+	}
 }
 
 bool pinRegisters(ref Module mod, EntityId subtree) @trusted {
@@ -70,6 +105,16 @@ bool pinRegisters(ref Module mod, EntityId subtree) @trusted {
 
 	auto reg = comptimeNumber(mod, inputs[2]);
 	if (reg.isNull) {
+		// Inside a function body nothing has inlined yet, the register can be
+		// a *parameter* - which is not a number until a call site substitutes
+		// one, and the copy that call site gets is where this lands. Standing
+		// down rather than diagnosing is what lets a convention compute which
+		// register it wants: `std.functions.impl.pass_arguments` asks for
+		// `a0 + i`, and both halves of that are parameters of the declaration
+		// until the unroll instantiates it. The same limit on the same grounds
+		// as `byte_emiter.emitCall` and `computeCompilerNamespace`'s
+		// `return_register`, which also decline inside a body.
+		if (findFunctionInsideOf(mod, subtree) != invalidEntity) return true;
 		parameterError(mod, subtree, "pin_register", 2, " must be be a numeric constant");
 		return true;
 	}

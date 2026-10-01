@@ -99,6 +99,8 @@ private EntityId resolveRoot(EntityId subtree) {
 private struct Frame {
 	EntityId entity;
 	size_t childIndex;
+	/// How long the block's child list was when this frame last looked.
+	size_t childCount;
 }
 
 /// Visits every entity under `subtree`, children before parents.
@@ -106,7 +108,7 @@ template depthFirst(alias fn) {
 	private bool walk(ref Module mod, EntityId subtree) @trusted {
 		Frame* stack = null;
 		scope(exit) if (stack !is null) fp.dynarray.free(stack);
-		fp.dynarray.pushBack(stack, Frame(resolveRoot(subtree), 0));
+		fp.dynarray.pushBack(stack, Frame(resolveRoot(subtree), 0, 0));
 
 		while (daLength(stack) > 0) {
 			auto frame = &stack[daLength(stack) - 1];
@@ -119,12 +121,30 @@ template depthFirst(alias fn) {
 			}
 
 			auto block = &getComponent!Block(mod, frame.entity);
-			if (frame.childIndex < daLength(block.related)) {
+
+			// A visit can unlink entities from the block it was reached
+			// through: `canon.stripFreestandingBlocks` does, and
+			// `opt.mizu.comptimeEvaluate` runs a whole lowering schedule
+			// inside one visit. The siblings after a removal shift down, so a
+			// cursor held across the visit has to shift with them or it steps
+			// over the next one - silently, since nothing says a child was
+			// missed. That cost `std.add`'s dispatch its second arm, which is
+			// the one actually taken: folding the `execute_if` for the arm not
+			// taken unlinked it, and the arm that emits the addition was never
+			// visited at all.
+			immutable childCount = daLength(block.related);
+			if (childCount < frame.childCount) {
+				immutable removed = frame.childCount - childCount;
+				frame.childIndex -= removed < frame.childIndex ? removed : frame.childIndex;
+			}
+			frame.childCount = childCount;
+
+			if (frame.childIndex < childCount) {
 				immutable child = block.related[frame.childIndex];
 				++frame.childIndex;
 				// May reallocate `stack` (invalidating `frame`), but `frame` is
 				// not used again this iteration.
-				fp.dynarray.pushBack(stack, Frame(child, 0));
+				fp.dynarray.pushBack(stack, Frame(child, 0, 0));
 			} else {
 				immutable entity = frame.entity;
 				if (ownedByCurrentLowering(mod, entity) && !fn(mod, entity)) return false;

@@ -22,8 +22,10 @@ private enum modules = [
 	"doir.verify",
 	"doir.parser",
 	"doir.byte_emiter",
+	"doir.register_classes",
 	"doir.pipeline",
 	"doir.mizu.instructions",
+	"doir.comptime.program",
 	"doir.pipeline.sema.function_arity",
 	"doir.pipeline.sema.type_check",
 	"doir.pipeline.sema.type_deduction",
@@ -47,6 +49,7 @@ private enum modules = [
 	"doir.pipeline.opt.mizu.materialize_immediates",
 	"doir.pipeline.opt.mizu.materialize_labels",
 	"doir.pipeline.opt.inline_functions",
+	"doir.pipeline.opt.lower_functions",
 	"doir.pipeline.opt.compute_compiler_namespace",
 ];
 

@@ -24,6 +24,29 @@ mizu : namespace = {
 	_ : type = compiler.always_inline(branch_immediate_t)
 	_ : type = compiler.never_monomorphize(branch_immediate_t)
 
+	// The same five shapes again for the instructions whose result is machine
+	// state rather than a value - see `effectOps`. Separate types rather than a
+	// flag on the call, because whether a call may be folded is a property of
+	// its callee, and a type is where the compiler looks: an alias such as
+	// `std.debug_print` inherits it with nothing said twice.
+	zero_parameters_effect_t : type = () -> u64
+	_ : type = compiler.always_inline(zero_parameters_effect_t)
+	_ : type = compiler.no_comptime(zero_parameters_effect_t)
+	one_parameters_effect_t : type = (a : u64) -> u64
+	_ : type = compiler.always_inline(one_parameters_effect_t)
+	_ : type = compiler.no_comptime(one_parameters_effect_t)
+	two_parameters_effect_t : type = (a : u64, b : u64) -> u64
+	_ : type = compiler.always_inline(two_parameters_effect_t)
+	_ : type = compiler.no_comptime(two_parameters_effect_t)
+	immediate_effect_t : type = (immediate: comptime.u64) -> u64
+	_ : type = compiler.always_inline(immediate_effect_t)
+	_ : type = compiler.never_monomorphize(immediate_effect_t)
+	_ : type = compiler.no_comptime(immediate_effect_t)
+	branch_immediate_effect_t : type = (a: u64, immediate: comptime.u64) -> u64
+	_ : type = compiler.always_inline(branch_immediate_effect_t)
+	_ : type = compiler.never_monomorphize(branch_immediate_effect_t)
+	_ : type = compiler.no_comptime(branch_immediate_effect_t)
+
 	// The two crossings between a register and the entity behind it. Every
 	// other reflection instruction below is plain `u64` in and `u64` out, so
 	// these are the only two the type system has to say anything about:
@@ -33,7 +56,7 @@ mizu : namespace = {
 	reflect_t : type = (T : type) -> u64
 	_ : type = compiler.always_inline(reflect_t)
 	_ : type = compiler.never_monomorphize(reflect_t)
-	unreflect_alias_t : type = (e : u64) -> type
+	unreflect_alias_t : type = (e : u64) -> _
 	_ : type = compiler.always_inline(unreflect_alias_t)
 	_ : type = compiler.never_monomorphize(unreflect_alias_t)
 	base_type_t : type = (size_bits : comptime.u64, align_bits : comptime.u64) -> type
@@ -63,6 +86,16 @@ mizu : namespace = {
 	type_with_number_t : type = (T : type, n : comptime.u64) -> type
 	_ : type = compiler.always_inline(type_with_number_t)
 	_ : type = compiler.never_monomorphize(type_with_number_t)
+	// Asks an *entity* something - `argument_count` and `argument`, which
+	// answer about a call rather than about a type. `n` is a plain `u64`
+	// rather than `comptime.u64` so that an unroll's index can reach it
+	// without a specialization per argument position.
+	entity_query_t : type = (e : u64) -> u64
+	_ : type = compiler.always_inline(entity_query_t)
+	_ : type = compiler.never_monomorphize(entity_query_t)
+	entity_with_number_t : type = (e : u64, n : u64) -> u64
+	_ : type = compiler.always_inline(entity_with_number_t)
+	_ : type = compiler.never_monomorphize(entity_with_number_t)
 
 	// The block is comptime, but it is not decoration: `execute` and
 	// `execute_if` hand it to the VM's own instruction, so it has to stay an
@@ -129,6 +162,7 @@ mizu : namespace = {
 	find_label_t : type = (label: compiler.assembler.register) -> u64
 	_ : type = compiler.never_monomorphize(find_label_t)
 	_ : type = compiler.always_inline(find_label_t)
+	_ : type = compiler.no_comptime(find_label_t)
 	find_label : find_label_t = {
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 		%3 : compiler.byte_pointer = "\x02\x00\x00\x00\x00\x00\x00\x00"
@@ -153,7 +187,7 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	debug_print : one_parameters_t = {
+	debug_print : one_parameters_effect_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 		%5 : compiler.byte_pointer = "\x04\x00\x00\x00\x00\x00\x00\x00"
@@ -165,7 +199,7 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	debug_print_binary : one_parameters_t = {
+	debug_print_binary : one_parameters_effect_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 		%7 : compiler.byte_pointer = "\x05\x00\x00\x00\x00\x00\x00\x00"
@@ -177,7 +211,7 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	halt : zero_parameters_t = {
+	halt : zero_parameters_effect_t = {
 		%9 : compiler.byte_pointer = "\x03\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%9)
 		%10 : compiler.byte_pointer = "\x00\x00\x00\x00\x00\x00\x00\x00"
@@ -232,7 +266,7 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	stack_load_u64 : one_parameters_t = {
+	stack_load_u64 : one_parameters_effect_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 		%19 : compiler.byte_pointer = "\x0c\x00\x00\x00\x00\x00\x00\x00"
@@ -244,7 +278,7 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	stack_store_u64 : two_parameters_t = {
+	stack_store_u64 : two_parameters_effect_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
@@ -258,7 +292,7 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	stack_load_u32 : one_parameters_t = {
+	stack_load_u32 : one_parameters_effect_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 		%23 : compiler.byte_pointer = "\x0e\x00\x00\x00\x00\x00\x00\x00"
@@ -270,7 +304,7 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	stack_store_u32 : two_parameters_t = {
+	stack_store_u32 : two_parameters_effect_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
@@ -284,7 +318,7 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	stack_load_u16 : one_parameters_t = {
+	stack_load_u16 : one_parameters_effect_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 		%27 : compiler.byte_pointer = "\x10\x00\x00\x00\x00\x00\x00\x00"
@@ -296,7 +330,7 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	stack_store_u16 : two_parameters_t = {
+	stack_store_u16 : two_parameters_effect_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
@@ -310,7 +344,7 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	stack_load_u8 : one_parameters_t = {
+	stack_load_u8 : one_parameters_effect_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 		%31 : compiler.byte_pointer = "\x12\x00\x00\x00\x00\x00\x00\x00"
@@ -322,7 +356,7 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	stack_store_u8 : two_parameters_t = {
+	stack_store_u8 : two_parameters_effect_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
@@ -336,7 +370,7 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	stack_push : one_parameters_t = {
+	stack_push : one_parameters_effect_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 		%35 : compiler.byte_pointer = "\x14\x00\x00\x00\x00\x00\x00\x00"
@@ -348,7 +382,7 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	stack_push_immediate : immediate_t = {
+	stack_push_immediate : immediate_effect_t = {
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 		%37 : compiler.byte_pointer = "\x15\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%37)
@@ -372,7 +406,7 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	stack_pop : one_parameters_t = {
+	stack_pop : one_parameters_effect_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 		%39 : compiler.byte_pointer = "\x16\x00\x00\x00\x00\x00\x00\x00"
@@ -384,7 +418,7 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	stack_pop_immediate : immediate_t = {
+	stack_pop_immediate : immediate_effect_t = {
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 		%41 : compiler.byte_pointer = "\x17\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%41)
@@ -408,7 +442,7 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	offset_of_stack_bottom : one_parameters_t = {
+	offset_of_stack_bottom : one_parameters_effect_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 		%43 : compiler.byte_pointer = "\x18\x00\x00\x00\x00\x00\x00\x00"
@@ -420,7 +454,7 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	jump_relative : one_parameters_t = {
+	jump_relative : one_parameters_effect_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 		%45 : compiler.byte_pointer = "\x19\x00\x00\x00\x00\x00\x00\x00"
@@ -432,7 +466,7 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	jump_relative_immediate : immediate_t = {
+	jump_relative_immediate : immediate_effect_t = {
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 		%47 : compiler.byte_pointer = "\x1a\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%47)
@@ -456,7 +490,7 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	jump_to : one_parameters_t = {
+	jump_to : one_parameters_effect_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 		%49 : compiler.byte_pointer = "\x1b\x00\x00\x00\x00\x00\x00\x00"
@@ -468,7 +502,7 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	branch_relative : two_parameters_t = {
+	branch_relative : two_parameters_effect_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
@@ -482,7 +516,7 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	branch_relative_immediate : branch_immediate_t = {
+	branch_relative_immediate : branch_immediate_effect_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 		%53 : compiler.byte_pointer = "\x1d\x00\x00\x00\x00\x00\x00\x00"
@@ -500,7 +534,7 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	branch_to : two_parameters_t = {
+	branch_to : two_parameters_effect_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
@@ -752,14 +786,14 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	breakpoint : zero_parameters_t = {
+	breakpoint : zero_parameters_effect_t = {
 		%91 : compiler.byte_pointer = "\x30\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%91)
 		%92 : compiler.byte_pointer = "\x00\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%92)
 	}
 
-	allocate : one_parameters_t = {
+	allocate : one_parameters_effect_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 		%93 : compiler.byte_pointer = "\x59\x00\x00\x00\x00\x00\x00\x00"
@@ -771,7 +805,7 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	free_allocated : one_parameters_t = {
+	free_allocated : one_parameters_effect_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 		%95 : compiler.byte_pointer = "\x5a\x00\x00\x00\x00\x00\x00\x00"
@@ -783,7 +817,7 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	allocate_fat_pointer : two_parameters_t = {
+	allocate_fat_pointer : two_parameters_effect_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
@@ -797,7 +831,7 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	free_fat_pointer : two_parameters_t = {
+	free_fat_pointer : two_parameters_effect_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
@@ -811,7 +845,7 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	pointer_to_stack : one_parameters_t = {
+	pointer_to_stack : one_parameters_effect_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 		%101 : compiler.byte_pointer = "\x5d\x00\x00\x00\x00\x00\x00\x00"
@@ -823,7 +857,7 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	pointer_to_stack_bottom : one_parameters_t = {
+	pointer_to_stack_bottom : one_parameters_effect_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 		%103 : compiler.byte_pointer = "\x5e\x00\x00\x00\x00\x00\x00\x00"
@@ -835,7 +869,7 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	pointer_to_register : one_parameters_t = {
+	pointer_to_register : one_parameters_effect_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 		%105 : compiler.byte_pointer = "\x5f\x00\x00\x00\x00\x00\x00\x00"
@@ -1832,6 +1866,46 @@ mizu : namespace = {
 			_ : u64 = compiler.indicate_return(u64)
 		}
 
+		argument_count : entity_query_t = {
+			rega : compiler.assembler.register = compiler.assembler.register_for(u64, e)
+			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
+			%261 : compiler.byte_pointer = "\xaa\x00\x00\x00\x00\x00\x00\x00"
+			_ : compiler.byte = compiler.emit_bytes(%261)
+			_ : compiler.assembler.register = inline emit_register(regret)
+			_ : compiler.assembler.register = inline emit_register(rega)
+			%262 : compiler.byte_pointer = "\x00\x00\x00\x00"
+			_ : compiler.byte = compiler.emit_bytes(%262)
+			_ : u64 = compiler.indicate_return(u64)
+		}
+
+		argument : entity_with_number_t = {
+			rega : compiler.assembler.register = compiler.assembler.register_for(u64, e)
+			regb : compiler.assembler.register = compiler.assembler.register_for(u64, n)
+			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
+			%263 : compiler.byte_pointer = "\xab\x00\x00\x00\x00\x00\x00\x00"
+			_ : compiler.byte = compiler.emit_bytes(%263)
+			_ : compiler.assembler.register = inline emit_register(regret)
+			_ : compiler.assembler.register = inline emit_register(rega)
+			_ : compiler.assembler.register = inline emit_register(regb)
+			%264 : compiler.byte_pointer = "\x00\x00"
+			_ : compiler.byte = compiler.emit_bytes(%264)
+			_ : u64 = compiler.indicate_return(u64)
+		}
+
+		parameter : entity_with_number_t = {
+			rega : compiler.assembler.register = compiler.assembler.register_for(u64, e)
+			regb : compiler.assembler.register = compiler.assembler.register_for(u64, n)
+			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
+			%265 : compiler.byte_pointer = "\xac\x00\x00\x00\x00\x00\x00\x00"
+			_ : compiler.byte = compiler.emit_bytes(%265)
+			_ : compiler.assembler.register = inline emit_register(regret)
+			_ : compiler.assembler.register = inline emit_register(rega)
+			_ : compiler.assembler.register = inline emit_register(regb)
+			%266 : compiler.byte_pointer = "\x00\x00"
+			_ : compiler.byte = compiler.emit_bytes(%266)
+			_ : u64 = compiler.indicate_return(u64)
+		}
+
 		flags : namespace = {
 			exported : mizu.comptime.u64 = 4
 			comptime : mizu.comptime.u64 = 8
@@ -2103,6 +2177,276 @@ mizu : namespace = {
 	x255 : compiler.assembler.register = 255
 	x256 : compiler.assembler.register = 256
 
+	zero : compiler.assembler.register = 0
+	t0 : compiler.assembler.register = 1
+	t1 : compiler.assembler.register = 2
+	t2 : compiler.assembler.register = 3
+	t3 : compiler.assembler.register = 4
+	t4 : compiler.assembler.register = 5
+	t5 : compiler.assembler.register = 6
+	t6 : compiler.assembler.register = 7
+	t7 : compiler.assembler.register = 8
+	t8 : compiler.assembler.register = 9
+	t9 : compiler.assembler.register = 10
+	t10 : compiler.assembler.register = 11
+	t11 : compiler.assembler.register = 12
+	t12 : compiler.assembler.register = 13
+	t13 : compiler.assembler.register = 14
+	t14 : compiler.assembler.register = 15
+	t15 : compiler.assembler.register = 16
+	t16 : compiler.assembler.register = 17
+	t17 : compiler.assembler.register = 18
+	t18 : compiler.assembler.register = 19
+	t19 : compiler.assembler.register = 20
+	ra : compiler.assembler.register = 21
+	a0 : compiler.assembler.register = 22
+	a1 : compiler.assembler.register = 23
+	a2 : compiler.assembler.register = 24
+	a3 : compiler.assembler.register = 25
+	a4 : compiler.assembler.register = 26
+	a5 : compiler.assembler.register = 27
+	a6 : compiler.assembler.register = 28
+	a7 : compiler.assembler.register = 29
+	a8 : compiler.assembler.register = 30
+	a9 : compiler.assembler.register = 31
+	a10 : compiler.assembler.register = 32
+	a11 : compiler.assembler.register = 33
+	a12 : compiler.assembler.register = 34
+	a13 : compiler.assembler.register = 35
+	a14 : compiler.assembler.register = 36
+	a15 : compiler.assembler.register = 37
+	a16 : compiler.assembler.register = 38
+	a17 : compiler.assembler.register = 39
+	a18 : compiler.assembler.register = 40
+	a19 : compiler.assembler.register = 41
+	a20 : compiler.assembler.register = 42
+	a21 : compiler.assembler.register = 43
+	a22 : compiler.assembler.register = 44
+	a23 : compiler.assembler.register = 45
+	a24 : compiler.assembler.register = 46
+	a25 : compiler.assembler.register = 47
+	a26 : compiler.assembler.register = 48
+	a27 : compiler.assembler.register = 49
+	a28 : compiler.assembler.register = 50
+	a29 : compiler.assembler.register = 51
+	a30 : compiler.assembler.register = 52
+	a31 : compiler.assembler.register = 53
+	a32 : compiler.assembler.register = 54
+	a33 : compiler.assembler.register = 55
+	a34 : compiler.assembler.register = 56
+	a35 : compiler.assembler.register = 57
+	a36 : compiler.assembler.register = 58
+	a37 : compiler.assembler.register = 59
+	a38 : compiler.assembler.register = 60
+	a39 : compiler.assembler.register = 61
+	a40 : compiler.assembler.register = 62
+	a41 : compiler.assembler.register = 63
+	a42 : compiler.assembler.register = 64
+	a43 : compiler.assembler.register = 65
+	a44 : compiler.assembler.register = 66
+	a45 : compiler.assembler.register = 67
+	a46 : compiler.assembler.register = 68
+	a47 : compiler.assembler.register = 69
+	a48 : compiler.assembler.register = 70
+	a49 : compiler.assembler.register = 71
+	a50 : compiler.assembler.register = 72
+	a51 : compiler.assembler.register = 73
+	a52 : compiler.assembler.register = 74
+	a53 : compiler.assembler.register = 75
+	a54 : compiler.assembler.register = 76
+	a55 : compiler.assembler.register = 77
+	a56 : compiler.assembler.register = 78
+	a57 : compiler.assembler.register = 79
+	a58 : compiler.assembler.register = 80
+	a59 : compiler.assembler.register = 81
+	a60 : compiler.assembler.register = 82
+	a61 : compiler.assembler.register = 83
+	a62 : compiler.assembler.register = 84
+	a63 : compiler.assembler.register = 85
+	a64 : compiler.assembler.register = 86
+	a65 : compiler.assembler.register = 87
+	a66 : compiler.assembler.register = 88
+	a67 : compiler.assembler.register = 89
+	a68 : compiler.assembler.register = 90
+	a69 : compiler.assembler.register = 91
+	a70 : compiler.assembler.register = 92
+	a71 : compiler.assembler.register = 93
+	a72 : compiler.assembler.register = 94
+	a73 : compiler.assembler.register = 95
+	a74 : compiler.assembler.register = 96
+	a75 : compiler.assembler.register = 97
+	a76 : compiler.assembler.register = 98
+	a77 : compiler.assembler.register = 99
+	a78 : compiler.assembler.register = 100
+	a79 : compiler.assembler.register = 101
+	a80 : compiler.assembler.register = 102
+	a81 : compiler.assembler.register = 103
+	a82 : compiler.assembler.register = 104
+	a83 : compiler.assembler.register = 105
+	a84 : compiler.assembler.register = 106
+	a85 : compiler.assembler.register = 107
+	a86 : compiler.assembler.register = 108
+	a87 : compiler.assembler.register = 109
+	a88 : compiler.assembler.register = 110
+	a89 : compiler.assembler.register = 111
+	a90 : compiler.assembler.register = 112
+	a91 : compiler.assembler.register = 113
+	a92 : compiler.assembler.register = 114
+	a93 : compiler.assembler.register = 115
+	a94 : compiler.assembler.register = 116
+	a95 : compiler.assembler.register = 117
+	a96 : compiler.assembler.register = 118
+	a97 : compiler.assembler.register = 119
+	a98 : compiler.assembler.register = 120
+	a99 : compiler.assembler.register = 121
+	a100 : compiler.assembler.register = 122
+	a101 : compiler.assembler.register = 123
+	a102 : compiler.assembler.register = 124
+	a103 : compiler.assembler.register = 125
+	a104 : compiler.assembler.register = 126
+	a105 : compiler.assembler.register = 127
+	a106 : compiler.assembler.register = 128
+	a107 : compiler.assembler.register = 129
+	a108 : compiler.assembler.register = 130
+	a109 : compiler.assembler.register = 131
+	a110 : compiler.assembler.register = 132
+	a111 : compiler.assembler.register = 133
+	a112 : compiler.assembler.register = 134
+	a113 : compiler.assembler.register = 135
+	a114 : compiler.assembler.register = 136
+	a115 : compiler.assembler.register = 137
+	a116 : compiler.assembler.register = 138
+	a117 : compiler.assembler.register = 139
+	a118 : compiler.assembler.register = 140
+	a119 : compiler.assembler.register = 141
+	a120 : compiler.assembler.register = 142
+	a121 : compiler.assembler.register = 143
+	a122 : compiler.assembler.register = 144
+	a123 : compiler.assembler.register = 145
+	a124 : compiler.assembler.register = 146
+	a125 : compiler.assembler.register = 147
+	a126 : compiler.assembler.register = 148
+	a127 : compiler.assembler.register = 149
+	a128 : compiler.assembler.register = 150
+	a129 : compiler.assembler.register = 151
+	a130 : compiler.assembler.register = 152
+	a131 : compiler.assembler.register = 153
+	a132 : compiler.assembler.register = 154
+	a133 : compiler.assembler.register = 155
+	a134 : compiler.assembler.register = 156
+	a135 : compiler.assembler.register = 157
+	a136 : compiler.assembler.register = 158
+	a137 : compiler.assembler.register = 159
+	a138 : compiler.assembler.register = 160
+	a139 : compiler.assembler.register = 161
+	a140 : compiler.assembler.register = 162
+	a141 : compiler.assembler.register = 163
+	a142 : compiler.assembler.register = 164
+	a143 : compiler.assembler.register = 165
+	a144 : compiler.assembler.register = 166
+	a145 : compiler.assembler.register = 167
+	a146 : compiler.assembler.register = 168
+	a147 : compiler.assembler.register = 169
+	a148 : compiler.assembler.register = 170
+	a149 : compiler.assembler.register = 171
+	a150 : compiler.assembler.register = 172
+	a151 : compiler.assembler.register = 173
+	a152 : compiler.assembler.register = 174
+	a153 : compiler.assembler.register = 175
+	a154 : compiler.assembler.register = 176
+	a155 : compiler.assembler.register = 177
+	a156 : compiler.assembler.register = 178
+	a157 : compiler.assembler.register = 179
+	a158 : compiler.assembler.register = 180
+	a159 : compiler.assembler.register = 181
+	a160 : compiler.assembler.register = 182
+	a161 : compiler.assembler.register = 183
+	a162 : compiler.assembler.register = 184
+	a163 : compiler.assembler.register = 185
+	a164 : compiler.assembler.register = 186
+	a165 : compiler.assembler.register = 187
+	a166 : compiler.assembler.register = 188
+	a167 : compiler.assembler.register = 189
+	a168 : compiler.assembler.register = 190
+	a169 : compiler.assembler.register = 191
+	a170 : compiler.assembler.register = 192
+	a171 : compiler.assembler.register = 193
+	a172 : compiler.assembler.register = 194
+	a173 : compiler.assembler.register = 195
+	a174 : compiler.assembler.register = 196
+	a175 : compiler.assembler.register = 197
+	a176 : compiler.assembler.register = 198
+	a177 : compiler.assembler.register = 199
+	a178 : compiler.assembler.register = 200
+	a179 : compiler.assembler.register = 201
+	a180 : compiler.assembler.register = 202
+	a181 : compiler.assembler.register = 203
+	a182 : compiler.assembler.register = 204
+	a183 : compiler.assembler.register = 205
+	a184 : compiler.assembler.register = 206
+	a185 : compiler.assembler.register = 207
+	a186 : compiler.assembler.register = 208
+	a187 : compiler.assembler.register = 209
+	a188 : compiler.assembler.register = 210
+	a189 : compiler.assembler.register = 211
+	a190 : compiler.assembler.register = 212
+	a191 : compiler.assembler.register = 213
+	a192 : compiler.assembler.register = 214
+	a193 : compiler.assembler.register = 215
+	a194 : compiler.assembler.register = 216
+	a195 : compiler.assembler.register = 217
+	a196 : compiler.assembler.register = 218
+	a197 : compiler.assembler.register = 219
+	a198 : compiler.assembler.register = 220
+	a199 : compiler.assembler.register = 221
+	a200 : compiler.assembler.register = 222
+	a201 : compiler.assembler.register = 223
+	a202 : compiler.assembler.register = 224
+	a203 : compiler.assembler.register = 225
+	a204 : compiler.assembler.register = 226
+	a205 : compiler.assembler.register = 227
+	a206 : compiler.assembler.register = 228
+	a207 : compiler.assembler.register = 229
+	a208 : compiler.assembler.register = 230
+	a209 : compiler.assembler.register = 231
+	a210 : compiler.assembler.register = 232
+	a211 : compiler.assembler.register = 233
+	a212 : compiler.assembler.register = 234
+	a213 : compiler.assembler.register = 235
+	a214 : compiler.assembler.register = 236
+	a215 : compiler.assembler.register = 237
+	a216 : compiler.assembler.register = 238
+	a217 : compiler.assembler.register = 239
+	a218 : compiler.assembler.register = 240
+	a219 : compiler.assembler.register = 241
+	a220 : compiler.assembler.register = 242
+	a221 : compiler.assembler.register = 243
+	a222 : compiler.assembler.register = 244
+	a223 : compiler.assembler.register = 245
+	a224 : compiler.assembler.register = 246
+	a225 : compiler.assembler.register = 247
+	a226 : compiler.assembler.register = 248
+	a227 : compiler.assembler.register = 249
+	a228 : compiler.assembler.register = 250
+	a229 : compiler.assembler.register = 251
+	a230 : compiler.assembler.register = 252
+	a231 : compiler.assembler.register = 253
+	a232 : compiler.assembler.register = 254
+	a233 : compiler.assembler.register = 255
+	a234 : compiler.assembler.register = 256
+
+	// The register classes, which the compiler does not get to decide. Two
+	// registers are in no class at all and so never handed out: x0 reads as
+	// zero on every Mizu machine, and x21 (`ra`) holds the return address a
+	// `jump_to` left in it. That is what makes the allocatable set
+	// discontiguous, and why each class is declared as its own range.
+	_ : compiler.assembler.register = compiler.assembler.caller_saved_registers(t0, t19)
+	// Eight argument registers, which is a choice rather than a property of
+	// the machine - `Registers.a(i)` goes on as far as the register file does.
+	_ : compiler.assembler.register = compiler.assembler.argument_registers(a0, a7)
+	// The rest of the argument space, used as callee-saved scratch.
+	_ : compiler.assembler.register = compiler.assembler.callee_saved_registers(a8, a234)
+
 	schedule : compiler.byte_pointer = """
 		sequential(
 			depthFirst(nameReuse),
@@ -2125,7 +2469,8 @@ mizu : namespace = {
 			applyGlobally(sequential(
 				sort,
 				depthFirst(pinRegisters),
-				breadthFirst(allocateRegisters),
+				breadthFirst(computeAllocatorInputs),
+				assignTemporaries,
 				depthFirst(pinRegisters)
 			)),
 

@@ -14,6 +14,7 @@ import fp.dynarray : daLength = length;
 import doir.diagnostics;
 import doir.interface_;
 import doir.module_;
+import doir.register_classes;
 import doir.string_helpers : text;
 import doir.print : printModule;
 
@@ -228,12 +229,96 @@ private bool computeRegisterFor(ref Module mod, EntityId subtree, EntityId targe
 	bool forceRegisterValues)
 {
 	target = resolveAlias(mod, target);
-	if (hasComponent!FunctionParameter(mod, target))
+	// A parameter with no register answers nothing yet: its function has
+	// neither been inlined - which resolves the alias past the parameter to the
+	// argument - nor reached the allocator. One that *has* a register is the
+	// parameter of a body `opt.liftFunctionBodies` moved out, and that register
+	// is the answer.
+	if (hasComponent!FunctionParameter(mod, target) && !hasComponent!AssignedRegister(mod, target))
 		return true;
 
 	immutable r = hasComponent!AssignedRegister(mod, target)
 		? getComponent!AssignedRegister(mod, target).reg : 0;
 	getOrAddComponent!ComptimeNumber(mod, subtree).value = r;
+	return true;
+}
+
+/// `compiler.assembler.alias_temporaries`: records that two assignments share
+/// a register, and collapses to the first of them.
+///
+/// A component rather than a note kept beside the pass, for `ScheduleClaim`'s
+/// reason: `canon.sort` renumbers every entity, so a list of pairs goes stale
+/// and a relation moves with the entity it is on.
+private bool computeAliasTemporaries(ref Module mod, EntityId subtree) @trusted {
+	// Inside a body there is nothing to unite: both operands are the
+	// declaration's own locals, so the pair the copies need - the call site's
+	// value and the parameter it binds - is not knowable until a call site has
+	// one. The same limit, on the same grounds, as `pin_register` and
+	// `return_register`, which also decline inside a body.
+	if (findFunctionInsideOf(mod, subtree) != invalidEntity) return true;
+
+	auto inputs = resolvedInputs(mod, subtree);
+	scope(exit) fp.dynarray.free(inputs);
+	if (daLength(inputs) != 3) {
+		expectsXInputs(mod, subtree, "alias_temporaries", "three");
+		return false;
+	}
+
+	// [0] is the type; the two values follow it.
+	immutable a = inputs[1];
+	immutable b = inputs[2];
+	if (a == b) return true;
+
+	getOrAddComponent!SharesTemporary(mod, b).related[0] = a;
+
+	// The call becomes a name for its first operand, as every folded modifier
+	// does (M-Flag), so that nothing is left holding a call to a function with
+	// no body.
+	immutable function_ = resolveAlias(mod, getComponent!Call(mod, subtree).related[0]);
+	removeComponent!TypeOf(mod, subtree);
+	addComponent!PrintAsCall(mod, subtree).related[0] = function_;
+	removeComponent!Call(mod, subtree);
+	removeComponent!FunctionInputs(mod, subtree);
+	attachAlias(mod, subtree, a);
+	return true;
+}
+
+/// `compiler.assembler.caller_saved_registers` and its two neighbours: records
+/// a span of the machine's registers in `doir.register_classes`, and collapses
+/// to the first register of the span.
+///
+/// Additive, so a machine declares a class in as many pieces as it has - see
+/// that module on why one range is not enough and why the union has gaps in
+/// it. Folded here rather than evaluated on the VM because the answer is not a
+/// value the program uses: it is a fact about the machine that the allocator
+/// reads later, and the VM has nowhere to put it.
+private bool computeRegisterClass(ref Module mod, EntityId subtree,
+	RegisterClass cls, const(char)[] name) @trusted
+{
+	auto inputs = resolvedInputs(mod, subtree);
+	scope(exit) fp.dynarray.free(inputs);
+	if (daLength(inputs) != 2) {
+		expectsXInputs(mod, subtree, name, "two");
+		return false;
+	}
+
+	size_t[2] bounds;
+	foreach (i; 0 .. 2) {
+		auto n = comptimeNumber(mod, inputs[i]);
+		if (n.isNull) {
+			parameterError(mod, subtree, name, i, " must evaluate to a register");
+			return false;
+		}
+		bounds[i] = cast(size_t) n.get;
+	}
+	if (bounds[1] < bounds[0]) {
+		simpleCallError(mod, subtree, text(DoirAnsi.func, name, Ansi.reset,
+			" was given a range that ends before it begins"));
+		return false;
+	}
+
+	declareRegisterRange(cls, cast(uint) bounds[0], cast(uint) bounds[1]);
+	getOrAddComponent!ComptimeNumber(mod, subtree).value = bounds[0];
 	return true;
 }
 
@@ -249,9 +334,14 @@ bool computeCompilerNamespace(ref Module mod, EntityId subtree, bool forceRegist
 	immutable alwaysInline = resolveCached(mod, "compiler.always_inline", 1);
 	immutable alwaysComptime = resolveCached(mod, "compiler.always_comptime", 1);
 	immutable neverMonomorphize = resolveCached(mod, "compiler.never_monomorphize", 1);
+	immutable noComptime = resolveCached(mod, "compiler.no_comptime", 1);
 	immutable assemblerRegisterFor = resolveCached(mod, "compiler.assembler.register_for", 1);
 	immutable assemblerReturnRegister = resolveCached(mod, "compiler.assembler.return_register", 1);
 	immutable assemblerYieldRegister = resolveCached(mod, "compiler.assembler.yield_register", 1);
+	immutable assemblerCallerSaved = resolveCached(mod, "compiler.assembler.caller_saved_registers", 1);
+	immutable assemblerCalleeSaved = resolveCached(mod, "compiler.assembler.callee_saved_registers", 1);
+	immutable assemblerArguments = resolveCached(mod, "compiler.assembler.argument_registers", 1);
+	immutable assemblerAliasTemporaries = resolveCached(mod, "compiler.assembler.alias_temporaries", 1);
 
 	immutable compilerCurrentEntity = resolveCached(mod, "compiler.current_entity", 1, true);
 	getComponent!Number(mod, compilerCurrentEntity).value = subtree;
@@ -260,6 +350,19 @@ bool computeCompilerNamespace(ref Module mod, EntityId subtree, bool forceRegist
 
 	if (function_ == baseTypeE || function_ == comptimeBaseType)
 		return computeBaseType(mod, subtree, function_, comptimeBaseType);
+
+	if (function_ == assemblerAliasTemporaries)
+		return computeAliasTemporaries(mod, subtree);
+
+	if (function_ == assemblerCallerSaved)
+		return computeRegisterClass(mod, subtree, RegisterClass.callerSaved,
+			"caller_saved_registers");
+	if (function_ == assemblerCalleeSaved)
+		return computeRegisterClass(mod, subtree, RegisterClass.calleeSaved,
+			"callee_saved_registers");
+	if (function_ == assemblerArguments)
+		return computeRegisterClass(mod, subtree, RegisterClass.argument,
+			"argument_registers");
 
 	if (function_ == alwaysInline)
 		return computeTypeMarker(mod, subtree, alwaysInline, "always_inline", Flags.Inline);
@@ -270,6 +373,9 @@ bool computeCompilerNamespace(ref Module mod, EntityId subtree, bool forceRegist
 	if (function_ == neverMonomorphize)
 		return computeTypeMarker(mod, subtree, neverMonomorphize, "never_monomorphize",
 			Flags.NeverMonomorphize);
+
+	if (function_ == noComptime)
+		return computeTypeMarker(mod, subtree, noComptime, "no_comptime", Flags.NoComptime);
 
 	else if (function_ == pointer)
 		return computePointer(mod, subtree, pointer);
@@ -358,6 +464,96 @@ bool foldBaseTypes(ref Module mod, EntityId subtree) @trusted {
 	return computeBaseType(mod, subtree, function_, comptimeBaseType);
 }
 
+/// Only what the register allocator reads: the three register class
+/// declarations and `alias_temporaries`.
+///
+/// These are the backend describing its machine and the standard library
+/// describing its own constraints - inputs to allocation, not results of it -
+/// so they have to be folded before `opt.assignTemporaries` runs. The rest of
+/// `computeCompilerNamespace` must *not*: it folds `register_for` and
+/// `return_register`, which are questions about where a value ended up, and
+/// answering those before the allocator has run answers them wrong. That is
+/// the whole reason the pass is scheduled after the register round, and the
+/// reason this is a separate entry point rather than a reordering.
+///
+/// Scheduled immediately before each `assignTemporaries`, both of them: the
+/// second round runs after `opt.inlineFunctions`, and every inlined copy of
+/// `std.if` brings its own `alias_temporaries` call that the copy's own two
+/// arms have to be joined by.
+bool computeAllocatorInputs(ref Module mod, EntityId subtree) @trusted {
+	if (!hasComponent!Call(mod, subtree)) return true;
+
+	immutable function_ = resolveAlias(mod, getComponent!Call(mod, subtree).related[0]);
+
+	immutable aliasTemporaries = resolveCached(mod, "compiler.assembler.alias_temporaries", 1);
+	if (function_ == aliasTemporaries)
+		return computeAliasTemporaries(mod, subtree);
+
+	immutable callerSaved = resolveCached(mod, "compiler.assembler.caller_saved_registers", 1);
+	if (function_ == callerSaved)
+		return computeRegisterClass(mod, subtree, RegisterClass.callerSaved,
+			"caller_saved_registers");
+
+	immutable calleeSaved = resolveCached(mod, "compiler.assembler.callee_saved_registers", 1);
+	if (function_ == calleeSaved)
+		return computeRegisterClass(mod, subtree, RegisterClass.calleeSaved,
+			"callee_saved_registers");
+
+	immutable arguments = resolveCached(mod, "compiler.assembler.argument_registers", 1);
+	if (function_ == arguments)
+		return computeRegisterClass(mod, subtree, RegisterClass.argument,
+			"argument_registers");
+
+	return true;
+}
+
+/// Only the type modifiers: `always_inline`, `always_comptime`,
+/// `never_monomorphize` and `no_comptime`.
+///
+/// M-Freeze says a type's flag set is final once the comptime fixpoint is,
+/// because every modifier is a comptime call - but the pass that folds these
+/// four runs in the *lowering* schedule, which is afterwards, so until now the
+/// flags landed after the rule says they had settled. That is a recorded
+/// divergence, and this is the half of it that can be fixed by scheduling:
+/// a modifier neither reads a register nor emits anything, so unlike the rest
+/// of `computeCompilerNamespace` it can run inside the fixpoint.
+///
+/// It has to, now that `mizu.doir` says `no_comptime` on the function types of
+/// the instructions whose result is machine state. That flag is what
+/// `opt.mizu.comptimeEvaluate` reads to decide a call is not its to run, and a
+/// flag that arrives after the fixpoint has already folded the call is no
+/// answer at all - `std.debug_print(1234)` printed during the compile and
+/// emitted nothing.
+///
+/// `compiler.pointer` is left where it was. It is M-Ctor rather than M-Flag:
+/// it allocates a type instead of editing one, and what it allocates is read
+/// by passes further down.
+bool computeTypeMarkers(ref Module mod, EntityId subtree) @trusted {
+	if (!hasComponent!Call(mod, subtree)) return true;
+
+	immutable function_ = resolveAlias(mod, getComponent!Call(mod, subtree).related[0]);
+
+	immutable alwaysInline = resolveCached(mod, "compiler.always_inline", 1);
+	if (function_ == alwaysInline)
+		return computeTypeMarker(mod, subtree, alwaysInline, "always_inline", Flags.Inline);
+
+	immutable alwaysComptime = resolveCached(mod, "compiler.always_comptime", 1);
+	if (function_ == alwaysComptime)
+		return computeTypeMarker(mod, subtree, alwaysComptime, "always_comptime",
+			Flags.AlwaysComptime);
+
+	immutable neverMonomorphize = resolveCached(mod, "compiler.never_monomorphize", 1);
+	if (function_ == neverMonomorphize)
+		return computeTypeMarker(mod, subtree, neverMonomorphize, "never_monomorphize",
+			Flags.NeverMonomorphize);
+
+	immutable noComptime = resolveCached(mod, "compiler.no_comptime", 1);
+	if (function_ == noComptime)
+		return computeTypeMarker(mod, subtree, noComptime, "no_comptime", Flags.NoComptime);
+
+	return true;
+}
+
 /// Visitor adaptor for `doir.systems`, with `forceRegisterValues` bound at
 /// compile time - the mizu schedule picks one or the other at each of its two
 /// `computeCompilerNamespace` passes, and a walker's visitor is an alias, so
@@ -373,6 +569,7 @@ bool computeCompilerNamespaceVisitor(bool forceRegisterValues)(ref Module mod, E
 // Ported from tests/spec_syntax.test.cpp.
 
 version (unittest) {
+	import doir.diagnostics : diagnostics;
 	import tests.pipeline_helper;
 }
 
@@ -551,10 +748,11 @@ unittest { // `compiler.pointer` turns a type into a pointer to it
 }
 
 unittest { // each type marker sets its flag on the type it is given
-	static immutable string[3] callees = [
-		"compiler.always_inline", "compiler.always_comptime", "compiler.never_monomorphize"];
-	static immutable ushort[3] flags = [
-		Flags.Inline, Flags.AlwaysComptime, Flags.NeverMonomorphize];
+	static immutable string[4] callees = [
+		"compiler.always_inline", "compiler.always_comptime", "compiler.never_monomorphize",
+		"compiler.no_comptime"];
+	static immutable ushort[4] flags = [
+		Flags.Inline, Flags.AlwaysComptime, Flags.NeverMonomorphize, Flags.NoComptime];
 
 	foreach (i, callee; callees) {
 		auto f = makeComputeFixture();
@@ -733,7 +931,7 @@ unittest { // `register_for` reports the register its target was assigned
 	diagnostics().clear();
 }
 
-unittest { // a `register_for` whose target is a parameter is left for later
+unittest { // a `register_for` whose target is a parameter with no register is left for later
 	auto f = makeComputeFixture();
 	scope(exit) freeModule(f.mod);
 	auto block = f.openRoot();
@@ -754,6 +952,18 @@ unittest { // a `register_for` whose target is a parameter is left for later
 	immutable r = named(f, "r");
 	assert(computeCompilerNamespace(f.mod, r, false));
 	assert(hasComponent!Call(f.mod, r)); // untouched
+	assert(!hasComponent!ComptimeNumber(f.mod, r));
+
+	// ...and answered once it has one. A parameter gets a register when
+	// `opt.liftFunctionBodies` emits the body nothing inlined, and then
+	// `mizu.emit_register`'s `shift_right(register_for(..), 8)` has to fold
+	// like any other - declining here reported it as not a numeric constant.
+	// Found again rather than held: `canonicalize` sorts, and a sort renumbers.
+	immutable allocated = getComponent!Block(f.mod, named(f, "fn")).related[0];
+	assert(hasComponent!FunctionParameter(f.mod, allocated));
+	getOrAddComponent!AssignedRegister(f.mod, allocated).reg = 22;
+	assert(computeCompilerNamespace(f.mod, r, false));
+	assert(getComponent!ComptimeNumber(f.mod, r).value == 22);
 	assert(!diagnostics().hasErrors());
 	diagnostics().clear();
 }
@@ -834,5 +1044,33 @@ unittest { // anything that is not a `compiler.*` call is left alone
 	assert(computeCompilerNamespace(f.mod, emitted, false));
 	assert(hasComponent!Call(f.mod, emitted));
 	assert(!diagnostics().hasErrors());
+	diagnostics().clear();
+}
+
+unittest { // the register-class intrinsics accumulate, through a real compile
+	// `mizu.doir` declares Mizu's classes with three calls, and what they add
+	// up to is a set with two holes in it - `x0` and `ra` are in no class, and
+	// the argument registers are carved out of the allocatable set. A machine
+	// that could be described by one contiguous range would not exercise any
+	// of this.
+	auto r = withMizu("register_classes.doir");
+	scope(exit) freeModule(r.mod);
+
+	assert(registerRanges(RegisterClass.callerSaved).length == 1);
+	assert(registerRanges(RegisterClass.argument).length == 1);
+	assert(registerRanges(RegisterClass.calleeSaved).length == 1);
+
+	// t0..t19 is x1..x20: `zero` is excluded by starting at t0 rather than x0.
+	assert(registerRanges(RegisterClass.callerSaved)[0] == RegisterRange(1, 20));
+	// a0..a7 is x22..x29, so `ra` at x21 falls in the gap between the classes.
+	assert(registerRanges(RegisterClass.argument)[0] == RegisterRange(22, 29));
+	assert(!inRegisterClass(RegisterClass.callerSaved, 21));
+	assert(!inRegisterClass(RegisterClass.calleeSaved, 21));
+	assert(!inRegisterClass(RegisterClass.argument, 21));
+
+	// The allocatable set steps over both holes.
+	assert(allocatableAt(0) == 1);
+	assert(allocatableAt(19) == 20);
+	assert(allocatableAt(20) == 30); // not 21 (ra) and not 22..29 (arguments)
 	diagnostics().clear();
 }

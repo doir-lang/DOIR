@@ -21,6 +21,34 @@ import doir.systems : fixedPointChanged;
 /// NOTE: this system is fixed-point aware - it sets `fixedPointChanged`
 /// whenever it flips a flag, so the driver's `fixedPoint` wrapper runs it
 /// again.
+/// Whether `e` counts as compile time known where a call's arguments are
+/// being judged.
+///
+/// One function because two rules ask it: C-Call decides whether the call is
+/// comptime and C-Valid rejects a comptime call handed a runtime value, so the
+/// two must answer identically or a call is marked and then rejected for being
+/// marked. They were two copies of the loop, and they drifted the moment one
+/// grew a clause.
+///
+/// Through the alias throughout (A-Transparent): an alias to a type is a type.
+/// The *flag* as well as the definition, which the `TypeDefinition` clause
+/// alone misses - an alias carries no `TypeOf`, so C-Type never marks one, and
+/// `TypeDefinition` asks the chain to end somewhere already built. `std.byte`
+/// ends at `mizu.u64`, a `compiler.base_type` call until `foldBaseTypes` runs,
+/// and that is in the lowering schedule, long after the comptime fixpoint. So
+/// `std.types.pointer(std.byte)` looked like a runtime call for the whole
+/// fixpoint, the inliner took it, and `std.byte_pointer` came out as a copy of
+/// `type_pointer`'s body rather than a pointer type.
+private bool comptimeArgument(ref Module mod, EntityId e) @trusted {
+	if (flagsSet(mod, e, Flags.Comptime)) return true;
+
+	immutable target = resolveAlias(mod, e);
+	if (flagsSet(mod, target, Flags.Comptime)) return true;
+	if (hasComponent!TypeDefinition(mod, target)) return true;
+	// ...and so is a field of one.
+	return isAggregateField(mod, e);
+}
+
 bool bubbleComptime(ref Module mod, EntityId subtree) @trusted {
 	if (hasComponent!Call(mod, subtree)) {
 		if (!hasComponent!FunctionInputs(mod, subtree)) return true;
@@ -28,18 +56,8 @@ bool bubbleComptime(ref Module mod, EntityId subtree) @trusted {
 
 		auto inputs = &getComponent!FunctionInputs(mod, subtree);
 		bool comptime = true;
-		foreach (i; 0 .. daLength(inputs.related)) {
-			immutable e = inputs.related[i];
-			if (!flagsSet(mod, e, Flags.Comptime)) {
-				// Through the alias: A-Transparent, an alias to a type is a
-				// type. `byte : alias = u8` used to make `pointer(byte)` a
-				// runtime call where `pointer(u8)` was a comptime one.
-				if (hasComponent!TypeDefinition(mod, resolveAlias(mod, e))) continue; // All types are compile time known
-				if (isAggregateField(mod, e)) continue; // ...and so is a field of one
-				comptime = false;
-				break;
-			}
-		}
+		foreach (i; 0 .. daLength(inputs.related))
+			if (!comptimeArgument(mod, inputs.related[i])) { comptime = false; break; }
 
 		immutable function_ = resolveAlias(mod, getComponent!Call(mod, subtree).related[0]);
 		// The callee need not be a function at all - `x : type = ...` followed
@@ -107,15 +125,8 @@ bool validateComptime(ref Module mod, EntityId subtree) @trusted {
 
 	auto inputs = &getComponent!FunctionInputs(mod, subtree);
 	size_t nonComptimeInput = size_t.max;
-	foreach (i; 0 .. daLength(inputs.related)) {
-		immutable e = inputs.related[i];
-		if (!flagsSet(mod, e, Flags.Comptime)) {
-			if (hasComponent!TypeDefinition(mod, resolveAlias(mod, e))) continue; // All types are compile time known
-			if (isAggregateField(mod, e)) continue; // ...and so is a field of one
-			nonComptimeInput = i;
-			break;
-		}
-	}
+	foreach (i; 0 .. daLength(inputs.related))
+		if (!comptimeArgument(mod, inputs.related[i])) { nonComptimeInput = i; break; }
 
 	if (nonComptimeInput != size_t.max && flagsSet(mod, subtree, Flags.Comptime)) {
 		immutable registerFor = resolveCached(mod, "compiler.assembler.register_for", 1);

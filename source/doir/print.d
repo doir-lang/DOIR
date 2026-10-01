@@ -173,8 +173,12 @@ private void printDebugExtras(ref char* out_, ref Module mod, EntityId subtree, 
 	else if (flagsSet(mod, subtree, Flags.Comptime))
 		appendText(out_, " [comp]");
 
-	if (hasComponent!AssignedRegister(mod, subtree))
+	if (hasComponent!AssignedRegister(mod, subtree) && hasComponent!Temporary(mod, subtree))
+		appendText(out_, " [virt: ", getComponent!Temporary(mod, subtree).id, ", reg: ", getComponent!AssignedRegister(mod, subtree).reg, "]");
+	else if (hasComponent!AssignedRegister(mod, subtree))
 		appendText(out_, " [reg: ", getComponent!AssignedRegister(mod, subtree).reg, "]");
+	else if (hasComponent!Temporary(mod, subtree))
+		appendText(out_, " [virt: ", getComponent!Temporary(mod, subtree).id, "]");
 }
 
 private void printBlock(ref char* out_, ref Module mod, EntityId blockEntity, bool pretty, bool debug_, bool skipParameters, size_t indent) @trusted {

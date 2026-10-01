@@ -174,6 +174,34 @@ std : namespace = {
 		_ : type = std.types.comptime(unreflect_alias_t)
 		export unreflect_alias : unreflect_alias_t
 
+		// A call's arguments, which is the one thing about a call site a callee
+		// cannot name: R-Unqual walks outward, and the arguments are in the
+		// caller. A construct that emits per argument - the calling convention
+		// moving each one into the register its position asks for - is written
+		// out of these two.
+		//
+		// `argument` yields the *declaration*, because that is what an argument
+		// is (WF-Arg): arguments are register names, so there is nothing else to
+		// hand back. Both also answer for a function TYPE, where the list is the
+		// parameters, so one walk covers a signature and a call against it.
+		argument_count_t : type = (call: entity) -> index
+		_ : type = std.types.comptime(argument_count_t)
+		export argument_count : argument_count_t
+
+		argument_t : type = (call: entity, i: index) -> entity
+		_ : type = std.types.comptime(argument_t)
+		export argument : argument_t
+
+		// `argument`'s counterpart, over the callee rather than the call, and
+		// not a special case of it: the parameter list of a function TYPE is
+		// types, and a type carries no position. A parameter declaration does,
+		// and that position is the argument convention - which is what lets a
+		// caller say where an argument goes by pointing at the parameter it
+		// binds, rather than by naming a register.
+		parameter_t : type = (function: entity, i: index) -> entity
+		_ : type = std.types.comptime(parameter_t)
+		export parameter : parameter_t
+
 		// The operations of the top level `type` namespace, over `entity`
 		// instead of `type` - the same work, unchecked. These must agree with
 		// their checked counterparts (R-Square):
@@ -257,6 +285,100 @@ std : namespace = {
 		abi_rename_t : type = (T: deduced type, function: T, new_name: null_terminated_byte_pointer) -> T
 		_ : type = types.comptime(abi_rename_t)
 		export abi_rename : abi_rename_t
+
+		// -------------------------------------------------------------------
+		// The calling convention
+		// -------------------------------------------------------------------
+		// A function the program still has a use for once lowering has settled
+		// - one nothing inlined away and nothing folded at compile time - has
+		// to be *emitted*, once, with calls jumping to it and returns jumping
+		// back out. These four are that, and they are ordinary declarations
+		// rather than compiler magic for the same reason `if` and `while` are:
+		// a backend restates them, it does not inherit them.
+		//
+		// `opt.claimFunctionLabels` is what splices them in. Each takes an
+		// entity, because a call site cannot *name* a label buried in the
+		// callee's body - R-Unqual only walks outward - and does not need to.
+		// A label reference is an entity reference, and the compiler keeps the
+		// function -> label map on the function itself, so what the pass hands
+		// `call` and `return` is the entry or exit label that map produced.
+		// `prologue` and `epilogue` get the function.
+		//
+		// Which is why the parameter is `meta.entity` and named `target`
+		// rather than `function`: they are handed a declaration rather than a
+		// value, the way `types.field_offset_bits` is, and only two of them
+		// are handed the function.
+		//
+		// The rest is marshalling, and it is five moves rather than any new
+		// idea: `copy` into a register the convention names, at both ends and
+		// in both directions. `opt.lowerFunctionCalls` does the counting -
+		// which argument is in which slot - because a call's argument list is
+		// the one thing a callee cannot walk (R-Args gives the language the
+		// reading, not the loop).
+		impl : namespace = {
+			// Frame setup and teardown. `prologue` spills the return address
+			// Mizu's `ra` holds on entry, since a nested call overwrites it;
+			// `epilogue` reloads it and jumps through it. Both emit, so
+			// neither may be folded - their one argument is compile time known
+			// and without `never_comptime` the evaluator runs them instead.
+			frame_t : type = (target: meta.entity)
+			export prologue : frame_t
+			export epilogue : frame_t
+
+			// One move per argument, into the register that argument's
+			// position asks for. Recursive rather than iterative because the
+			// loop is a comptime one - each argument lands in a different
+			// register, so there is nothing a runtime loop could emit once -
+			// and `i` is the slot as much as the index.
+			pass_arguments_t : type = (call: meta.entity, i: index)
+			export pass_arguments : pass_arguments_t
+
+			// `call` is handed the call as well as the entry label, because
+			// the arguments are on the call and a callee cannot reach them
+			// otherwise: R-Unqual only walks outward. It passes them
+			// (`pass_arguments`), leaves the return address in `ra` for the
+			// prologue to spill - which is what `jump_to` handing back a
+			// pointer to the next instruction is for - and hands back what the
+			// callee left in the result register, so a call site reads its
+			// result from its own register like any other call.
+			transfer_t : type = (target: meta.entity, call: meta.entity) -> _
+			export call : transfer_t
+
+			// `return` jumps to the exit label rather than out of the
+			// function, so that one teardown serves every exit point
+			// (WF-Term). It takes the value as well as the label because its
+			// body cannot otherwise name what to put in the result register,
+			// and the move has to land above its own jump.
+			return_t : type = (T: deduced type, value: T, target: meta.entity)
+			export return : return_t
+		}
+	}
+
+	// -----------------------------------------------------------------------
+	// Escapes
+	// -----------------------------------------------------------------------
+	// Everything here is checked nowhere. A name in `unsafe` is a claim the
+	// author is making that the compiler takes on trust, which is why they are
+	// gathered under one namespace rather than spelled like ordinary
+	// operations.
+	unsafe : namespace = {
+		// Makes two assignments share a register, wherever the allocator puts
+		// it. The way a construct with two arms says that both must leave their
+		// result in one place (`if`), or that an iteration must write over the
+		// value the next one reads (`while`).
+		//
+		// Not a pin. Pinning names a register, which only a register the
+		// *machine* fixes has any business doing - an always-zero register, or
+		// the one a call leaves its return address in. Naming one to make two
+		// values agree takes a register out of the allocator's set behind its
+		// back, and is what this replaced.
+		//
+		// Unsafe because it merges the two live ranges and asks nothing about
+		// whether that loses a value still wanted. Overlapping ranges are the
+		// author's to justify; that is the whole of what the name buys.
+		alias_temporaries_t : type = (T: deduced type, a: T, b: T) -> T
+		_ : type = types.comptime(alias_temporaries_t)
+		export alias_temporaries : alias_temporaries_t
 	}
 
 	diagnostics : namespace = {
@@ -321,6 +443,17 @@ std : namespace = {
 		_ : _  = return(%0)
 	}
 
+	// A comptime value is a number the compiler holds, not a register the
+	// machine has written: by C-Call every call it reaches folds, so nothing
+	// ever emits the load that would put it there. This is that load. It writes
+	// `v`'s own register, so the name goes on meaning what it meant and every
+	// instruction after this one reads it instead of folding against it.
+	//
+	// Needed exactly where a comptime value has to survive into code - an
+	// operand of an instruction that is not folded, a value crossing into a
+	// function that is emitted rather than inlined.
+	export transition_comptime_to_runtime : (T: deduced type, v: T) -> T
+
 	// -----------------------------------------------------------------------
 	// Control flow
 	// -----------------------------------------------------------------------
@@ -332,7 +465,23 @@ std : namespace = {
 
 	// Returns pointer(meta.types.get(execute(body))). A pointer because the body
 	// may never run, so there may be no value: null encodes that.
-	export while : (condition : u1, body: block) -> _
+	//
+	// `condition` is a block rather than a `u1` for the reason a loop is a loop:
+	// a register is written once (SSA), so a value tested at the top of the
+	// second iteration has to be *recomputed*, and only a block can be run
+	// again. It yields the `u1` the loop tests.
+	export while : (condition : block, body: block) -> _
+
+	// `while` with the three other blocks a counted loop needs: `init` once
+	// before the first test, `step` after each body, `condition` before each.
+	// Result type is `while`'s, for the same reason.
+	//
+	// The four blocks are siblings in the caller's scope, not nested, so R-Unqual
+	// gives `condition` no way to see what `init` declared - a loop variable is
+	// declared in the enclosing block and the four blocks reach it from there.
+	// Which also means `step` cannot rebind it: it recomputes into the same
+	// register, pinned, exactly as a `while` body must.
+	export for : (init: block, condition: block, step: block, body: block) -> _
 
 	// Returns union(type{a: meta.types.get(execute(then)) b: meta.types.get(execute(else))}).
 	// The union is UNTAGGED - nothing records which branch ran - so either both

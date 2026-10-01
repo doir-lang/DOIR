@@ -1,29 +1,43 @@
 path : compiler.byte_pointer = "./standard.mizu.doir"
 _ : compiler.byte = early_include(path)
-_ : compiler.assembler.register = compiler.assembler.begin_register_allocation()
+
+// Entire syntax of the language
+// %1 : std.u32 = 5              // #1 Constant number assignment (name : type = value)
+// %2 : compiler.byte_pointer = "hi" // #2 Constant string assignment (name : type = value)
+// %3 : block = {            // #3 Block assignment (3 stores "quoted" information
+// 	%1 : std.u32 = 6          //     about the contents of the block)
+// 	_ : _ = yield(%1)     // #4 Function execution
+// }
+// %4 : alias = %2           // #5 Alias assignment (%4 is resolved to %2)
+// math : namespace = {      // #6 Namespace assignment (registers can be named, not just numbered)
+// 	vec2 : type = {       // #7 Type assignment
+// 		x : std.f32           // #8 Undefined assignment
+// 		y : std.f32
+// 	}
+// }
 
 a : std.u64 = 5
-_ : _ = mizu.load_immediate(std.u64, a)
+_ : _ = std.transition_comptime_to_runtime(a)
 b : std.u64 = 6
-_ : _ = mizu.load_immediate(std.u64, b)
+_ : _ = std.transition_comptime_to_runtime(b)
 c : _ = std.add(a, b)
 _ : _ = mizu.debug_print(c)
 
 d : std.f64 = 5.0
-_ : _ = mizu.load_f64_immediate(std.f64, d)
+_ : _ = std.transition_comptime_to_runtime(d)
 _ : _ = compiler.assembler.pin_register(std.f64, d, mizu.x1)
 e : std.f64 = 6.5
-_ : _ = mizu.load_f64_immediate(std.f64, e)
+_ : _ = std.transition_comptime_to_runtime(e)
 _ : _ = compiler.assembler.pin_register(std.f64, e, mizu.x2)
 f : _ = std.add(d, e)
 _ : _ = mizu.debug_print(f)
 
 vec2 : type = {
-    x : std.f64
-    y : std.f64
+	x : std.f64
+	y : std.f64
 }
 vec2_p : type = std.types.pointer(vec2)
-v : vec2_p = std.stack.allocate(vec2_p)
+v : vec2_p = std.stack.allocate(vec2)
 
 v_x : std.f64_pointer = std.types.field_pointer(v, vec2.x)
 _ : _ = std.pointers.store(v_x, d)
@@ -35,11 +49,9 @@ _ : _ = mizu.debug_print(dbg_v_x)
 dbg_v_y : std.f64 = std.pointers.load(v_y)
 _ : _ = mizu.debug_print(dbg_v_y)
 
-
-// Please ignore everything below this point... I intend to ask about it in a future stage
 // my_add : (T: deduced type, a: T, b: T) -> T = {
-//     is_f64 : std.u1 = std.types.equivalent(T, std.u64)
-//     is_int : std.u1 = std.types.convertible(T, std.u64)
+//     is_f64 : std.u1 = std.types.equivalent(T, std.f64) // they are the same (once aliases are resolved) entity
+//     is_int : std.u1 = std.types.convertible(T, std.u64) // they are structurally compatible 
 
 //     float_arm : block = {
 //         c : _ = mizu.add_f64(a, b)
@@ -57,10 +69,11 @@ _ : _ = mizu.debug_print(dbg_v_y)
 
 //     else_arm : block = {
 //         _ : _ = std.if(is_int, int_arm, fail_arm)
-//     } 
+//     }
 //     _ : _  = std.if(is_f64, float_arm, else_arm)
 // }
 
+// Please ignore everything below this point... I intend to ask about it in a future stage
 // mizu_add_t : type = (a: mizu.u64, b: mizu.u64) -> mizu.u64
 // _ : _ = std.functions.always_inline(mizu_add_t)
 // mizu_add : (a: mizu.u64, b: mizu.u64) -> mizu.u64 = {
@@ -69,9 +82,9 @@ _ : _ = mizu.debug_print(dbg_v_y)
 //     regret : compiler.assembler.register = compiler.assembler.return_register(mizu.u64)
 //     %69 : compiler.byte_pointer = "\x25\x00\x00\x00\x00\x00\x00\x00"
 //     _ : compiler.byte = compiler.emit_bytes(%69)
-//     _ : compiler.assembler.register = inline emit_register(regret)
-//     _ : compiler.assembler.register = inline emit_register(rega)
-//     _ : compiler.assembler.register = inline emit_register(regb)
+//     _ : compiler.assembler.register = inline mizu.emit_register(regret)
+//     _ : compiler.assembler.register = inline mizu.emit_register(rega)
+//     _ : compiler.assembler.register = inline mizu.emit_register(regb)
 //     %70 : compiler.byte_pointer = "\x00\x00"
 //     _ : compiler.byte = compiler.emit_bytes(%70)
 //     _ : mizu.u64 = compiler.indicate_return(mizu.u64)

@@ -13,6 +13,7 @@ import ecrs.storage : EntityId, invalidEntity;
 import doir.diagnostics;
 import doir.interface_;
 import doir.module_;
+import doir.register_classes;
 import doir.systems;
 import doir.verify;
 
@@ -34,8 +35,11 @@ import doir.pipeline.sema.type_properties;
 import doir.pipeline.sema.type_variables;
 
 import doir.pipeline.opt.allocate_registers;
+import doir.pipeline.opt.assign_temporaries;
 import doir.pipeline.opt.compute_compiler_namespace;
 import doir.pipeline.opt.inline_functions;
+import doir.pipeline.opt.lower_functions;
+import doir.pipeline.opt.map_temporaries;
 import doir.pipeline.opt.materialize_aliases;
 import doir.pipeline.opt.mizu.comptime_evaluate;
 import doir.pipeline.opt.mizu.materialize_immediates;
@@ -130,7 +134,8 @@ bool mizuSchedule(ref Module mod) {
 		depthFirst!runSchedule(),
 		&moduleSystem!runRegisteredSchedules,
 		depthFirst!pinRegisters(),
-		breadthFirst!allocateRegisters(),
+		breadthFirst!computeAllocatorInputs(),
+		&moduleSystem!assignTemporaries,
 		depthFirst!pinRegisters(),
 		breadthFirst!(computeCompilerNamespaceVisitor!false)(),
 		depthFirst!materializeImmediates(),
@@ -145,6 +150,21 @@ bool mizuSchedule(ref Module mod) {
 		// here asks for.
 		sorted!monomorphizeFunctions(currentCanonicalizeRoot, false),
 		breadthFirst!inlineFunctions(),
+		// Whatever inlining did not consume is a function that has to be
+		// emitted. Both are inert without a backend to supply
+		// `std.functions.impl.*`, which is the only thing that reaches this
+		// schedule - a program that includes one overrides it, and
+		// `standard.mizu.doir`'s copy is where these actually do work, with
+		// the register and label rounds they need after them. Here they have
+		// only the fold below, so a function lowered by this schedule gets its
+		// labels and its jumps and no registers; see `<divergences>`.
+		&moduleSystem!sinkDeclarations,
+		&moduleSystem!sortSystem,
+		depthFirst!claimFunctionLabels(),
+		depthFirst!lowerFunctionCalls(),
+		// No `liftFunctionBodies` here, unlike `standard.mizu.doir`: this
+		// schedule has no register round, and a lifted body's
+		// `register_for` on its own parameter has nothing to answer with.
 		breadthFirst!(computeCompilerNamespaceVisitor!true)(),
 	)(mod);
 }
@@ -170,6 +190,11 @@ bool mizuSchedule(ref Module mod) {
 /// order the next phase's walks need to already be in.
 bool canonicalizeSchedule(ref Module mod, EntityId root, ref BlockBuilder* builders) {
 	clearFallbackScheduleOverride();
+	// Per compile, for the reason the line above is: the test runner puts many
+	// modules through this in one process, and a register class that
+	// accumulated across them would hand the second module the first one's
+	// machine.
+	clearRegisterClasses();
 	earlyIncludeContext.builders = &builders;
 
 	// Canonicalize: splice in every `early_include` and materialize what it
@@ -237,6 +262,13 @@ bool canonicalizeSchedule(ref Module mod, EntityId root, ref BlockBuilder* build
 			// before any of those types did.
 			depthFirst!bubbleComptime(),
 			depthFirst!deduceTypes(),
+			// M-Freeze: a type's flags are final when this fixpoint is, which
+			// is only true if the modifiers that set them run inside it. The
+			// rest of `computeCompilerNamespace` cannot - it reads registers -
+			// but a modifier does not, and `comptimeEvaluateVisitor` below
+			// reads `no_comptime` off a callee's type to decide the call is
+			// not its to run.
+			depthFirst!computeTypeMarkers(),
 			depthFirst!comptimeEvaluateVisitor(),
 		)),
 		breadthFirst!stripFreestandingBlocks(),
@@ -307,6 +339,7 @@ version (unittest) {
 
 	import diagnose.source_location : SourceLocation;
 
+	import fp.dynarray : daLength = length;
 	import doir.parser : parseFile, parseSource;
 	import doir.pipeline.canon.sort : newRoot;
 	import tests.pipeline_helper;
@@ -347,16 +380,81 @@ unittest {
 
 	// Every construct the file calls is an inlined function or a splice, so
 	// each one's result names a block in the output rather than a call:
-	// `ran` the block the comptime VM ran, `c` and `e` the surviving arm of the
-	// `std.add`/`std.subtract` dispatch, `r_if` and `r_while` the branches
-	// `std.if` and `std.while` emitted around the arms they were handed, and
-	// `after` the label the jump above it was resolved against.
-	static immutable names = ["ran", "c", "e", "r_if", "r_while", "after"];
+	// `ran` the block the comptime VM ran, `c` and `e` the surviving arm of
+	// the `std.add`/`std.subtract` dispatch, and `after` the label the jump
+	// above it was resolved against.
+	static immutable names = ["ran", "c", "e", "after"];
 	foreach (name; names) {
 		immutable e = resolveLookupName(mod, internIn(mod, name), root);
 		assert(e != invalidEntity);
 		assert(hasComponent!Block(mod, e));
 		assert(!hasComponent!Call(mod, e));
+	}
+
+	// `std.if` and `std.while` the same way, but asked of the module rather
+	// than by name: both are called as `_` in `test.doir`, since their types
+	// end in `-> _` and D-Deduce solves parameters rather than return types,
+	// so a call site that wants a name for the result has to say the type
+	// itself. Nothing is lost by asking it this way round - that *no* call to
+	// either survives anywhere is the stronger claim, and it is the one the
+	// file is there to make.
+	foreach (name; ["std.if", "std.while"]) {
+		// Through the alias on both sides. `std` exports most of itself as
+		// `alias`es to the backend's names, so comparing a resolved callee
+		// against an unresolved lookup is a comparison that cannot match -
+		// which is a test that passes whatever the compiler does.
+		immutable callee = resolveAlias(mod, resolveLookupName(mod, internIn(mod, name), root));
+		assert(callee != invalidEntity);
+		foreach (e; 1 .. entityCount(mod)) {
+			if (!hasComponent!Call(mod, cast(EntityId) e)) continue;
+			assert(resolveAlias(mod, getComponent!Call(mod, cast(EntityId) e).related[0])
+				!= callee);
+		}
+	}
+
+	// And the dispatch itself, asked of the bytes rather than the store,
+	// because the way it failed was to leave no call behind either.
+	// `mizu.doir.type_attribute_id` reads a type's tag out of the *compiler's*
+	// entity store, so it has a meaning at compile time and none at all in an
+	// emitted program - it is the first link of every `kind` -> condition ->
+	// `execute_if` chain and must always be folded, never emitted. Inside the
+	// block `std.while` splices it was emitted: the chain was inlined instead,
+	// so the comparison came out as machine code, the arms as undecodable
+	// words, and the loop walked into them.
+	{
+		import doir.byte_emiter : emitAll;
+
+		internIn(mod, "compiler.emit");
+		internIn(mod, "compiler.emit_bytes");
+
+		immutable attributeId = resolveAlias(mod,
+			resolveLookupName(mod, internIn(mod, "mizu.doir.type_attribute_id"), root));
+		assert(attributeId != invalidEntity);
+		assert(hasComponent!Block(mod, attributeId));
+
+		// The id is the first thing the encoder emits, as eight bytes.
+		ubyte[8] id;
+		bool found = false;
+		auto encoder = &getComponent!Block(mod, attributeId).related;
+		foreach (i; 0 .. fp.dynarray.length(*encoder)) {
+			immutable c = (*encoder)[i];
+			if (!hasComponent!DString(mod, c)) continue;
+			auto text = getComponent!DString(mod, c).value.view;
+			if (text.length != id.length) continue;
+			foreach (j, b; text) id[j] = cast(ubyte) b;
+			found = true;
+			break;
+		}
+		assert(found);
+
+		auto bytes = emitAll(mod, root);
+		scope(exit) fp.dynarray.free(bytes);
+		auto program = fp.dynarray.slice(bytes);
+
+		// An `Opcode` is sixteen bytes: an eight byte id and three registers.
+		assert(program.length % 16 == 0);
+		for (size_t i = 0; i < program.length; i += 16)
+			assert(program[i .. i + id.length] != id[]);
 	}
 	diagnostics().clear();
 }
@@ -383,6 +481,110 @@ unittest {
 	auto bytes = emitAll(mod, newRoot);
 	scope(exit) fp.dynarray.free(bytes);
 	assert(fp.dynarray.slice(bytes) == cast(const(ubyte)[]) "Hello World");
+	diagnostics().clear();
+}
+
+unittest {
+	// ...and `test_call.doir`, the one program with a function left standing at
+	// the end of the schedule. Everything else in the repository is inlined or
+	// folded before lowering finishes, so this is what reaches
+	// `opt.claimFunctionLabels` with work to do - and the only end-to-end check
+	// that a call becomes a jump to a label rather than a call to nothing.
+	import doir.byte_emiter;
+
+	diagnostics().clear();
+	auto mod = createModule();
+	scope(exit) freeModule(mod);
+
+	auto builders = createBuilderStack(mod);
+	scope(exit) fp.dynarray.free(builders);
+
+	assert(parseFile(mod, builders, "test_call.doir"));
+	immutable root = runPipeline(mod, builders);
+	assert(root != invalidEntity);
+	assert(!diagnostics().hasErrors());
+
+	immutable add = resolveLookupName(mod, internIn(mod, "add_one"), root);
+	assert(add != invalidEntity);
+	assert(hasComponent!FunctionLabels(mod, add));
+	assert(getComponent!FunctionLabels(mod, add).related[0]
+		!= getComponent!FunctionLabels(mod, add).related[1]);
+
+	// Both halves of the calling convention, which is what makes the call a
+	// call rather than a jump that loses its operands. Asked of the store
+	// rather than of the bytes because each half is a *relation* between two
+	// entities - the argument and the parameter it binds, the call site and the
+	// transfer that produced its value - and neither is a register named
+	// anywhere in the source.
+	immutable a0 = resolveLookupName(mod, internIn(mod, "mizu.a0"), root);
+	assert(a0 != invalidEntity);
+	auto argumentRegister = comptimeNumber(mod, a0);
+	assert(!argumentRegister.isNull);
+
+	// The callee's side: `opt.assignTemporaries` numbers a parameter
+	// `-(index + 1)` and `opt.mapTemporaries` reads the machine's argument
+	// class at that position, so this is the convention and not a coincidence.
+	// Through `liftedBodyOf`, because by now the parameter is the lifted
+	// block's child rather than `add_one`'s - which is the lookup
+	// `mizu.parameter` needs and `std.functions.impl.pass_arguments` is built
+	// on.
+	immutable body_ = liftedBodyOf(mod, add);
+	assert(body_ != invalidEntity && body_ != add);
+	EntityId parameter = invalidEntity;
+	foreach (i; 0 .. daLength(getComponent!Block(mod, body_).related)) {
+		immutable child = getComponent!Block(mod, body_).related[i];
+		if (!hasComponent!FunctionParameter(mod, child)) continue;
+		if (getComponent!FunctionParameter(mod, child).index == 0) parameter = child;
+	}
+	assert(parameter != invalidEntity);
+	assert(hasComponent!AssignedRegister(mod, parameter));
+	assert(getComponent!AssignedRegister(mod, parameter).reg
+		== cast(size_t) argumentRegister.get);
+
+	// The caller's side, which is the parameter read backwards:
+	// `pass_arguments` says where the argument goes by naming the parameter it
+	// binds rather than a register, `alias_temporaries` records that as a
+	// `SharesTemporary` on the parameter, and `opt.assignTemporaries` gives both
+	// ends of it one temporary. So the move the call site emitted is reachable
+	// from the parameter, and it answers to the argument register - which is the
+	// whole convention, with nothing naming `a0` between the two.
+	assert(hasComponent!SharesTemporary(mod, parameter));
+	immutable moved = resolveAlias(mod,
+		getComponent!SharesTemporary(mod, parameter).related[0]);
+	assert(moved != invalidEntity && moved != parameter);
+	assert(hasComponent!AssignedRegister(mod, moved));
+	assert(getComponent!AssignedRegister(mod, moved).reg
+		== cast(size_t) argumentRegister.get);
+
+	immutable y = resolveLookupName(mod, internIn(mod, "y"), root);
+	assert(y != invalidEntity);
+	assert(hasComponent!Block(mod, y));
+
+	// And the result, which is the other direction: the transfer
+	// `opt.lowerFunctionCalls` left in `y`'s place answers to `y`'s own
+	// register, so the move out of the result register lands where the rest of
+	// the block reads it. That is what the `yield` the lowering emits says; with
+	// it missing the two differ and `std.debug_print(y)` prints whatever was in
+	// `y`'s register beforehand.
+	assert(hasComponent!AssignedRegister(mod, y));
+	bool transferSharesY = false;
+	foreach (i; 0 .. daLength(getComponent!Block(mod, y).related)) {
+		immutable child = getComponent!Block(mod, y).related[i];
+		if (!hasComponent!Block(mod, child)) continue;
+		if (!hasComponent!AssignedRegister(mod, child)) continue;
+		if (getComponent!AssignedRegister(mod, child).reg
+			== getComponent!AssignedRegister(mod, y).reg) transferSharesY = true;
+	}
+	assert(transferSharesY);
+
+	// Something still comes out: the top level code, and the jump the call
+	// became. Not the callee's own bytes - `byte_emiter` still skips a
+	// function body, and `<divergences>` says what that waits on.
+	internIn(mod, "compiler.emit");
+	internIn(mod, "compiler.emit_bytes");
+	auto bytes = emitAll(mod, newRoot);
+	scope(exit) fp.dynarray.free(bytes);
+	assert(fp.dynarray.length(bytes) > 0);
 	diagnostics().clear();
 }
 

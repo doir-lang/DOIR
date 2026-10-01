@@ -2,63 +2,97 @@ path : compiler.byte_pointer = "./standard.mizu.doir"
 _ : compiler.byte = early_include(path)
 _ : compiler.assembler.register = compiler.assembler.begin_register_allocation()
 
-u64 : alias = mizu.u64
-u1 : alias = mizu.u64
-
 blk : block = {
-	q : u64 = 1234
-	_ : u64 = mizu.load_immediate(u64, q)
-	_ : u64 = compiler.assembler.pin_register(u64, q, mizu.x1)
-	_ : u64 = std.debug_print(q)
+	q : std.u64 = 1234
+	_ : std.u64 = mizu.load_immediate(std.u64, q)
+	_ : std.u64 = compiler.assembler.pin_register(std.u64, q, mizu.x1)
+	_ : std.u64 = std.debug_print(q)
 }
-true : u64 = 1
-ran : u64 = std.execute_if(blk, true)
+true : std.u64 = 1
+ran : std.u64 = std.execute_if(blk, true)
 
-a : u64 = 5
-_ : u64 = mizu.load_immediate(u64, a)
-b : u64 = 6
-_ : u64 = mizu.load_immediate(u64, b)
-c : u64 = std.add(a, b)
-d : u64 = 7
-_ : u64 = mizu.load_immediate(u64, d)
-e : u64 = std.subtract(c, d)
-_ : u64 = std.debug_print(e)
-_ : u64 = compiler.assembler.pin_register(u64, c, mizu.x3)
-_ : u64 = compiler.assembler.pin_register(u64, e, mizu.x4)
+a : std.u64 = 5
+_ : std.u64 = mizu.load_immediate(std.u64, a)
+b : std.u64 = 6
+_ : std.u64 = mizu.load_immediate(std.u64, b)
+c : std.u64 = std.add(a, b)
+d : std.u64 = 7
+_ : std.u64 = mizu.load_immediate(std.u64, d)
+e : std.u64 = std.subtract(c, d)
+_ : std.u64 = std.debug_print(e)
+_ : std.u64 = compiler.assembler.pin_register(std.u64, c, mizu.x3)
+_ : std.u64 = compiler.assembler.pin_register(std.u64, e, mizu.x4)
 
 then_blk : block = {
-	x : u64 = 111
-	_ : u64 = mizu.load_immediate(u64, x)
-	_ : u64 = std.debug_print(x)
+	x : std.u64 = 111
+	_ : std.u64 = mizu.load_immediate(std.u64, x)
+	_ : std.u64 = std.debug_print(x)
 }
 else_blk : block = {
-	y : u64 = 222
-	_ : u64 = mizu.load_immediate(u64, y)
-	_ : u64 = std.debug_print(y)
+	y : std.u64 = 222
+	_ : std.u64 = mizu.load_immediate(std.u64, y)
+	_ : std.u64 = std.debug_print(y)
 }
 
-cond : u1 = 1
-_ : u1 = mizu.load_immediate(u1, cond)
-r_if : u64 = std.if(cond, then_blk, else_blk)
+cond : std.u1 = 1
+_ : std.u1 = mizu.load_immediate(std.u1, cond)
+_ : void = std.if(cond, then_blk, else_blk) // TODO: Why can't we deduce this type?
 
+// The counter is the caller's, pinned, because `condition` and `body` are
+// spliced at two different points and share nothing else: `body` recomputes
+// into `x2` and `condition` tests whatever is there.
 body : block = {
-	one : u64 = 1
-	_ : u64 = mizu.load_immediate(u64, one)
-	next : u64 = std.subtract(n, one)
-	_ : _ = compiler.assembler.pin_register(u64, next, mizu.x2)
-	_ : u64 = std.debug_print(next)
+	one : std.u64 = 1
+	_ : std.u64 = mizu.load_immediate(std.u64, one)
+	next : std.u64 = std.subtract(n, one)
+	_ : _ = compiler.assembler.pin_register(std.u64, next, mizu.x2)
+	_ : std.u64 = std.debug_print(next)
+}
+loop_cond : block = {
+	zero : std.u64 = 0
+	_ : std.u64 = mizu.load_immediate(std.u64, zero)
+	more : std.u1 = std.is_not_equal(n, zero)
+	_ : std.u1 = std.yield(more)
 }
 
-n : u64 = 3
-_ : u64 = mizu.load_immediate(u64, n)
-_ : _ = compiler.assembler.pin_register(u64, n, mizu.x2)
-r_while : u64 = std.while(n, body)
+n : std.u64 = 3
+_ : std.u64 = mizu.load_immediate(std.u64, n)
+_ : _ = compiler.assembler.pin_register(std.u64, n, mizu.x2)
+_ : void = std.while(loop_cond, body) // TODO: Why can't we deduce this type?
 
-after_addr : u64 = std.find_label(after)
+// // `for`: the same sharing, with the counter's init and step in blocks of
+// // their own. Prints 0, 1, 2.
+// i : std.u64_pointer = std.stack.allocate(std.u64_pointer)
+// for_init : block = {
+// 	zero : std.u64 = 0
+// 	_ : _ = compiler.assembler.pin_register(zero, mizu.x0)
+// 	_ : _ = std.pointers.store(i, zero)
+// }
+// for_cond : block = {
+// 	limit : std.u64 = 3
+// 	_ : std.u64 = mizu.load_immediate(std.u64, limit)
+// 	i_v : std.u64 = std.pointers.load(i)
+// 	below : std.u1 = std.is_less(i_v, limit)
+// 	_ : std.u1 = std.yield(below)
+// }
+// for_step : block = {
+// 	one : std.u64 = 1
+// 	_ : std.u64 = mizu.load_immediate(std.u64, one)
+// 	i_v : std.u64 = std.pointers.load(i)
+// 	bumped : std.u64 = std.add(i_v, one)
+// 	_ : _ = std.pointers.store(i, bumped)
+// }
+// for_body : block = {
+// 	i_v : std.u64 = std.pointers.load(i)
+// 	_ : std.u64 = std.debug_print(i_v)
+// }
+// _ : void = std.for(for_init, for_cond, for_step, for_body)
+
+after_addr : std.u64 = std.find_label(after)
 _ : _ = std.jump_to(after_addr)
-	skipped : u64 = 999
-	_ : u64 = mizu.load_immediate(u64, skipped)
-	_ : u64 = std.debug_print(skipped)
+	skipped : std.u64 = 999
+	_ : std.u64 = mizu.load_immediate(std.u64, skipped)
+	_ : std.u64 = std.debug_print(skipped)
 after : compiler.assembler.register = std.label()
 
 _ : _ = std.halt()

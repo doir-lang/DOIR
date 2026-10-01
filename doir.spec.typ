@@ -109,16 +109,17 @@ sentence carried an asterisk.] represents assignment to a virtual register, and
 can take one of seven forms.
 
 ```doir
-%1 : i32 = 5              // #1 Constant assignment (name : type = value)
-%2 : block = {            // #2 Block assignment (%2 stores "quoted" information
-	%1 : i32 = 6          //     about the contents of the block)
-	_ : _ = yield(%1)     // #3 Function execution
+%1 : std.u32 = 5              // #1 Constant number assignment (name : type = value)
+%2 : compiler.byte_pointer = "hi" // #2 Constant string assignment (name : type = value)
+%3 : block = {            // #3 Block assignment (3 stores "quoted" information
+	%1 : std.u32 = 6          //     about the contents of the block)
+	_ : _ = yield(%1)     // #4 Function execution
 }
-%3 : alias = %2           // #4 Alias assignment (%3 is resolved to %2)
-math : namespace = {      // #5 Namespace assignment (registers can be named,
-	vec2 : type = {       //     not just numbered)
-		x : f32           // #6 Type assignment
-		y : f32           // #7 Undefined assignment
+%4 : alias = %2           // #5 Alias assignment (%4 is resolved to %2)
+math : namespace = {      // #6 Namespace assignment (registers can be named, not just numbered)
+	vec2 : type = {       // #7 Type assignment  
+		x : std.f32           // #8 Undefined assignment
+		y : std.f32           
 	}
 }
 ```
@@ -186,6 +187,50 @@ main : alias = %7
 
 Functions can be anonymous, as `%7` is, or given names; an anonymous function
 can have a name aliased to it later.
+
+=== Emitting a function <calling-convention>
+
+A function whose call sites consumed it -- `functions.always_inline`,
+`always_flatten`, or a body the comptime evaluator folded -- leaves nothing
+behind to be called. One that survives lowering has to be *emitted*: laid down
+once, jumped to, and returned from. `std.functions.impl` is that, as four
+ordinary declarations rather than compiler magic, so that a backend restates
+the convention instead of inheriting it.
+
+#figure(
+  table(
+    columns: (auto, 1fr),
+    stroke: none,
+    inset: (x: 5pt, y: 3.6pt),
+    table.hline(stroke: 0.6pt + hair),
+    table.header([*Form*], [*What it does*]),
+    table.hline(stroke: 0.6pt + hair),
+    [`impl.prologue(f)`], [Frame setup, immediately below `f`'s entry label. Spills the return address, which a nested call would otherwise overwrite.],
+    [`impl.epilogue(f)`], [Frame teardown, below `f`'s exit label. Reloads the return address and jumps through it.],
+    [`impl.call(l)`], [Jumps to an entry label, leaving the address of the next instruction in the return-address register.],
+    [`impl.return(l)`], [Jumps to an exit label, so that one teardown serves every exit point a body has (WF-Term).],
+    table.hline(stroke: 0.6pt + hair),
+  ),
+  caption: [A call is four jumps between two labels.],
+)
+
+Each takes *one entity*, and which entity is the whole of the design. A call
+site cannot name a label buried in the callee's body -- R-Unqual only walks
+outward -- and does not need to: a label reference is an entity reference, and
+the compiler keeps the function $->$ label map on the function itself. So
+`prologue` and `epilogue` are handed the function, while `call` and `return`
+are handed the entry or exit label that map produced.
+
+#note("What a call does not yet do", kind: "warn")[
+  Only control transfers, and only half of that. The jumps are emitted with
+  the right labels, but the function's own bytes are not yet -- register
+  allocation does not reach the parameters of a body nothing inlined, so the
+  instruction encoders inside it cannot fold. Nothing moves the arguments into
+  the callee's parameter registers or the result back out either. Which
+  registers carry what belongs here rather than in the compiler, the same kind
+  of fact as `if`'s two arms agreeing on one register; the allocation does
+  not. See @divergences.
+]
 
 === Control flow
 
@@ -1171,6 +1216,22 @@ reflection: nothing survives into the emitted binary.
   rather than its value, so nothing is copied.
 ]
 
+#rule("R-Args", "A call site's arguments are readable", "spec",
+  $ "argument_count"(c) = |"args"(c)| quad quad "argument"(c, i) = "args"(c)_i $,
+)[
+  The one thing about a call a callee cannot otherwise name: R-Unqual walks
+  outward, and the arguments are in the caller. `argument` yields the argument's
+  *declaration*, since by WF-Arg that is what an argument is. Both also answer
+  for a function type, where the list is the parameters, so one walk covers a
+  signature and a call matched against it -- and `i` indexes the two alike, so
+  `argument(c, i)` is what the parameter at `i` was bound to. An index past the
+  end is the invalid entity.
+
+  This is what a construct that emits *per argument* is built out of. The
+  calling convention is the case in hand: one move per argument, into the
+  register that argument's position asks for.
+]
+
 #rule("R-Square", "Reflection coherence", "spec",
   $ "meta.type".mu("reflect"(T)) space = space "reflect"("type".mu(T)) quad "for every modifier" mu $,
   kind: "mut",
@@ -1199,7 +1260,8 @@ named before it can be passed.
     table.hline(stroke: 0.6pt + hair),
     [`execute(body)`], [what `body` yields], [Runs the block here.],
     [`defer(body)`], [`void`], [Runs at *every* exit point of the enclosing block.],
-    [`while(c, body)`], [`pointer(typeof(body))`], [A *pointer as an option type*: the loop may run zero times, so there may be no value, and null encodes that.],
+    [`while(c, body)`], [`pointer(typeof(body))`], [`c` is a *block*, re-executed before each iteration, which is what lets the test answer differently the second time. A *pointer as an option type*: the loop may run zero times, so there may be no value, and null encodes that.],
+    [`for(init, c, step, body)`], [`pointer(typeof(body))`], [`while` plus the two splice points a counted loop needs. Four blocks, not a scope: they are siblings, so what they share is declared around them.],
     [`if(c, then, else)`], [`union{then, else}`], [*Untagged*; the caller discriminates. Identical branch types collapse.],
     [`yield` / `return`], [terminator], [Blocks yield, functions return (WF-Term).],
     table.hline(stroke: 0.6pt + hair),
@@ -1353,22 +1415,81 @@ rest are outstanding.
      `tail f(x)` was indistinguishable from `flatten f(x)`, printed as both, and
      a block carrying `Flatten` tripped the "no `Tail` on a value" check. `Tail`
      has its own bit.],
-    [`opt/inline_functions.d`, `opt/mizu/comptime_evaluate.d`],
-    [The inliner asked whether the evaluator could *run* a call where it meant
-     whether the call was the evaluator's. It runs first, so nothing has been
-     folded when it asks, and a comptime chain lost every link but the
-     innermost: each one's argument was still an unfolded call, so each was
-     replaced by the bytes of the instruction that computes it. A dispatch on a
-     type -- read the tag, compare it, pick a block -- is three links, and only
-     the read survived. `comptimeEvaluationClaims` is the question the inliner
-     has: the same flags, position and callee checks, with an argument that is
-     itself a claimed call counting as one the evaluator will supply. Not
-     simply the check without its arguments: `mizu.emit_register` takes a
+    [`systems.d`, `opt/assign_temporaries.d`, `opt/map_temporaries.d`,
+     `opt/lower_functions.d`, `standard.mizu.doir`],
+    [`opt.allocateRegisters` handed out `nextRegister++` and never took one
+     back, so a program used as many registers as it had values: `test.doir`
+     came out writing registers 1541, 2532 and 2689 on a machine whose
+     environment is 1024 words -- registers 0--255, stack 256--1023 -- and the
+     program scribbled past the end of its own environment. Because the damage
+     depended on exactly where the writes landed, a change anywhere upstream
+     that shifted the numbering by two changed how far the program got before
+     dying. `opt.assignTemporaries` gives each value a virtual register and
+     reuses one as soon as the value in it is dead, which an interval sweep
+     answers optimally (the store is SSA and lowering leaves one linear
+     order), and `opt.mapTemporaries` maps those onto the register classes the
+     backend declared. The same program now fits in registers 0--18.
+
+     Three things had to meet it. `std.if` pinned both its arms to `mizu.x1`
+     to make them land together, which is a machine's business rather than the
+     function's; it says `std.unsafe.alias_temporaries` instead, and the sweep
+     unions the two ranges. `opt.needsEmitting` is shared with
+     `opt.claimFunctionLabels` rather than guessed, so the round that runs
+     before labels are claimed agrees with the pass that claims them about
+     which bodies are reached. And `doir.systems`' depth-first walk held an
+     index into a block's child list across a visit, so a visit that *removed*
+     a child -- the comptime evaluator runs a whole lowering schedule inside
+     one, and `canon.stripFreestandingBlocks` unlinks -- made every later
+     sibling shift down and the cursor step over one, silently. That cost
+     `std.add`'s dispatch the arm that was actually taken.],
+    [`comptime/program.d`, `opt/inline_functions.d`,
+     `opt/mizu/comptime_evaluate.d`],
+    [The evaluator ran one call per program, and got from the call to the
+     program by *lowering the compiler on itself*: synthesize a throwaway DOIR
+     block of `load_immediate` and `pin_register` calls, run the whole backend
+     schedule over it, emit bytes, decode them back, run that. Everything
+     fragile about comptime followed from the route rather than the idea --
+     registers hand-pinned by counting from a magic start value, a suspended
+     sort because lowering renumbers the module the outer walk is holding ids
+     into, a re-entrancy guard because the schedule being run contains the
+     evaluator.
+
+     And one more: the inliner runs first and has to leave the evaluator's
+     calls alone, but with one program per call nothing is folded when it
+     asks, so "can this run?" was false for every link of a chain but the
+     innermost and each outer link was replaced by the bytes of the
+     instruction that computes it. A dispatch on a type -- read the tag,
+     compare it, pick a block -- is three links, and only the read survived.
+     The answer was a *prediction* -- every argument available now or itself a
+     predicted call, to a depth of eight -- and the inliner acts on it
+     irrevocably, so a call predicted and never reached was stranded: neither
+     inlined nor folded. Which pass won came down to entity numbering.
+
+     An `Opcode` is a function pointer and three register numbers, so
+     `doir.comptime.program` builds the array directly and the evaluator runs
+     a whole *region* -- a call, every call feeding it an argument, and so on
+     inward -- as one program, intermediate results staying in registers.
+     Claiming is then a fact rather than a guess, with no depth bound, and a
+     claimed call is one the pass will certainly fold. A region stops at an
+     argument that is nobody's to supply: `mizu.emit_register` takes a
      `compiler.assembler.return_register`, which `computeCompilerNamespace`
      folds and the evaluator never will, and standing down for it left every
      instruction in `mizu.doir` two bytes short of its operand. An
-     already-folded call counts as claimed too, since the evaluator leaves the
+     already-folded call is still claimed, since the evaluator leaves the
      `Call` in place and hangs the answer off it.],
+    [`tools/mizu_gen.d`, `interface_.d`,
+     `opt/compute_compiler_namespace.d`],
+    [Whether a call may be folded is a property of its callee, and `mizu.doir`
+     gave every one-operand instruction the same `one_parameters_t` -- so
+     `debug_print`, `pointer_to_stack`, `stack_push`/`pop` and `allocate` were
+     folded on the same terms as arithmetic. `std.debug_print(1234)` printed
+     during the compile and emitted nothing; `std.stack.allocate(T)` baked
+     *the comptime VM's* stack address into the program. The generated file
+     now declares `_effect_t` twins of its five instruction shapes, carrying a
+     newly exposed `compiler.no_comptime`, and `bubbleComptime` already
+     refused to mark a call whose callee's type says it emits. The flag has to
+     arrive before the comptime fixpoint folds the call, which is what moved
+     the flag modifiers into it (see @divergences' M-Freeze entry).],
     [`canon/strip_freestanding_blocks.d`],
     [A quoted block is unlinked from its parent so that it is not emitted where
      it stands. One declared *inside a function body* was unlinked from that
@@ -1380,6 +1501,37 @@ rest are outstanding.
      once the body is inlined the copies are ordinary module-scope quoted
      blocks that a later run of the pass takes out. `standard.mizu.doir`'s
      schedule runs it once more for exactly that.],
+    [`opt/mizu/comptime_evaluate.d`, `opt/compute_compiler_namespace.d`,
+     `opt/lower_functions.d`, `canon/strip_freestanding_blocks.d`,
+     `standard.mizu.doir`],
+    [A function body is a template, and the dispatch written against its
+     parameters has to survive being copied. It did not: the inliner stands
+     down for a call the evaluator claims, the evaluator claimed nothing whose
+     arguments were unbound, and `std.subtract`'s own declaration has `T` for
+     an argument -- so the chain `kind` #sym.arrow condition #sym.arrow
+     `execute_if` was replaced *in the declaration* by the bytes of the
+     instructions that compute it, and every copy taken afterwards carried the
+     wreckage. Which copies were spared came down to whether the inliner
+     reached a call site before it reached the declaration. Claiming now
+     distinguishes a region that cannot run from one that cannot run *yet*:
+     a parameter defers it, and a deferred region is claimed but not pending.
+
+     Spliced source had the same thing happen to it for a different reason.
+     `evaluating` was a re-entrancy guard from the evaluator that lowered the
+     compiler on itself; building the program directly ended the recursion but
+     the flag outlived its reason, and all it then did was disown every call
+     inside a `while` body -- which is spliced -- for the inliner to take. The
+     flag is gone, and `lowerSpliced` saves and restores `sortSuspended`
+     rather than clearing it, since a splice holding compile time work of its
+     own now nests. `test.doir`'s loop counts down and the program runs to its
+     `halt`.
+
+     With the dispatch folding inside a body, `opt.liftFunctionBodies` is
+     scheduled. Two things had to meet it: `register_for` answers for a
+     parameter that has a register, having previously declined for every
+     parameter on the grounds that an uninlined one had none; and
+     `stripFreestandingBlocks` runs again after the lift, because a body that
+     is emitted must not emit its spent dispatch arms.],
     table.hline(stroke: 0.6pt + hair),
   ),
   caption: [Compiler fixes, each with a regression test.],
@@ -1466,14 +1618,23 @@ rest are outstanding.
   named. The line is commented out until there is one; that is the only thing
   in `standard.doir` that does not compile.
 
-/ Two modifiers are applied after comptime (M-Freeze):
-  `computeCompilerNamespace` folds `compiler.always_inline` and
-  `compiler.always_comptime` inside the lowering schedule, so `Flags.Inline` and
-  `Flags.AlwaysComptime` land on types after the comptime fixpoint has settled.
-  Harmless today -- nothing between the two points reads either flag -- but it
-  puts the real freeze point mid-lowering rather than at the end of comptime,
-  and a property pass that trusted M-Freeze would run too early. Folding both
-  inside the comptime fixpoint restores the rule as stated.
+/ One modifier is still applied after comptime (M-Freeze): `compiler.pointer`.
+  The four flag modifiers -- `always_inline`, `always_comptime`,
+  `never_monomorphize` and `no_comptime` -- moved into the comptime fixpoint as
+  `opt.computeTypeMarkers`, which is where M-Freeze says they belong and which
+  the entry below made load-bearing rather than tidy. `pointer` stayed behind
+  because it is M-Ctor rather than M-Flag: it allocates a type instead of
+  editing one, and what it allocates is read further down the lowering
+  schedule. The rest of `computeCompilerNamespace` cannot move at all -- it
+  reads registers.
+
+/ A `return` the dispatch did not choose still emits its teardown: in
+  `test_call.doir` the body is emitted, runs and hands back the right answer,
+  but `std.add`'s three arms each leave a `return` standing, so the move into
+  `a0` and the jump to the exit label are emitted three times where only the
+  arm that ran should emit them. Harmless -- the first jump leaves -- and two
+  instructions each. The arms the dispatch spent are gone by then; what is left
+  is the `return` that was copied with each of them.
 
 / The comptime fixpoint is not monotone (@comptime): C-Call both sets and
   clears, so termination rests on the call graph being acyclic and nothing
@@ -1505,29 +1666,21 @@ rest are outstanding.
   would then have nothing it could be passed to. It arrives with the implicit
   conversion above, not before.
 
-/ `while` does not have the type given above (@control-flow):
-  in `standard.mizu.doir` the result should be `pointer(typeof(body))`, null
-  when the loop ran zero times, and the implementation hands back the body's
-  register -- so a loop that never ran is indistinguishable from one whose last
-  iteration yielded zero. Building the pointer needs an allocation on a path
-  that by construction executes no instructions. The signature is the deeper
-  problem, and it is `standard.doir`'s rather than the backend's: `condition`
-  is a value, so a loop can only re-test it if the body overwrites the register
-  it was computed into, which is what the implementation pins it for. A
-  `block`, as `if` takes for its arms, is the fix.
+/ `while` and `for` do not have the result type given above (@control-flow):
+  in `standard.mizu.doir` it should be `pointer(typeof(body))`, null when the
+  loop ran zero times, and the implementation hands back the body's register --
+  so a loop that never ran is indistinguishable from one whose last iteration
+  yielded zero. Building the pointer needs an allocation on a path that by
+  construction executes no instructions.
 
-/ An instruction that reads machine state folds when handed constants: whether
-  a call may be folded is a
-  property of its callee, and `mizu.doir` gives every one-operand instruction
-  the same `one_parameters_t` -- so `pointer_to_stack`, `stack_push`/`pop`,
-  `pointer_to_stack_bottom`, `pointer_to_register` and `allocate` are folded on
-  the same terms as arithmetic. `std.stack.allocate(T)` is where it shows:
-  `stack_push_immediate` is emitted and the stack really moves, but
-  `pointer_to_stack(0)` has a constant argument, so the evaluator runs it and
-  bakes *the comptime VM's* stack address into the program. The fix is a
-  never-comptime function type for the instructions whose result is machine
-  state rather than a value; it belongs in `tools/mizu_gen.d`, since the type
-  and the flag are both generated.
+/ `for` does not scope its loop variable:
+  its four blocks are spliced at four separate points, each a subblock of the
+  inlined body, so R-Unqual gives none of them a view of another's
+  declarations -- `condition` cannot see what `init` declared. Whatever the four
+  share is declared in the enclosing block and pinned to a register, which is
+  also how a `while` body carries state across iterations. A `for` that owns its
+  variable needs a block whose scope *encloses* the splices, and
+  `meta.execute` splices where the call stands.
 
 / A `deduced` parameter and `type.comptime` do not compose: a function type
   whose
@@ -1553,6 +1706,69 @@ rest are outstanding.
   right offset; the same call written at module scope does not. Either fold base
   types ahead of the fixpoint or make a layout query that cannot be answered yet
   decline rather than answer zero.
+
+/ An emitted function's body does not come out yet: the
+  call is lowered correctly and the labels are right -- a compiled
+  `test_call.doir` contains the `find_label` and the `jump_to`, with the id
+  `opt.mizu.materializeLabels` gave the callee's entry label -- but the bytes
+  of the function itself are still skipped, so the jump has nowhere to land.
+  Three guards say the same thing and all three are the same gap:
+  `byte_emiter.emitCall`, `computeShiftRight` and `computeTruncateToByte` each
+  decline inside a function body, because before this every function was
+  inlined or folded and a body was by definition a declaration nothing jumped
+  to. Letting a labelled body through those guards is not enough: the
+  instruction encoders in `mizu.doir` fold a register request into an
+  immediate, and `compiler.assembler.register_for` on a *parameter* of a
+  function nothing inlined answers nothing -- the parameter was never
+  allocated. `computeCompilerNamespace` records the same limit against
+  `return_register` in its own words ("Non-inlined functions aren't yet
+  supported"). Register allocation reaching a non-inlined body's parameters is
+  the prerequisite, and it is one piece of work with the argument convention
+  below.
+
+/ A call passes nothing and returns nothing (`opt.lowerFunctionCalls`):
+  `std.functions.impl` is four jumps between two labels, and that is all it
+  is. `call` transfers control to the callee's entry label and leaves the
+  return address in `ra` for the prologue to spill; nothing moves the
+  arguments into the callee's parameter registers, and nothing moves the
+  result back out. So a function that is emitted rather than inlined is
+  reached and returned from correctly and computes from whatever the registers
+  happened to hold. An argument-passing convention -- which of Mizu's `a0`
+  onwards carry what, and what the result register is -- is the missing half,
+  and it is `standard.doir`'s to state rather than the compiler's, the way
+  `if` agreeing on `x1` is. `meta.argument_count` and `meta.argument` (R-Args)
+  are the half of that which was missing from the language: `impl.call` can now
+  read the argument list it has to emit a move per. What is still absent is a
+  comptime unroll to walk it with, and a register class for the result -- the
+  machine states `argument_registers(a0, a7)` and has no way to say which
+  register a result comes back in.
+
+/ The frame is unconditional (`standard.mizu.doir`): `impl.prologue` pushes
+  eight bytes and spills `ra` whether or not the body makes a call, because
+  nothing it can see says whether one does. A leaf function pays a push, a
+  store, a load and a pop it does not need. Deciding it needs the call graph,
+  which is also what tail calls and `Flags.Tail` want.
+
+/ Nothing says "expanded by a pass" (`opt.claimFunctionLabels`): the three
+  `always_` flags say a *call site* consumed a function, and
+  `mizu.load_immediate`, its three siblings, `mizu.label` and the three `*_op`
+  bodies are consumed by `opt.mizu.materializeImmediates` and
+  `materializeLabels` instead. No flag records that, so the pass recognizes
+  them by shape -- a body that is empty or nothing but `compiler.emit` and
+  `compiler.indicate_return` -- which is a guess about intent standing in for
+  a fact the store could hold. It is load-bearing rather than cosmetic:
+  claiming `mizu.label` splices a `mizu.label()` call into `mizu.label` and
+  the compile does not terminate.
+
+/ `mizuSchedule` cannot finish lowering a function (`pipeline/package.d`): the
+  compiler's built-in fallback has one register round, ahead of the point where
+  `claimFunctionLabels` and `lowerFunctionCalls` run, so a function lowered by
+  it gets its labels and its jumps and no registers for them. Harmless today
+  because `std.functions.impl.*` comes from `standard.mizu.doir`, which
+  overrides the schedule and has the second round -- so the passes are inert in
+  the one schedule that cannot serve them. The fix is the fallback growing the
+  same tail its override has, which would make the two schedules agree rather
+  than differ.
 
 / `defer` has no way to reach its caller's exit points (@control-flow):
   `execute` splices a block where the call stands, which is what `if` and

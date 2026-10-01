@@ -143,6 +143,17 @@ LDC only — Mizu overflows the stack under DMD (no TCO on the VM dispatch loop)
 `bin/doir <path>` compiles, prints the resulting IR, and writes the Mizu binary
 to `res.bin`.
 
+`res.bin` is opaque; decode it rather than reading bytes out of it:
+
+```sh
+~/Dev/mizurunner/bin/mizu res.bin --generate-source
+```
+
+That prints the program back as the `mizu.Opcode[]` array it is — one line per
+instruction, named, with its operands — which is the only practical way to
+check what a compile actually emitted. An `Opcode` is 16 bytes, not 8, so
+dividing the file size by 8 gives twice the instruction count.
+
 `mizu.doir` is generated, and bakes in the numeric instruction ids Mizu assigns
 at *compile* time — regenerate it after bumping the Mizu dependency rather than
 editing it:
@@ -172,6 +183,8 @@ The end-to-end tests in `pipeline/package.d` compile the repository's own
 `std.add`, `std.if`, `std.while` and a hand-written label and jump — the one
 program written *against* the standard interface rather than declaring it),
 `test_string.doir` (nothing but `compiler.emit`, so the byte emiter has
-something to emit), and `test_standard.doir` (the assembler layer
-`standard.doir` assumes, plus an early_include of it — which is where every
-`deduced` in the repository is).
+something to emit), `test_standard.doir` (the assembler layer `standard.doir`
+assumes, plus an early_include of it — which is where every `deduced` in the
+repository is), and `test_call.doir` (one function that survives lowering and a
+call to it — the only thing that reaches `opt.claimFunctionLabels` with work to
+do, since everything else is inlined or folded first).

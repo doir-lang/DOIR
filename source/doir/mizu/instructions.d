@@ -562,10 +562,6 @@ extern(C) void* diagnosticError(Opcode* pc, ulong* registers, RegistersAndStack*
 
 /// Where a field begins inside the aggregate that declares it, in bits.
 ///
-/// Declared last on purpose: `doirLookup` numbers these by declaration order,
-/// and `mizu.doir` bakes those numbers in, so anything inserted above here
-/// renumbers every instruction below it.
-///
 /// The register holds the field's *entity*, not a value - a field names a
 /// position in a layout and has nothing to read at runtime - which is why
 /// `opt.mizu.comptimeEvaluate` passes an aggregate field the way it passes a
@@ -579,6 +575,121 @@ extern(C) void* fieldOffsetBits(Opcode* pc, ulong* registers, RegistersAndStack*
 	immutable e = resolveAlias(*mod, cast(EntityId) registers[pc.a]);
 	immutable offset = offsetOf(*mod, e);
 	registers[pc.out_] = offset == size_t.max ? 0 : offset;
+	mixin(mizuNext);
+}
+
+
+// --- call sites -------------------------------------------------------------
+
+/// How many arguments a call was given, and which declaration the i'th one
+/// names.
+///
+/// What makes these worth an instruction rather than a pass: a construct that
+/// has to emit *per argument* - the calling convention's marshalling, where one
+/// move per argument lands in the register that argument's position asks for -
+/// cannot be written in DOIR at all without them, because a call's argument
+/// list is not something a callee can name. `argument` hands back an entity
+/// because an argument *is* a register name (WF-Arg): the declaration is the
+/// only thing there is to return.
+///
+/// `FunctionInputs` is a call's argument list and a function type's parameter
+/// list both, so one pair of instructions answers for either - which is what
+/// lets the same unroll walk a signature and the call matched against it.
+///
+/// Declared last on purpose: `doirLookup` numbers these by declaration order,
+/// and `mizu.doir` bakes those numbers in, so anything inserted above here
+/// renumbers every instruction below it.
+extern(C) void* argumentCount(Opcode* pc, ulong* registers, RegistersAndStack* env, ubyte* sp) @trusted {
+	auto mod = &storedModule(env);
+	immutable e = resolveAlias(*mod, cast(EntityId) registers[pc.a]);
+	registers[pc.out_] = hasComponent!FunctionInputs(*mod, e)
+		? daLength(getComponent!FunctionInputs(*mod, e).related) : 0;
+	mixin(mizuNext);
+}
+
+/// `invalidEntity` for an index past the end, which is what a register can say
+/// - the same answer the type queries give for a non-type. A caller that got
+/// its bound from `argumentCount` cannot see it.
+extern(C) void* argument(Opcode* pc, ulong* registers, RegistersAndStack* env, ubyte* sp) @trusted {
+	auto mod = &storedModule(env);
+	immutable e = resolveAlias(*mod, cast(EntityId) registers[pc.a]);
+	immutable index = cast(size_t) registers[pc.b];
+
+	registers[pc.out_] = invalidEntity;
+	if (hasComponent!FunctionInputs(*mod, e)) {
+		auto inputs = &getComponent!FunctionInputs(*mod, e);
+		if (index < daLength(inputs.related))
+			registers[pc.out_] = resolveAlias(*mod, inputs.related[index]);
+	}
+
+	mixin(mizuNext);
+}
+
+/// The i'th parameter *declaration* of a function, or of its type.
+///
+/// `argument`'s counterpart, and not a special case of it: `FunctionInputs` on
+/// a function type holds the parameter *types*, and a type does not carry
+/// `FunctionParameter.index`. That index is the whole of the argument
+/// convention - `opt.assignTemporaries` turns it into `-(index + 1)` and
+/// `opt.mapTemporaries` reads the machine's argument class at that position -
+/// so a caller that unites an argument's temporary with this declaration's has
+/// said "this goes where argument i goes" without naming a register, and
+/// without the convention being written down twice.
+///
+/// Searched rather than indexed, because a block lists a function's parameters
+/// among its statements and nothing promises they come first or in order.
+extern(C) void* parameter(Opcode* pc, ulong* registers, RegistersAndStack* env, ubyte* sp) @trusted {
+	static EntityId findIn(ref Module mod, EntityId block, size_t index) {
+		if (block == invalidEntity || !hasComponent!Block(mod, block)) return invalidEntity;
+		auto related = &getComponent!Block(mod, block).related;
+		foreach (i; 0 .. daLength(*related)) {
+			immutable child = (*related)[i];
+			if (!hasComponent!FunctionParameter(mod, child)) continue;
+			if (getComponent!FunctionParameter(mod, child).index == index) return child;
+		}
+		return invalidEntity;
+	}
+
+	/// By `Parent`, which is the relation that actually holds a parameter to
+	/// the thing it parameterizes - `typeAtCallSite` matches them that way
+	/// too. The block walk above is the fast path and misses the case where a
+	/// function *type* owns its parameters without being a block at all.
+	static EntityId findByParent(ref Module mod, EntityId owner, size_t index) {
+		if (owner == invalidEntity) return invalidEntity;
+		immutable count = entityCount(mod);
+		foreach (i; 0 .. count) {
+			immutable e = cast(EntityId) i;
+			if (!entityExists(mod, e)) continue;
+			if (!hasComponent!FunctionParameter(mod, e)) continue;
+			if (getComponent!FunctionParameter(mod, e).index != index) continue;
+			if (!hasComponent!Parent(mod, e)) continue;
+			if (getComponent!Parent(mod, e).related[0] == owner) return e;
+		}
+		return invalidEntity;
+	}
+
+	auto mod = &storedModule(env);
+	immutable f = resolveAlias(*mod, cast(EntityId) registers[pc.a]);
+	immutable index = cast(size_t) registers[pc.b];
+
+	immutable ft = hasComponent!TypeOf(*mod, f)
+		? resolveAlias(*mod, getComponent!TypeOf(*mod, f).related[0]) : invalidEntity;
+
+	// A function lists its parameters among its own statements; a function type
+	// owns them through `Parent`. Either is a fair thing to be handed, so both
+	// get a turn - and then the lifted body, which is where the parameters
+	// actually are by the time the calling convention asks: `pass_arguments`
+	// runs after `opt.liftFunctionBodies`, which moves the body (parameters
+	// and all) out from under the function and retargets their `Parent` to it,
+	// so neither of the first two lookups nor a `Parent` search against the
+	// function finds anything at all.
+	auto found = findIn(*mod, f, index);
+	if (found == invalidEntity) found = findIn(*mod, ft, index);
+	if (found == invalidEntity) found = findByParent(*mod, f, index);
+	if (found == invalidEntity) found = findByParent(*mod, ft, index);
+	if (found == invalidEntity) found = findIn(*mod, liftedBodyOf(*mod, f), index);
+
+	registers[pc.out_] = found;
 	mixin(mizuNext);
 }
 

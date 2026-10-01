@@ -137,7 +137,7 @@ private static immutable string[92] program = [
 /// DOIR's own four, which the generated file nests in a `doir` namespace of
 /// its own so they read as `mizu.doir.execute` rather than sitting beside
 /// Mizu's instructions as `mizu.doir_execute`.
-private static immutable string[37] doirProgram = [
+private static immutable string[40] doirProgram = [
 	"setModule",
 	"attachComptimeNumberI64",
 	"execute",
@@ -181,9 +181,12 @@ private static immutable string[37] doirProgram = [
 	"diagnosticError",
 
 	// Last, because `doirLookup` numbers by declaration order and the ids
-	// below are baked into the generated file: a name inserted above this one
+	// below are baked into the generated file: a name inserted above these
 	// renumbers everything after it.
 	"fieldOffsetBits",
+	"argumentCount",
+	"argument",
+	"parameter",
 ];
 
 private static immutable string[50] singleOperandOps = [
@@ -237,6 +240,59 @@ private static immutable string[2] typeWithNumberOps = [
 	"typeSetAttributeId", "typeArray",
 ];
 
+/// `(e : u64) -> u64`: asks an *entity* something, type or not. The register
+/// carries the entity, as it does for `field_query_t`.
+private static immutable string[1] entityQueryOps = [
+	"argumentCount",
+];
+
+/// `(e : u64, n : u64) -> u64`: asks an entity about its i'th something.
+private static immutable string[2] entityWithNumberOps = [
+	"argument", "parameter",
+];
+
+/// The instructions whose result is *machine state* rather than a value, and
+/// which must therefore never be folded however constant their arguments look.
+///
+/// `mizu.doir` gives every one-operand instruction the same `one_parameters_t`,
+/// so until now `pointer_to_stack(0)` was foldable on the same terms as
+/// `add(1, 2)` - and folding it baked *the comptime VM's* stack address into
+/// the emitted program. `std.stack.allocate(T)` is where it showed. The flag
+/// belongs here rather than in a list inside the compiler because the type and
+/// the flag are both generated, and because a type is what the callee check
+/// reads: an alias such as `std.debug_print` inherits it for free.
+///
+/// Three kinds, and the question each time is whether running the call *is*
+/// the point:
+///
+///   - output (`debug_print`): running it at compile time prints during the
+///     compile and emits nothing, which is neither of the two things anybody
+///     asked for;
+///   - the VM's own stack, heap and registers, which the compile-time VM has a
+///     different one of;
+///   - control flow, which has nowhere to go in a program assembled out of one
+///     region: `jump_to` is handed an address in the *real* program and the VM
+///     leaves for it, taking the compiler with it.
+///
+/// Arithmetic, comparisons and conversions are absent on purpose. Folding
+/// those is what makes `standard.mizu.doir`'s dispatch work - read a type's
+/// tag, compare it, pick a block - and a comparison has no effect to lose.
+private static immutable string[31] effectOps = [
+	"debugPrint", "debugPrintBinary",
+
+	"halt", "breakpoint", "findLabel",
+	"jumpRelative", "jumpRelativeImmediate", "jumpTo",
+	"branchRelative", "branchRelativeImmediate", "branchTo",
+
+	"stackLoadU64", "stackStoreU64", "stackLoadU32", "stackStoreU32",
+	"stackLoadU16", "stackStoreU16", "stackLoadU8", "stackStoreU8",
+	"stackPush", "stackPushImmediate", "stackPop", "stackPopImmediate",
+	"offsetOfStackBottom",
+
+	"allocate", "freeAllocated", "allocateFatPointer", "freeFatPointer",
+	"pointerToStack", "pointerToStackBottom", "pointerToRegister",
+];
+
 private static immutable string[3] immediateOps = [
 	"stackPushImmediate", "stackPopImmediate", "jumpRelativeImmediate",
 ];
@@ -251,7 +307,7 @@ private static immutable string[1] branchImmediateOps = ["branchRelativeImmediat
 ///
 /// Lines are relative to the `schedule` declaration's own indentation, and an
 /// empty one stays empty rather than picking up tabs.
-private static immutable string[33] scheduleBody = [
+private static immutable string[34] scheduleBody = [
 	"\tsequential(",
 	"\t\tdepthFirst(nameReuse),",
 	"\t\tdepthFirst(functionArity),",
@@ -273,7 +329,8 @@ private static immutable string[33] scheduleBody = [
 	"\t\tapplyGlobally(sequential(",
 	"\t\t\tsort,",
 	"\t\t\tdepthFirst(pinRegisters),",
-	"\t\t\tbreadthFirst(allocateRegisters),",
+	"\t\t\tbreadthFirst(computeAllocatorInputs),",
+	"\t\t\tassignTemporaries,",
 	"\t\t\tdepthFirst(pinRegisters)",
 	"\t\t)),",
 	"",
@@ -292,6 +349,13 @@ private static immutable string[33] scheduleBody = [
 private bool isIn(const(string)[] set, const(char)[] name) {
 	foreach (s; set) if (s == name) return true;
 	return false;
+}
+
+/// Prints the parameter type `name`'s binding takes: `<base>_effect_t` when
+/// the instruction is one of `effectOps`, `<base>_t` otherwise.
+private void printShape(string base, const(char)[] name) {
+	printf("%.*s", cast(int) base.length, base.ptr);
+	printf(isIn(effectOps, name) ? "_effect_t" : "_t");
 }
 
 /// `debugPrintBinary` -> `debug_print_binary`, `convertToU64` -> `convert_to_u64`.
@@ -388,6 +452,12 @@ private void emitInstruction(const(char)[] name) {
 		tabs(); printName(name); printf("_t : type = (label: compiler.assembler.register) -> u64\n");
 		tabs(); printf("_ : type = compiler.never_monomorphize("); printName(name); printf("_t)\n");
 		tabs(); printf("_ : type = compiler.always_inline("); printName(name); printf("_t)\n");
+		// Its own type, so the `effectOps` shapes above cannot carry the flag
+		// for it - and it needs one as much as `jump_to` does: the address it
+		// searches for is a label in the *real* program, and a region that
+		// folded the search would hand the caller the "not found" zero as
+		// though it were one.
+		tabs(); printf("_ : type = compiler.no_comptime("); printName(name); printf("_t)\n");
 		tabs(); printName(name); printf(" : "); printName(name); printf("_t = {\n");
 		++indent;
 		line("regret : compiler.assembler.register = compiler.assembler.return_register(u64)");
@@ -466,6 +536,34 @@ private void emitInstruction(const(char)[] name) {
 		--indent;
 		line("}");
 
+	} else if (isIn(entityQueryOps, name)) {
+		tabs(); printName(name); printf(" : entity_query_t = {\n");
+		++indent;
+		line("rega : compiler.assembler.register = compiler.assembler.register_for(u64, e)");
+		line("regret : compiler.assembler.register = compiler.assembler.return_register(u64)");
+		emitOpcodeId(name);
+		line("_ : compiler.assembler.register = inline emit_register(regret)");
+		line("_ : compiler.assembler.register = inline emit_register(rega)");
+		emitU32(0);
+		line("_ : u64 = compiler.indicate_return(u64)");
+		--indent;
+		line("}");
+
+	} else if (isIn(entityWithNumberOps, name)) {
+		tabs(); printName(name); printf(" : entity_with_number_t = {\n");
+		++indent;
+		line("rega : compiler.assembler.register = compiler.assembler.register_for(u64, e)");
+		line("regb : compiler.assembler.register = compiler.assembler.register_for(u64, n)");
+		line("regret : compiler.assembler.register = compiler.assembler.return_register(u64)");
+		emitOpcodeId(name);
+		line("_ : compiler.assembler.register = inline emit_register(regret)");
+		line("_ : compiler.assembler.register = inline emit_register(rega)");
+		line("_ : compiler.assembler.register = inline emit_register(regb)");
+		emitU16(0);
+		line("_ : u64 = compiler.indicate_return(u64)");
+		--indent;
+		line("}");
+
 	} else if (isIn(typeQueryOps, name)) {
 		tabs(); printName(name); printf(" : type_query_t = {\n");
 		++indent;
@@ -523,7 +621,7 @@ private void emitInstruction(const(char)[] name) {
 		line("}");
 
 	} else if (name == "halt" || name == "breakpoint") {
-		tabs(); printName(name); printf(" : zero_parameters_t = {\n");
+		tabs(); printName(name); printf(" : "); printShape("zero_parameters", name); printf(" = {\n");
 		++indent;
 		emitOpcodeId(name);
 		emitU64(0);
@@ -531,7 +629,7 @@ private void emitInstruction(const(char)[] name) {
 		line("}");
 
 	} else if (isIn(immediateOps, name)) {
-		tabs(); printName(name); printf(" : immediate_t = {\n");
+		tabs(); printName(name); printf(" : "); printShape("immediate", name); printf(" = {\n");
 		++indent;
 		line("regret : compiler.assembler.register = compiler.assembler.return_register(u64)");
 		emitOpcodeId(name);
@@ -543,7 +641,7 @@ private void emitInstruction(const(char)[] name) {
 		line("}");
 
 	} else if (isIn(branchImmediateOps, name)) {
-		tabs(); printName(name); printf(" : branch_immediate_t = {\n");
+		tabs(); printName(name); printf(" : "); printShape("branch_immediate", name); printf(" = {\n");
 		++indent;
 		line("rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)");
 		line("regret : compiler.assembler.register = compiler.assembler.return_register(u64)");
@@ -565,7 +663,7 @@ private void emitInstruction(const(char)[] name) {
 		line("}");
 
 	} else if (isIn(singleOperandOps, name)) {
-		tabs(); printName(name); printf(" : one_parameters_t = {\n");
+		tabs(); printName(name); printf(" : "); printShape("one_parameters", name); printf(" = {\n");
 		++indent;
 		line("rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)");
 		line("regret : compiler.assembler.register = compiler.assembler.return_register(u64)");
@@ -578,7 +676,7 @@ private void emitInstruction(const(char)[] name) {
 		line("}");
 
 	} else {
-		tabs(); printName(name); printf(" : two_parameters_t = {\n");
+		tabs(); printName(name); printf(" : "); printShape("two_parameters", name); printf(" = {\n");
 		++indent;
 		line("rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)");
 		line("regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)");
@@ -678,6 +776,30 @@ extern(C) int main(int argc, char** argv) @trusted {
 	line("_ : type = compiler.never_monomorphize(branch_immediate_t)");
 	blank();
 
+	line("// The same five shapes again for the instructions whose result is machine");
+	line("// state rather than a value - see `effectOps`. Separate types rather than a");
+	line("// flag on the call, because whether a call may be folded is a property of");
+	line("// its callee, and a type is where the compiler looks: an alias such as");
+	line("// `std.debug_print` inherits it with nothing said twice.");
+	line("zero_parameters_effect_t : type = () -> u64");
+	line("_ : type = compiler.always_inline(zero_parameters_effect_t)");
+	line("_ : type = compiler.no_comptime(zero_parameters_effect_t)");
+	line("one_parameters_effect_t : type = (a : u64) -> u64");
+	line("_ : type = compiler.always_inline(one_parameters_effect_t)");
+	line("_ : type = compiler.no_comptime(one_parameters_effect_t)");
+	line("two_parameters_effect_t : type = (a : u64, b : u64) -> u64");
+	line("_ : type = compiler.always_inline(two_parameters_effect_t)");
+	line("_ : type = compiler.no_comptime(two_parameters_effect_t)");
+	line("immediate_effect_t : type = (immediate: comptime.u64) -> u64");
+	line("_ : type = compiler.always_inline(immediate_effect_t)");
+	line("_ : type = compiler.never_monomorphize(immediate_effect_t)");
+	line("_ : type = compiler.no_comptime(immediate_effect_t)");
+	line("branch_immediate_effect_t : type = (a: u64, immediate: comptime.u64) -> u64");
+	line("_ : type = compiler.always_inline(branch_immediate_effect_t)");
+	line("_ : type = compiler.never_monomorphize(branch_immediate_effect_t)");
+	line("_ : type = compiler.no_comptime(branch_immediate_effect_t)");
+	blank();
+
 	line("// The two crossings between a register and the entity behind it. Every");
 	line("// other reflection instruction below is plain `u64` in and `u64` out, so");
 	line("// these are the only two the type system has to say anything about:");
@@ -687,7 +809,13 @@ extern(C) int main(int argc, char** argv) @trusted {
 	line("reflect_t : type = (T : type) -> u64");
 	line("_ : type = compiler.always_inline(reflect_t)");
 	line("_ : type = compiler.never_monomorphize(reflect_t)");
-	line("unreflect_alias_t : type = (e : u64) -> type");
+	// `-> _`, not `-> type`: `collapseToAlias` makes the call an alias of
+	// whatever entity it was handed, and that is as often a value as a type -
+	// `std.functions.impl.pass_arguments` names a call's arguments with it.
+	// `standard.doir` has always declared it `(e: entity) -> _`; this was the
+	// binding disagreeing with the interface, and a `type` return made every
+	// non-type use a type error.
+	line("unreflect_alias_t : type = (e : u64) -> _");
 	line("_ : type = compiler.always_inline(unreflect_alias_t)");
 	line("_ : type = compiler.never_monomorphize(unreflect_alias_t)");
 	line("base_type_t : type = (size_bits : comptime.u64, align_bits : comptime.u64) -> type");
@@ -717,6 +845,16 @@ extern(C) int main(int argc, char** argv) @trusted {
 	line("type_with_number_t : type = (T : type, n : comptime.u64) -> type");
 	line("_ : type = compiler.always_inline(type_with_number_t)");
 	line("_ : type = compiler.never_monomorphize(type_with_number_t)");
+	line("// Asks an *entity* something - `argument_count` and `argument`, which");
+	line("// answer about a call rather than about a type. `n` is a plain `u64`");
+	line("// rather than `comptime.u64` so that an unroll's index can reach it");
+	line("// without a specialization per argument position.");
+	line("entity_query_t : type = (e : u64) -> u64");
+	line("_ : type = compiler.always_inline(entity_query_t)");
+	line("_ : type = compiler.never_monomorphize(entity_query_t)");
+	line("entity_with_number_t : type = (e : u64, n : u64) -> u64");
+	line("_ : type = compiler.always_inline(entity_with_number_t)");
+	line("_ : type = compiler.never_monomorphize(entity_with_number_t)");
 	blank();
 
 	line("// The block is comptime, but it is not decoration: `execute` and");
@@ -816,6 +954,45 @@ extern(C) int main(int argc, char** argv) @trusted {
 		tabs();
 		printf("x%zu : compiler.assembler.register = %zu\n", cast(size_t) i, cast(size_t) i);
 	}
+	blank();
+
+	// The same registers under Mizu's ABI names (`mizu.opcode`'s `Registers`:
+	// RISC-V's layout, x0 zero, t0..t19, ra, then a0 onwards). Second
+	// declarations rather than aliases, so each is the same shape as the `x`
+	// name above it - and emitted in full rather than up to some argument
+	// count, because a generated file that mirrors the dependency exactly is
+	// one nobody has to check against it.
+	line("zero : compiler.assembler.register = 0");
+	foreach (i; 0 .. 20) {
+		tabs();
+		printf("t%zu : compiler.assembler.register = %zu\n", cast(size_t) i, cast(size_t) i + 1);
+	}
+	line("ra : compiler.assembler.register = 21");
+	foreach (i; 0 .. 257 - 22) {
+		tabs();
+		printf("a%zu : compiler.assembler.register = %zu\n", cast(size_t) i, cast(size_t) i + 22);
+	}
+	blank();
+
+	// The machine's register classes, which the compiler does not get to
+	// decide (`doir.register_classes`). Mizu's layout is RISC-V's: `zero` and
+	// `ra` are reserved, `t0`..`t19` are scratch, and everything from `a0` up
+	// is an argument slot - so the set the allocator may use has two holes in
+	// it, which is why the classes are declared as separate ranges rather than
+	// one span.
+	line("// The register classes, which the compiler does not get to decide. Two");
+	line("// registers are in no class at all and so never handed out: x0 reads as");
+	line("// zero on every Mizu machine, and x21 (`ra`) holds the return address a");
+	line("// `jump_to` left in it. That is what makes the allocatable set");
+	line("// discontiguous, and why each class is declared as its own range.");
+	line("_ : compiler.assembler.register = compiler.assembler.caller_saved_registers(t0, t19)");
+	line("// Eight argument registers, which is a choice rather than a property of");
+	line("// the machine - `Registers.a(i)` goes on as far as the register file does.");
+	line("_ : compiler.assembler.register = compiler.assembler.argument_registers(a0, a7)");
+	line("// The rest of the argument space, used as callee-saved scratch.");
+	tabs();
+	printf("_ : compiler.assembler.register = compiler.assembler.callee_saved_registers(a8, a%zu)\n",
+		cast(size_t) 257 - 22 - 1);
 	blank();
 
 	emitSchedule();

@@ -20,22 +20,34 @@ import doir.module_;
 EntityId newRoot = invalidEntity;
 
 
-/// Orders a function body's children so that its parameters come first, in
-/// declaration order, and everything else keeps its id order.
+/// Moves a function body's parameters to the front, in declaration order, and
+/// leaves every other child where the block already lists it.
 ///
-/// An insertion sort rather than `std::sort`: blocks are short, the
-/// comparator needs the module (so `qsort` is out without the non-portable
-/// `qsort_r`), and being stable matches what the original's comparator
-/// intends for the non-parameter tail.
+/// The original sorted that tail by entity id, which is not a statement order -
+/// it only looks like one because a parser allocates ids as it reads, so for
+/// source that has not been touched since the last sort the two agree. They
+/// stop agreeing for anything a pass splices in afterwards: a new entity gets
+/// the highest id there is, so `opt.claimFunctionLabels`' prologue and the
+/// jumps `opt.lowerFunctionCalls` puts after a `return` all sorted to the end
+/// of the body, which for a prologue means it never runs.
+///
+/// A stable partition instead. It is also self-consistent: the walk below
+/// renumbers in the order it visits, so once a module has been through here its
+/// children already have ascending ids in list order and the two rules agree
+/// again.
+///
+/// An insertion sort rather than `std::sort`: blocks are short, the comparator
+/// needs the module (so `qsort` is out without the non-portable `qsort_r`), and
+/// being stable is now the whole point rather than a detail.
 private void sortParametersFirst(ref Module mod, EntityId* related, size_t count) @trusted {
 	bool less(EntityId a, EntityId b) {
 		immutable aIsParam = hasComponent!FunctionParameter(mod, a);
 		immutable bIsParam = hasComponent!FunctionParameter(mod, b);
 		if (aIsParam && bIsParam)
-			return getComponent!FunctionParameter(mod, a).index < getComponent!FunctionParameter(mod, b).index;
-		else if (aIsParam) return true;
-		else if (bIsParam) return false;
-		else return a < b;
+			return getComponent!FunctionParameter(mod, a).index
+				< getComponent!FunctionParameter(mod, b).index;
+		if (aIsParam) return true;
+		return false;
 	}
 
 	foreach (i; 1 .. count) {
@@ -114,6 +126,7 @@ EntityId sort(ref Module mod, EntityId root) @trusted {
 	reorderEntities!(
 		Block, Parent, Pointer, FunctionReturnType, FunctionInputs,
 		Alias, TypeOf, Call, PrintAsCall, Monomorphizations, MonomorphizedFor,
+		FunctionLabels, SharesTemporary,
 		LookupFunctionReturnType,
 		LookupFunctionInputs, LookupAlias, LookupTypeOf, LookupCall
 	)(mod.ctx, widened[0 .. daLength(widened)]);

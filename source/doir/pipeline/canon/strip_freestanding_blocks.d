@@ -25,11 +25,15 @@ bool stripFreestandingBlocks(ref Module mod, EntityId subtree) @trusted {
 	// A body is copied, though, once per instantiation, and a block it declares
 	// is part of it: `std.add`'s dispatch arms name its parameters, so arms
 	// shared with the declaration name the *declaration's* parameters, which no
-	// call site ever binds. Nothing is emitted by leaving it: `byte_emiter`
-	// skips a `compiler.emit` inside a function body. Once the body has been
-	// inlined the copies are at module scope like any other quoted block, and a
-	// schedule that runs this pass again after `comptimeEvaluate` has consumed
-	// them takes them out then - which is what `standard.mizu.doir` does.
+	// call site ever binds. Once the body has been inlined the copies are at
+	// module scope like any other quoted block, and a schedule that runs this
+	// pass again after `comptimeEvaluate` has consumed them takes them out then
+	// - which is what `standard.mizu.doir` does.
+	//
+	// Leaving one behind used to emit nothing, `byte_emiter` skipping a
+	// `compiler.emit` inside a function body. A body `opt.liftFunctionBodies`
+	// moved out *is* emitted, so that schedule runs this pass a third time
+	// after the lift, by which point the spent arms are not in a body either.
 	if (findFunctionInsideOf(mod, subtree)) return true;
 
 	immutable parent = findParent(mod, subtree);

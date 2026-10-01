@@ -91,7 +91,7 @@ struct Flags {
 		Export = (1 << 2),
 		Comptime = (1 << 3),
 		AlwaysComptime = (1 << 4),
-		NoComptime = (1 << 5), // Marks an object as never being comptime... currently unexposed
+		NoComptime = (1 << 5), // Marks an object as never being comptime (`compiler.no_comptime`)
 		Constant = (1 << 6),
 		Union = (1 << 7),
 		Pure = (1 << 8),
@@ -282,6 +282,58 @@ struct Monomorphizations {
 /// against its own arguments at those same positions.
 struct MonomorphizedFor {
 	mixin RelationBody!();
+}
+
+/// The `mizu.label()` calls `opt.claimFunctionLabels` spliced into this
+/// function: `related[0]` its entry, `related[1]` its exit.
+///
+/// This is how a call site reaches the callee's prologue label without naming
+/// it. A label reference is an entity reference - `opt.mizu.materializeLabels`
+/// writes the id as a `ComptimeNumber` on the `label()` call and
+/// `mizu.find_label` reads it off whatever entity sits in its argument slot -
+/// so what a call needs is the function to label map, and this is it.
+/// `std.functions.impl.prologue`/`epilogue` are that map spelled in the
+/// language, memoized here.
+///
+/// On the function rather than in a list beside the module for the reason
+/// `ScheduleClaim` gives: `canonicalize.sort` renumbers every entity, so a
+/// table of ids goes stale and a component does not. It must therefore be
+/// named in `canon.sort`'s `reorderEntities!(...)` - a relation left out of
+/// that list keeps its pre-sort ids silently.
+struct FunctionLabels {
+	mixin RelationBody!2;
+}
+
+/// The virtual register an assignment was given, before any machine register
+/// exists: `opt.assignTemporaries` writes it, `opt.mapTemporaries` turns it
+/// into an `AssignedRegister`.
+///
+/// Negative for a parameter and positive for everything else, which is the
+/// difference between a slot the calling convention fixes and one the
+/// allocator is free to choose. Parameter `i` is temporary `-(i + 1)`, so the
+/// numbering says which argument register it wants without naming one.
+///
+/// Zero means no temporary: a value that is never read, or something that is
+/// not a value at all.
+struct Temporary {
+	int id = 0;
+}
+
+/// This entity and `related[0]` must end up in the same register, wherever
+/// that is (`std.unsafe.alias_temporaries`).
+///
+/// Not a pin: a pin says *which* register, which only `x0` and `ra` have a
+/// reason to say. This says only that two assignments share one, which is what
+/// a construct with two arms actually needs - `if` has to leave both results
+/// in one place, and a loop has to write the next iteration's condition over
+/// the current one. Naming a register to achieve that, as those two used to,
+/// picks a register out of the allocator's set behind its back.
+///
+/// Unsafe because it is not checked: the two live ranges are merged and
+/// whether that loses a value the program still wanted is the author's
+/// problem. That is the whole of what the `unsafe` in its name buys.
+struct SharesTemporary {
+	mixin RelationBody!1;
 }
 
 /// A pointer (or, with a non-zero `size`, an array) to `related[0]`.
@@ -1312,6 +1364,22 @@ EntityId findParent(ref Module mod, EntityId e) {
 	return findBlock(mod, e, e);
 }
 
+/// Where `opt.liftFunctionBodies` left `f`'s body, or `f` itself while the body
+/// is still inside it.
+///
+/// `FunctionLabels` is the only link left from a function to what used to be
+/// inside it, so the block holding the entry label is the body. Anything that
+/// has to reach into a surviving function after the lift goes through here -
+/// `mizu.parameter` looking for the parameter list is the live caller - because
+/// a lifted body is no longer `f`'s child and its contents' `Parent` is the
+/// block rather than `f`.
+EntityId liftedBodyOf(ref Module mod, EntityId f) {
+	if (f == invalidEntity) return invalidEntity;
+	if (hasComponent!Block(mod, f)) return f;
+	if (!hasComponent!FunctionLabels(mod, f)) return invalidEntity;
+	return findParent(mod, getComponent!FunctionLabels(mod, f).related[0]);
+}
+
 /// The function `subtree` sits inside, or `invalidEntity` when it is not in
 /// one.
 EntityId findFunctionInsideOf(ref Module mod, EntityId subtree) {
@@ -2044,6 +2112,13 @@ ref BlockBuilder buildBuiltinBlock(return ref BlockBuilder self) @trusted {
 	pushFunction(compiler, internIn(*mod, "always_inline"), modifierT, true).end();
 	pushFunction(compiler, internIn(*mod, "always_comptime"), modifierT, true).end();
 	pushFunction(compiler, internIn(*mod, "never_monomorphize"), modifierT, true).end();
+	// The fifth modifier, exposed because `mizu.doir` needs it on a *type*:
+	// whether a call may be folded is a property of its callee, and the
+	// instructions whose result is machine state rather than a value say so
+	// through their function type. Its DOIR-level twin
+	// `mizu.doir.type_no_comptime` cannot do that job, since the types it
+	// would mark are declared above the backend that defines it.
+	pushFunction(compiler, internIn(*mod, "no_comptime"), modifierT, true).end();
 
 	Lookup[2] typeAndT = [Lookup(type), Lookup(tInterned)];
 	InternedString[2] tValueNames = [tInterned, valueInterned];
@@ -2081,6 +2156,36 @@ ref BlockBuilder buildBuiltinBlock(return ref BlockBuilder self) @trusted {
 	// register and emits nothing.
 	orFlags(*mod, pinRegisterT, Flags.NeverMonomorphize);
 	pushFunction(assembler, internIn(*mod, "pin_register"), pinRegisterT, true).end();
+
+	// The machine's register classes, declared by the backend rather than
+	// decided here (`doir.register_classes`). Three names over one type, each
+	// *additive*: a machine whose temporaries are split either side of its
+	// reserved registers says so with two calls, and a second call must not
+	// throw the first away.
+	// `std.unsafe.alias_temporaries`: two assignments, one register. Takes
+	// values rather than a register, which is the point - see
+	// `SharesTemporary`.
+	Lookup[3] aliasTemporariesInputs = [Lookup(type), Lookup(tInterned), Lookup(tInterned)];
+	InternedString[3] aliasTemporariesNames =
+		[tInterned, internIn(*mod, "a"), internIn(*mod, "b")];
+	immutable aliasTemporariesT = pushFunctionType(assembler,
+		internIn(*mod, "alias_temporaries_t"), aliasTemporariesInputs[], Lookup(tInterned),
+		true, aliasTemporariesNames[]);
+	// As `pin_register`: its first parameter is a type, so without this every
+	// call earns a body of its own, and there is nothing in one to specialize.
+	orFlags(*mod, aliasTemporariesT, Flags.NeverMonomorphize);
+	pushFunction(assembler, internIn(*mod, "alias_temporaries"), aliasTemporariesT, true).end();
+
+	Lookup[2] registerRangeInputs = [Lookup(register), Lookup(register)];
+	InternedString[2] registerRangeNames =
+		[internIn(*mod, "first"), internIn(*mod, "last")];
+	immutable registerRangeT = pushFunctionType(assembler,
+		internIn(*mod, "register_range_t"), registerRangeInputs[], Lookup(register),
+		true, registerRangeNames[]);
+	orFlags(*mod, registerRangeT, Flags.Comptime | Flags.NeverMonomorphize);
+	pushFunction(assembler, internIn(*mod, "caller_saved_registers"), registerRangeT, true).end();
+	pushFunction(assembler, internIn(*mod, "callee_saved_registers"), registerRangeT, true).end();
+	pushFunction(assembler, internIn(*mod, "argument_registers"), registerRangeT, true).end();
 
 	Lookup[0] noInputs;
 	immutable beginRegisterAllocationT = pushFunctionType(assembler,

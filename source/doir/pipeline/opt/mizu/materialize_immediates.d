@@ -17,6 +17,7 @@ import fp.dynarray : daLength = length;
 import doir.interface_;
 import doir.module_;
 import doir.diagnostics;
+import doir.pipeline.canon.sort : loweringThrowawayBlock;
 import doir.string_helpers : InternedString;
 
 @nogc nothrow:
@@ -66,6 +67,14 @@ bool materializeImmediates(ref Module mod, EntityId subtree) @trusted {
 
 	auto constant = comptimeNumber(mod, inputs[1]);
 	if (constant.isNull) {
+		// A parameter, so this is the declaration of a function that wraps the
+		// load rather than a call of one - `std.transition_comptime_to_runtime`
+		// is the wrapper, and its body is walked whether or not anything calls
+		// it. The constant exists only in the copy a call site gets, which is
+		// why `standard.mizu.doir` schedules this pass a second time after the
+		// inlining. Nothing else reaches here with an argument that is not a
+		// value, so the test is the whole of the distinction.
+		if (hasComponent!FunctionParameter(mod, inputs[1])) return true;
 		// TODO: It would probably be good to relax this constraint in the future
 		parameterError(mod, subtree, name, 0, " must evaluate to a numeric constant");
 		return false;
@@ -77,6 +86,12 @@ bool materializeImmediates(ref Module mod, EntityId subtree) @trusted {
 	// Asked before the surgery below rather than halfway through it, so a
 	// rejected call is left intact the way every rejection above leaves it.
 	if (!hasComponent!AssignedRegister(mod, target)) {
+		// A block lowered for comptime runs this schedule with the module still
+		// around it, and `ownedByCurrentLowering` hands unclaimed code to the
+		// fallback schedule - which is this one. So the walk reaches calls out
+		// there too, where the register round the outer schedule has not run
+		// yet is what would have given them one. Not this run's call.
+		if (loweringThrowawayBlock()) return true;
 		noAssociatedRegister(mod, subtree, target);
 		return false;
 	}

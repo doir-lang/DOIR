@@ -1,0 +1,26 @@
+// A function that survives lowering, and a call to it.
+//
+// Everything else in the repository is either inlined or folded before the end
+// of the schedule, so this is the one program that reaches
+// `opt.claimFunctionLabels` with work to do: `add_one_t` carries none of the
+// three `always_` flags, so nothing consumes the body at its call site and the
+// function has to be emitted, jumped to, and returned from.
+path : compiler.byte_pointer = "./standard.mizu.doir"
+_ : compiler.byte = early_include(path)
+// _ : compiler.assembler.register = compiler.assembler.begin_register_allocation()
+
+add_one_t : type = (a : std.u64) -> std.u64
+_ : _ = std.functions.never_comptime(add_one_t)
+add_one : add_one_t = {
+	one : std.u64 = 1
+	_ : _ = mizu.load_immediate(std.u64, one) // TODO: need to replace with std.transition_comptime_to_runtime
+	sum : std.u64 = std.add(a, one)
+	_ : _ = std.return(sum)
+}
+
+x : std.u64 = 5
+_ : _ = mizu.load_u64_immediate(std.u64, x)
+y : std.u64 = add_one(x)
+_ : _ = std.debug_print(y)
+
+_ : _ = std.halt()

@@ -19,9 +19,9 @@
 // hands back (WF-Term), and that - not arithmetic, not emission - is the only
 // thing a body ever needed the assembler layer for. Three kinds appear:
 //
-//   - control flow (`if`, `while`): an inlined function that emits branches
-//     around blocks the caller quoted, which `execute` splices in where they
-//     stand;
+//   - control flow (`if`, `while`, `for`): an inlined function that emits
+//     branches around blocks the caller quoted, which `execute` splices in
+//     where they stand;
 //   - the dispatch (`add` and everything after it): an inlined function that
 //     asks `T` which of Mizu's three readings of a 64 bit register it wants,
 //     and emits the matching instruction;
@@ -250,6 +250,30 @@ std : namespace = {
 
 		export rename : alias = mizu.doir.entity_rename
 
+		// The three readings of a call site (R-Args). Compile time known for
+		// `types.size_bits`' reason, stated on the signature for exactly its
+		// reason too: these are the loop control of the unroll in
+		// `std.functions.impl.pass_arguments`, and `opt.inlineFunctions`
+		// reaches a call to one before the late evaluation round the schedule
+		// adds for that unroll - so without the flag the call is replaced by
+		// the *bytes of the instruction* and the program executes a reflection
+		// opcode. An emitted `argument_count` is not an answer.
+		//
+		// Unlike the type queries, what makes the answer known is the argument
+		// rather than C-Type: an entity id is comptime only if whoever supplied
+		// it made it so, which is why `opt.lowerFunctionCalls` hands these a
+		// `Number` holding the id and not the entity.
+		export entity_function : alias = mizu.entity_query_t
+		export entity_with_number_function : alias = mizu.entity_with_number_t
+		// `types.comptime`, not a bare `comptime`: these sit directly in
+		// `meta`, where the type namespace's members are a `types.` away.
+		_ : type = types.comptime(entity_function)
+		_ : type = types.comptime(entity_with_number_function)
+
+		export argument_count : alias = mizu.doir.argument_count
+		export argument : alias = mizu.doir.argument
+		export parameter : alias = mizu.doir.parameter
+
 		// R-Square, discharged by construction: `meta.types.M(reflect(T))` and
 		// `reflect(std.types.M(T))` are not two paths that have to be kept in
 		// agreement here, they are the same instruction under two names. The
@@ -303,6 +327,193 @@ std : namespace = {
 		// TODO: `add_overload` is blocked upstream of the instruction set:
 		// `add_overload_t` returns `_`, so there is no type for an overload set
 		// and nothing for D-Deduce to solve. See `<divergences>`.
+
+		// -------------------------------------------------------------------
+		// The calling convention
+		// -------------------------------------------------------------------
+		// Four jumps between two labels, which is all a call is once the
+		// labels exist. `opt.claimFunctionLabels` puts an entry and an exit
+		// label into every function that still has to be emitted and records
+		// the pair on the function; `opt.lowerFunctionCalls` then hands `call`
+		// the entry label and `return` the exit one. So nothing below has to
+		// *find* a label - it is given one, and `find_label` turns it into the
+		// address the jump takes. That is the whole of the function-to-label
+		// problem, and it is solved in the store rather than here.
+		//
+		// `ra` is Mizu's return address register (x21, RISC-V's layout - see
+		// `mizu.opcode`'s `Registers`). `jump_to` hands back a pointer to the
+		// instruction after itself, so a call gets its return address for free
+		// and only has to say which register it lands in.
+		//
+		// All four are `always_inline` and `never_comptime`: they emit, their
+		// one argument is a compile time known entity, and without the second
+		// flag `sema.bubbleComptime` marks them folded and the evaluator runs
+		// the jumps instead of letting them be emitted - the same reason
+		// `if` and `while` above carry it.
+		impl : namespace = {
+			frame_t : type = (target: meta.entity)
+			_ : type = functions.always_inline(frame_t)
+			_ : type = functions.never_comptime(frame_t)
+
+			// One 8 byte slot, holding the return address `call` left in `ra`.
+			// It has to be spilled rather than left there because a call the
+			// body makes overwrites it, and the spill is unconditional because
+			// nothing here knows yet whether the body makes one - a leaf
+			// function pays a push and a pop it did not need. See
+			// `<divergences>`.
+			export prologue : frame_t = {
+				zero : mizu.u64 = 0
+				_ : _ = compiler.assembler.pin_register(mizu.u64, zero, mizu.x0)
+
+				%8 : pointer_sized = 8
+				_ : _ = mizu.stack_push_immediate(%8)
+
+				// Named, not computed: `ra` already holds the return address
+				// on entry, so the pin is the whole declaration - the trick
+				// `if` uses to name `x0`.
+				link : pointer_sized = 0
+				_ : _ = compiler.assembler.pin_register(pointer_sized, link, mizu.ra)
+				_ : _ = mizu.stack_store_u64(link, zero)
+			}
+
+			export epilogue : frame_t = {
+				zero : mizu.u64 = 0
+				_ : _ = compiler.assembler.pin_register(mizu.u64, zero, mizu.x0)
+
+				link : pointer_sized = mizu.stack_load_u64(zero)
+				%8 : pointer_sized = 8
+				_ : _ = mizu.stack_pop_immediate(%8)
+				_ : _ = mizu.jump_to(link)
+			}
+
+			// Where the whole convention is stated: `a0`. The machine's own
+			// `argument_registers(a0, a7)` says where arguments go and the
+			// compiler reads `slot` off it, but a result has no class to be
+			// the first member of, so this file names the register. Naming one
+			// is this file's business - `prologue` names `ra` and `if` names
+			// `x0` - and it is the only place the result convention is
+			// written down.
+			result_register : alias = mizu.a0
+
+			// One move per argument, and the loop that writes them is a
+			// *comptime* one: each argument goes in a different register, so
+			// there is nothing a runtime loop could emit once. The recursion
+			// is the loop - `execute_if` splices the arm only when the
+			// condition holds, so it terminates by not being spliced, which
+			// is the same mechanism the dispatches at the bottom of this file
+			// use to choose an arm.
+			//
+			// Loop control is written in raw `mizu.*` rather than in `add` and
+			// `is_less` below, for the dispatches' reason and more sharply: a
+			// `never_comptime` comparison would *emit* the test instead of
+			// folding it, and an unroll whose index is not a number is not an
+			// unroll.
+			// `i` is `comptime`, and that is not decoration either. The loop
+			// control has to fold in the *declaration*, because `deepCopy`
+			// carries the comptime flags into every inlined copy and
+			// `opt.inlineFunctions` reaches a call it cannot see is comptime
+			// before the evaluator does - which is how the dispatches at the
+			// bottom of this file manage it, with both operands of their
+			// `mizu.set_if_*` known there. A plain parameter is not known, so
+			// `set_if_less(i, count)` would be replaced by the bytes of the
+			// instruction and the unroll would never run.
+			pass_arguments_t : type = (function: meta.entity, call: meta.entity, i: mizu.comptime.u64)
+			_ : type = functions.always_inline(pass_arguments_t)
+			_ : type = functions.never_comptime(pass_arguments_t)
+
+			export pass_arguments : pass_arguments_t = {
+				count : index = meta.argument_count(call)
+				more : u1 = mizu.set_if_less(i, count)
+				arm : block = {
+					// Both sides of the convention, named rather than
+					// computed. `argument` hands back the argument's
+					// declaration and `parameter` the declaration it binds
+					// (WF-Arg makes both of those register names), and
+					// `unreflect_alias` turns an entity back into a name for
+					// it - so nothing is copied to get at either.
+					//
+					// `mizu.u64` and not `_`: D-Deduce solves parameters, not
+					// return types, so a hole here has nothing to be solved
+					// from. Every type in this layer is 64 bits wide.
+					a : meta.entity = meta.argument(call, i)
+					p : meta.entity = meta.parameter(function, i)
+					value : mizu.u64 = meta.unreflect_alias(a)
+					slot : mizu.u64 = meta.unreflect_alias(p)
+
+					// The move, and then the only thing that says where it
+					// went. `alias_temporaries` puts `moved` in the parameter's
+					// register, and the parameter's register is already the
+					// convention: `opt.assignTemporaries` numbers a parameter
+					// `-(index + 1)` and `opt.mapTemporaries` reads the i'th
+					// member of the machine's argument class off that. So no
+					// register is named here, `a0` is not spelled, and the
+					// caller and the callee cannot disagree about the slot
+					// because they are reading one fact.
+					//
+					// `copy` rather than aliasing the argument itself: the
+					// argument is the caller's value and may be live past the
+					// call or passed to a second one in another position, and
+					// a temporary united with two parameters would be asked
+					// for two registers at once.
+					moved : _ = std.copy(value)
+					_ : _ = unsafe.alias_temporaries(mizu.u64, moved, slot)
+
+					%1 : index = 1
+					next : index = mizu.add(i, %1)
+					_ : _ = pass_arguments(function, call, next)
+				}
+				_ : _ = execute_if(arm, more)
+			}
+
+			transfer_t : type = (target: meta.entity, function: meta.entity, call: meta.entity) -> mizu.u64
+			_ : type = functions.always_inline(transfer_t)
+			_ : type = functions.never_comptime(transfer_t)
+
+			export call : transfer_t = {
+				// The arguments first, and above the transfer: a move after
+				// the jump is a move the callee never sees.
+				%0 : index = 0
+				_ : _ = pass_arguments(function, call, %0)
+
+				// `target` is the callee's *entry label*, not the callee -
+				// see the header above. `find_label` reads the id
+				// `opt.mizu.materializeLabels` left on it.
+				addr : _ = find_label(target)
+				link : _ = jump_to(addr)
+				_ : _ = compiler.assembler.pin_register(pointer_sized, link, mizu.ra)
+
+				// Named, not computed, exactly as `prologue` names `ra`: the
+				// callee has already written this register, so the pin is the
+				// whole declaration and no load may be emitted for it. The
+				// `copy` is what carries it into the call site's own register,
+				// which `return` below pins it to - so the result is in the
+				// register the rest of the block expects without the
+				// allocator being told which one that is.
+				returned : mizu.u64 = 0
+				_ : _ = compiler.assembler.pin_register(mizu.u64, returned, result_register)
+				// `std.` qualified: `return` here would find `impl.return`
+				// below, since R-Unqual takes the nearest and the nearest is
+				// the member declared beside this one.
+				result : _ = copy(returned)
+				_ : _ = std.return(result)
+			}
+
+			return_t : type = (T: deduced type, value: T, target: meta.entity)
+			_ : type = functions.always_inline(return_t)
+			_ : type = functions.never_comptime(return_t)
+
+			export return : return_t = {
+				// Above the jump, or the callee leaves through the teardown
+				// before the result has been put anywhere the caller looks.
+				returned : T = copy(value)
+				_ : _ = compiler.assembler.pin_register(T, returned, result_register)
+
+				// The exit label, so every `return` in a body shares one
+				// teardown rather than repeating it (WF-Term).
+				addr : _ = find_label(target)
+				_ : _ = jump_to(addr)
+			}
+		}
 	}
 
 	// -----------------------------------------------------------------------
@@ -312,6 +523,10 @@ std : namespace = {
 	// already spent both of an `Opcode`'s operands, so `standard.doir`'s `help`
 	// string has nowhere to go. The location is the entity itself rather than a
 	// `location` value, for the reason `meta.source_location` above gives.
+	unsafe : namespace = {
+		export alias_temporaries : alias = compiler.assembler.alias_temporaries
+	}
+
 	diagnostics : namespace = {
 		export info : alias = mizu.doir.diagnostic_info
 		export warning : alias = mizu.doir.diagnostic_warning
@@ -339,13 +554,17 @@ std : namespace = {
 	// one nameable from here.
 	export cast : alias = mizu.convert_to_u64
 
-	// `mizu.convert_to_u64` is `registers[out] = registers[a]` - a plain
-	// register copy, which is what a POD copy is. V-Copy.
-	export copy : alias = mizu.convert_to_u64
+	// `copy` belongs here and is defined with the dispatches at the bottom
+	// instead, for `transition_comptime_to_runtime`'s reason below: it shares
+	// that one's type, which a dispatch declares.
 
 	// TODO: `move` invalidates its argument (V-Move) and is otherwise `copy`.
 	// Nothing enforces the invalidation yet - that needs liveness - so binding
 	// it to the same instruction would be a claim this file cannot make.
+
+	// `transition_comptime_to_runtime` belongs here and is defined with the
+	// dispatches at the bottom instead: it is one, and by C-Order a dispatch
+	// cannot be written above `execute_if`.
 
 	// -----------------------------------------------------------------------
 	// Control flow
@@ -408,12 +627,19 @@ std : namespace = {
 		_ : _ = branch_to(inverted, else_addr)
 
 		taken : _ = execute(then)
-		_ : _ = compiler.assembler.pin_register(mizu.u64, taken, mizu.x1)
 		_ : _ = jump_to(end_addr)
 
 		else_label : _ = label()
 		not_taken : _ = execute(else)
-		_ : _ = compiler.assembler.pin_register(mizu.u64, not_taken, mizu.x1)
+		// The two arms yield one value, so they have to land in one register -
+		// whichever the allocator picks, as long as it is the same one. Two
+		// pins to `mizu.x1` said that by naming a register, which is a
+		// machine's business and not this function's: `x1` is a caller-saved
+		// temporary here and would be something else on a backend with a
+		// different file, and a hand-picked register is one the allocator
+		// cannot reuse. `unsafe` because the allocator trusts it: a range it
+		// is told to merge is one it will not reuse in between.
+		_ : _ = unsafe.alias_temporaries(mizu.u64, taken, not_taken)
 
 		end_label : _ = label()
 		_ : _ = return(taken)
@@ -422,47 +648,85 @@ std : namespace = {
 	// -----------------------------------------------------------------------
 	// `while`
 	// -----------------------------------------------------------------------
-	// `if` with one arm, a label above the test, and a jump back to it below
-	// the body. The test is at the top rather than the bottom because the spec
-	// says the loop may run zero times.
+	// `condition` is a block, spliced *inside* the loop, which is what makes
+	// re-testing mean anything: a register is written once, so a test that is
+	// to answer differently on the second iteration has to be recomputed, and
+	// a block is the only thing that can be run twice. The block yields the
+	// `u1`, and `execute` hands it back in the register the branch reads.
 	//
-	// `condition` is a register the caller computed once, not a block, so
-	// re-testing it each time round only means anything if the body writes it
-	// again - which is what the pin is for. `x2` is where an iteration has to
-	// leave the next condition, exactly as `if`'s two arms agree on `x1` for
-	// their result, and a body that never writes it spins forever. The
-	// signature is the defect: `while` should take a `block` for its test the
-	// way `if` takes blocks for its arms, and a pinned register is as close as
-	// the declared one can be brought.
+	// The loop is rotated - the test sits at the bottom and is entered by a
+	// jump - so the spec's zero iterations costs one jump on entry rather than
+	// an inverted test and a second branch every time round. Which is also
+	// what keeps the test out of the evaluator's hands: `branch_to` carries
+	// `no_comptime` and `mizu.set_if_equal` deliberately does not, so an
+	// inverted test over a condition block that yields a compile time known
+	// value folds to a constant and the branch that was to end the loop is
+	// never emitted. Nothing is left to invert here.
+	//
+	// Nothing here names a register. `if` needs its two arms merged because
+	// they are two blocks that have to land in one register; a loop body is
+	// spliced once, so `return(value)` is the whole of it.
 	//
 	// The spec's result type is `pointer(typeof(body))` - null when the loop
 	// ran zero times - and this hands back the body's register instead.
 	// Nothing here can build that pointer: there is no allocation on this path
 	// and no null to store in it, so the caller cannot tell a loop that ran
 	// zero times from one whose last iteration yielded zero.
-	while_t : type = (condition: u1, body: block) -> _
+	while_t : type = (condition: block, body: block) -> _
 	_ : type = functions.always_inline(while_t)
 	_ : type = functions.never_comptime(while_t)
 	export while : while_t = {
-		zero : mizu.u64 = 0
-		_ : _ = compiler.assembler.pin_register(mizu.u64, zero, mizu.x0)
-		_ : _ = compiler.assembler.pin_register(u1, condition, mizu.x2)
-
 		// Both addresses are found once, above the loop, rather than each time
 		// round it: `find_label` searches the program, and the program does not
 		// move.
 		top_addr : _ = find_label(top_label)
-		end_addr : _ = find_label(end_label)
+		test_addr : _ = find_label(test_label)
+		_ : _ = jump_to(test_addr)
 
 		top_label : _ = label()
-		inverted : _ = mizu.set_if_equal(condition, zero)
-		_ : _ = branch_to(inverted, end_addr)
-
 		value : _ = execute(body)
-		_ : _ = compiler.assembler.pin_register(mizu.u64, value, mizu.x1)
-		_ : _ = jump_to(top_addr)
 
-		end_label : _ = label()
+		test_label : _ = label()
+		test : _ = execute(condition)
+		_ : _ = branch_to(test, top_addr)
+
+		_ : _ = return(value)
+	}
+
+	// -----------------------------------------------------------------------
+	// `for`
+	// -----------------------------------------------------------------------
+	// `while` with the two extra splice points a counted loop wants: `init`
+	// before the entry jump so it runs once, `step` between the body and the
+	// test so it runs after every iteration. The rotation is what makes that
+	// one ordering serve both - `step` lands ahead of the test without landing
+	// ahead of the first one.
+	//
+	// What it does *not* do is scope the loop variable. The four blocks are
+	// spliced at four separate points, each as a subblock of this body, so
+	// R-Unqual gives none of them a view of another's declarations: whatever
+	// `condition` and `step` share is declared in the caller and pinned, the
+	// way a `while` body's own state is. A `for` that owns its variable needs a
+	// block whose scope *encloses* the splices, which `execute` cannot express -
+	// it splices where the call stands.
+	for_t : type = (init: block, condition: block, step: block, body: block) -> _
+	_ : type = functions.always_inline(for_t)
+	_ : type = functions.never_comptime(for_t)
+	export for : for_t = {
+		top_addr : _ = find_label(top_label)
+		test_addr : _ = find_label(test_label)
+
+		_ : _ = execute(init)
+		_ : _ = jump_to(test_addr)
+
+		top_label : _ = label()
+		value : _ = execute(body)
+		_ : _ = execute(step)
+
+		test_label : _ = label()
+		test : _ = execute(condition)
+		_ : _ = branch_to(test, top_addr)
+
 		_ : _ = return(value)
 	}
 
@@ -590,10 +854,12 @@ std : namespace = {
 	// Two things this leans on, both argued at the schedule at the bottom of
 	// the file. `opt.inlineFunctions` has to leave the chain
 	// `kind` -> condition -> `execute_if` for the evaluator instead of
-	// replacing each link with the bytes of the instruction that computes it.
-	// And the arms are quoted blocks declared inside a function body, so they
-	// have to travel with a copy of that body - one arm per instantiation, each
-	// naming that instantiation's arguments.
+	// replacing each link with the bytes of the instruction that computes it -
+	// in the declaration above as much as in the copies, since inlining the
+	// chain here is inlining it in every copy made afterwards. And the arms are
+	// quoted blocks declared inside a function body, so they have to travel
+	// with a copy of that body - one arm per instantiation, each naming that
+	// instantiation's arguments.
 	//
 	// The conditions are written in `mizu.set_if_*` rather than in `is_equal`
 	// below, which would be a call to the very dispatch being defined.
@@ -611,6 +877,65 @@ std : namespace = {
 	predicate_t : type = (T: deduced type, v: T) -> u1
 	_ : type = functions.always_inline(predicate_t)
 	_ : type = functions.never_comptime(predicate_t)
+
+	// The `Values` member, here for the reason given there. Same shape and same
+	// tag as the arithmetic below, and `never_comptime` is not an optimization
+	// here but the whole point: its argument is comptime by definition, so
+	// C-Call would fold every call of it and the load would never be emitted.
+	transition_t : type = (T: deduced type, v: T) -> T
+	_ : type = functions.always_inline(transition_t)
+	_ : type = functions.never_comptime(transition_t)
+
+	// Two instructions, one encoding: `opt.mizu.materializeImmediates` splits
+	// the value into the two halves a 32 bit immediate field needs. They differ
+	// only in how they read it - an integer straight across, a float as the bit
+	// pattern of the double - which is the same two-way question `add` asks, so
+	// the signed and unsigned kinds share an arm here too.
+	export transition_comptime_to_runtime : transition_t = {
+		float_arm : block = {
+			loaded : T = mizu.load_f64_immediate(T, v)
+			_ : T = yield(loaded)
+		}
+		integer_arm : block = {
+			loaded : T = mizu.load_u64_immediate(T, v)
+			_ : T = yield(loaded)
+		}
+		kind : index = attributes.get_id_of_type(T)
+		floating : u1 = mizu.set_if_equal(kind, float_kind)
+		integral : u1 = mizu.set_if_not_equal(kind, float_kind)
+		float_result : _ = execute_if(float_arm, floating)
+		integer_result : _ = execute_if(integer_arm, integral)
+		_ : T = unsafe.alias_temporaries(T, float_result, integer_result)
+		_ : _ = return(float_result)
+		_ : _ = return(integer_result) // TODO: Why does emission hinge on a return? Can it hinge on a future use instead?
+	}
+
+	// V-Copy. `transition_comptime_to_runtime`'s sibling, and it shares that
+	// one's type: the other puts a compile time known value into its register,
+	// this one puts a value into a *different* register.
+	//
+	// `v + 0`, with the zero coming from `x0`, which reads as zero on every
+	// Mizu machine and so costs no instruction of its own - the trick `if` uses
+	// to name it. It was `mizu.convert_to_u64`, which is the same move (its
+	// body is `registers[out] = registers[a]` and converts nothing) under a
+	// foldable type, and that is the whole difference: a copy whose source is
+	// compile time known - which an argument is as often as not - folded to its
+	// own operand and emitted nothing, leaving the register it was to write
+	// unwritten. `never_comptime` here says it must not.
+	//
+	// The flag sits on this type rather than on `mizu.add`'s because folding
+	// arithmetic is exactly what makes the dispatches work; `v` reaching
+	// `mizu.add` as a *parameter* is what keeps the inner call unfoldable.
+	//
+	// `mizu.add` rather than `add` below: integer addition is bit exact for any
+	// 64 bit pattern, and the dispatch would add `0.0` to an `f64`, which is not
+	// the same thing for a signed zero. A copy moves bits, not numbers.
+	export copy : transition_t = {
+		zero : mizu.u64 = 0
+		_ : _ = compiler.assembler.pin_register(mizu.u64, zero, mizu.x0)
+		moved : _ = mizu.add(v, zero)
+		_ : _ = return(moved)
+	}
 
 	// Two's complement is what makes this a two-way question rather than a
 	// three-way one: one instruction adds signed and unsigned alike, and the
@@ -630,8 +955,9 @@ std : namespace = {
 		integral : u1 = mizu.set_if_not_equal(kind, float_kind)
 		float_result : _ = execute_if(float_arm, floating)
 		integer_result : _ = execute_if(integer_arm, integral)
+		_ : T = unsafe.alias_temporaries(T, float_result, integer_result)
 		_ : _ = return(float_result)
-		_ : _ = return(integer_result)
+		_ : _ = return(integer_result) // TODO: Why does emission hinge on a return? Can it hinge on a future use instead?
 	}
 
 	export subtract : binary_t = {
@@ -648,8 +974,9 @@ std : namespace = {
 		integral : u1 = mizu.set_if_not_equal(kind, float_kind)
 		float_result : _ = execute_if(float_arm, floating)
 		integer_result : _ = execute_if(integer_arm, integral)
+		_ : T = unsafe.alias_temporaries(T, float_result, integer_result)
 		_ : _ = return(float_result)
-		_ : _ = return(integer_result)
+		_ : _ = return(integer_result) // TODO: Why does emission hinge on a return? Can it hinge on a future use instead?
 	}
 
 	export multiply : binary_t = {
@@ -666,8 +993,9 @@ std : namespace = {
 		integral : u1 = mizu.set_if_not_equal(kind, float_kind)
 		float_result : _ = execute_if(float_arm, floating)
 		integer_result : _ = execute_if(integer_arm, integral)
+		_ : T = unsafe.alias_temporaries(T, float_result, integer_result)
 		_ : _ = return(float_result)
-		_ : _ = return(integer_result)
+		_ : _ = return(integer_result) // TODO: Why does emission hinge on a return? Can it hinge on a future use instead?
 	}
 
 	// Two arms, not three, though this is where signedness starts to matter:
@@ -690,8 +1018,9 @@ std : namespace = {
 		integral : u1 = mizu.set_if_not_equal(kind, float_kind)
 		float_result : _ = execute_if(float_arm, floating)
 		integer_result : _ = execute_if(integer_arm, integral)
+		_ : T = unsafe.alias_temporaries(T, float_result, integer_result)
 		_ : _ = return(float_result)
-		_ : _ = return(integer_result)
+		_ : _ = return(integer_result) // TODO: Why does emission hinge on a return? Can it hinge on a future use instead?
 	}
 
 	// Not a dispatch, and this is the rule the ones above follow: an operation
@@ -726,8 +1055,9 @@ std : namespace = {
 		integral : u1 = mizu.set_if_not_equal(kind, float_kind)
 		float_result : _ = execute_if(float_arm, floating)
 		integer_result : _ = execute_if(integer_arm, integral)
+		_ : T = unsafe.alias_temporaries(T, float_result, integer_result)
 		_ : _ = return(float_result)
-		_ : _ = return(integer_result)
+		_ : _ = return(integer_result) // TODO: Why does emission hinge on a return? Can it hinge on a future use instead?
 	}
 
 	export is_not_equal : compare_t = {
@@ -744,8 +1074,9 @@ std : namespace = {
 		integral : u1 = mizu.set_if_not_equal(kind, float_kind)
 		float_result : _ = execute_if(float_arm, floating)
 		integer_result : _ = execute_if(integer_arm, integral)
+		_ : T = unsafe.alias_temporaries(T, float_result, integer_result)
 		_ : _ = return(float_result)
-		_ : _ = return(integer_result)
+		_ : _ = return(integer_result) // TODO: Why does emission hinge on a return? Can it hinge on a future use instead?
 	}
 
 	export is_less : compare_t = {
@@ -768,6 +1099,8 @@ std : namespace = {
 		float_result : _ = execute_if(float_arm, floating)
 		signed_result : _ = execute_if(signed_arm, signed)
 		unsigned_result : _ = execute_if(unsigned_arm, unsigned)
+		_ : T = unsafe.alias_temporaries(T, float_result, signed_result)
+		_ : T = unsafe.alias_temporaries(T, signed_result, unsigned_result)
 		_ : _ = return(float_result)
 		_ : _ = return(signed_result)
 		_ : _ = return(unsigned_result)
@@ -793,6 +1126,8 @@ std : namespace = {
 		float_result : _ = execute_if(float_arm, floating)
 		signed_result : _ = execute_if(signed_arm, signed)
 		unsigned_result : _ = execute_if(unsigned_arm, unsigned)
+		_ : T = unsafe.alias_temporaries(T, float_result, signed_result)
+		_ : T = unsafe.alias_temporaries(T, signed_result, unsigned_result)
 		_ : _ = return(float_result)
 		_ : _ = return(signed_result)
 		_ : _ = return(unsigned_result)
@@ -856,6 +1191,8 @@ std : namespace = {
 		float_result : _ = execute_if(float_arm, floating)
 		signed_result : _ = execute_if(signed_arm, signed)
 		unsigned_result : _ = execute_if(unsigned_arm, unsigned)
+		_ : T = unsafe.alias_temporaries(T, float_result, signed_result)
+		_ : T = unsafe.alias_temporaries(T, signed_result, unsigned_result)
 		_ : _ = return(float_result)
 		_ : _ = return(signed_result)
 		_ : _ = return(unsigned_result)
@@ -885,6 +1222,8 @@ std : namespace = {
 		float_result : _ = execute_if(float_arm, floating)
 		signed_result : _ = execute_if(signed_arm, signed)
 		unsigned_result : _ = execute_if(unsigned_arm, unsigned)
+		_ : T = unsafe.alias_temporaries(T, float_result, signed_result)
+		_ : T = unsafe.alias_temporaries(T, signed_result, unsigned_result)
 		_ : _ = return(float_result)
 		_ : _ = return(signed_result)
 		_ : _ = return(unsigned_result)
@@ -958,7 +1297,8 @@ schedule : compiler.byte_pointer = """
 		applyGlobally(sequential(
 			sort,
 			depthFirst(pinRegisters),
-			breadthFirst(allocateRegisters),
+			breadthFirst(computeAllocatorInputs),
+			assignTemporaries,
 			depthFirst(pinRegisters)
 		)),
 
@@ -985,11 +1325,76 @@ schedule : compiler.byte_pointer = """
 		// and does nothing else.
 		breadthFirst(stripFreestandingBlocks),
 
+		// 5. The functions inlining did not consume, which have to be emitted
+		//    rather than substituted. Two passes because a call can precede
+		//    its callee: the first gives each surviving function an entry and
+		//    an exit label and records the pair on it, the second rewrites
+		//    calls and returns into jumps to those labels. Here rather than
+		//    earlier because "still standing" is only true once inlining and
+		//    the comptime dispatch above have taken out everything they were
+		//    going to.
+		// The bodies must not sit in the instruction stream they are called
+		// from, or the top level code walks into the first one instead of
+		// reaching the end. `sort` after it because reordering a block leaves
+		// its children no longer in the post-order the ids carry.
+		sinkDeclarations,
+		sort,
+		depthFirst(claimFunctionLabels),
+		depthFirst(lowerFunctionCalls),
+		// After `lowerFunctionCalls`, which finds a `return`'s owner by walking
+		// up to the enclosing function, and before the register round, which is
+		// where a lifted body's instructions get allocated alongside the top
+		// level code rather than not at all.
+		liftFunctionBodies,
+		// Again, for the body that just came out. `stripFreestandingBlocks`
+		// leaves a quoted block inside a function body alone and says so on
+		// the grounds that nothing emits one; a lifted body is emitted, so its
+		// spent dispatch arms - which are at module scope now like any other -
+		// have to go the way the ones at the top level went above.
+		breadthFirst(stripFreestandingBlocks),
+		// The bodies those two spliced in - `impl.call`, `impl.prologue` and
+		// the rest - are `always_inline`, and the register round below has to
+		// see the instructions inside them rather than the calls to them.
+		breadthFirst(inlineFunctions),
+
+		// `impl.call`'s marshalling is comptime work - a recursive unroll over
+		// the call's arguments, carrying `meta.argument_count`, `execute_if`
+		// and the `a0 + i` that names each slot - and it arrives *after* the
+		// evaluation above, because `lowerFunctionCalls` is what put it there.
+		// So the evaluator runs again.
+		//
+		// To a fixed point, which the unroll is the reason for: each turn
+		// splices the next call to `pass_arguments`, and a depth first walk
+		// has already gone past the place it appears. One walk unrolls one
+		// argument.
+		// `bubbleComptime` first, and it is not optional: C-Call is what marks
+		// a call compile time known, it runs in `canonicalizeSchedule` long
+		// before any of this, and nothing has marked the calls
+		// `lowerFunctionCalls` just spliced. Without it the evaluator finds no
+		// comptime call to evaluate and the unroll stays a declaration.
+		fixedPoint(sequential(
+			depthFirst(bubbleComptime),
+			depthFirst(comptimeEvaluateVisitor)
+		)),
+		// The arms the unroll spent, and the `copy` bodies it spliced - the
+		// same pair of chores the evaluation above owes, for the same reasons.
+		breadthFirst(stripFreestandingBlocks),
+		breadthFirst(inlineFunctions),
+
 		applyGlobally(sequential(
 			depthFirst(pinRegisters),
-			breadthFirst(allocateRegisters),
+			breadthFirst(computeAllocatorInputs),
+			assignTemporaries,
 			depthFirst(pinRegisters)
 		)),
+		// 6. `materializeImmediates` a second time, for the copies inlining
+		//    made. `std.transition_comptime_to_runtime` wraps the immediate
+		//    loads, so inside its declaration the value is a parameter and the
+		//    pass leaves the call alone; the constant only exists in the copy a
+		//    call site got. Here rather than straight after the inlining
+		//    because it reads the destination's register off the entity and a
+		//    copy carries none until the round above.
+		depthFirst(materializeImmediates),
 		depthFirst(materializeLabels),
 		// `materializeLabels` does not emit a whole label instruction: it emits
 		// the operand half and an `inline mizu.label_op()` for the opcode's
