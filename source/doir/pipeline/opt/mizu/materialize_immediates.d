@@ -23,6 +23,21 @@ import doir.string_helpers : InternedString;
 @nogc nothrow:
 
 
+/// Whether `e` is a call into the `compiler` namespace that still stands -
+/// something only `opt.computeCompilerNamespace` can turn into a value.
+private bool unfoldedCompilerCall(ref Module mod, EntityId e) @trusted {
+	immutable v = resolveAlias(mod, e);
+	if (!hasComponent!Call(mod, v)) return false;
+	immutable callee = resolveAlias(mod, getComponent!Call(mod, v).related[0]);
+	if (callee == invalidEntity) return false;
+	immutable parent = findParent(mod, callee);
+	// `invalidEntity` is 0 and so is an unresolvable name, so an unparented
+	// callee in a module with no `compiler` namespace would compare equal.
+	if (parent == invalidEntity) return false;
+	return parent == resolveCached(mod, "compiler", 1, true)
+		|| parent == resolveCached(mod, "compiler.assembler", 1, true);
+}
+
 bool materializeImmediates(ref Module mod, EntityId subtree) @trusted {
 	if (!hasComponent!Call(mod, subtree)) return true;
 
@@ -72,10 +87,29 @@ bool materializeImmediates(ref Module mod, EntityId subtree) @trusted {
 		// is the wrapper, and its body is walked whether or not anything calls
 		// it. The constant exists only in the copy a call site gets, which is
 		// why `standard.mizu.doir` schedules this pass a second time after the
-		// inlining. Nothing else reaches here with an argument that is not a
-		// value, so the test is the whole of the distinction.
+		// inlining.
 		if (hasComponent!FunctionParameter(mod, inputs[1])) return true;
-		// TODO: It would probably be good to relax this constraint in the future
+		// And so is anything else inside a function body, for the same reason
+		// one step removed: `types.field_pointer` transitions a *derived*
+		// constant - `field_offset_bits(field) >> 3` - which is a call rather
+		// than the parameter it reads, and folds only once a call site has
+		// bound `field`. The body is walked before that happens either way.
+		if (findFunctionInsideOf(mod, subtree) != invalidEntity) return true;
+		// And a block lowered for comptime, for the reason the register check
+		// below gives: `ownedByCurrentLowering` hands the code *around* the
+		// throwaway block to this same schedule, so the walk reaches a call site
+		// whose constant the outer schedule has not folded yet. Not this run's
+		// call.
+		if (loweringThrowawayBlock()) return true;
+		// And a `compiler.*` fold that has not happened yet. The value is not
+		// non-constant, it is not constant *yet*: `types.field_pointer`
+		// transitions `field_offset_bits(field) >> 3`, and `compiler.shift_right`
+		// is `opt.computeCompilerNamespace`'s to fold and nobody else's - the
+		// evaluator declines every `compiler.*` callee - so at this point in the
+		// mizu schedule it is still a standing call. `mizu.doir` runs that pass
+		// and then this one again for exactly this case, and a `compiler.*` call
+		// that never folds is that pass's error to raise rather than ours.
+		if (unfoldedCompilerCall(mod, inputs[1])) return true;
 		parameterError(mod, subtree, name, 0, " must evaluate to a numeric constant");
 		return false;
 	}

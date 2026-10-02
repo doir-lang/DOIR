@@ -49,43 +49,44 @@ _ : _ = mizu.debug_print(dbg_v_x)
 dbg_v_y : std.f64 = std.pointers.load(v_y)
 _ : _ = mizu.debug_print(dbg_v_y)
 
-// my_add : (T: deduced type, a: T, b: T) -> T = {
-//     is_f64 : std.u1 = std.types.equivalent(T, std.f64) // they are the same (once aliases are resolved) entity
-//     is_int : std.u1 = std.types.convertible(T, std.u64) // they are structurally compatible 
+_ : _ = std.halt()
 
-//     float_arm : block = {
-//         c : _ = mizu.add_f64(a, b)
-//         _ : _ = std.return(c)
-//     }
-//     int_arm : block = {
-//         c : _ = mizu.add(a, b)
-//         _ : _ = std.return(c)
-//     }
-//     fail_arm : block = {
-//         error : std.null_terminated_byte_pointer = "Invalid Type\0"
-//         T_e : std.meta.entity = std.meta.reflect(T)
-//         _ : _ = std.diagnostics.error(error, T_e)
-//     }
+my_add : (T: deduced type, a: T, b: T) -> T = {
+    is_f64 : std.u1 = std.types.equivalent(T, std.f64) // they are the same (once aliases are resolved) entity
+    is_int : std.u1 = std.types.convertible(T, std.u64) // they are structurally compatible 
 
-//     else_arm : block = {
-//         _ : _ = std.if(is_int, int_arm, fail_arm)
-//     }
-//     _ : _  = std.if(is_f64, float_arm, else_arm)
-// }
+    float_arm : block = {
+        c : _ = mizu.add_f64(a, b)
+        _ : _ = std.return(c)
+    }
+    int_arm : block = {
+        c : _ = mizu.add(a, b)
+        _ : _ = std.return(c)
+    }
+    fail_arm : block = {
+        error : std.null_terminated_byte_pointer = "Invalid Type\0"
+        T_e : std.meta.entity = std.meta.reflect(T)
+        _ : _ = std.diagnostics.error(error, T_e)
+    }
 
-// Please ignore everything below this point... I intend to ask about it in a future stage
-// mizu_add_t : type = (a: mizu.u64, b: mizu.u64) -> mizu.u64
-// _ : _ = std.functions.always_inline(mizu_add_t)
-// mizu_add : (a: mizu.u64, b: mizu.u64) -> mizu.u64 = {
-//     rega : compiler.assembler.register = compiler.assembler.register_for(mizu.u64, a)
-//     regb : compiler.assembler.register = compiler.assembler.register_for(mizu.u64, b)
-//     regret : compiler.assembler.register = compiler.assembler.return_register(mizu.u64)
-//     %69 : compiler.byte_pointer = "\x25\x00\x00\x00\x00\x00\x00\x00"
-//     _ : compiler.byte = compiler.emit_bytes(%69)
-//     _ : compiler.assembler.register = inline mizu.emit_register(regret)
-//     _ : compiler.assembler.register = inline mizu.emit_register(rega)
-//     _ : compiler.assembler.register = inline mizu.emit_register(regb)
-//     %70 : compiler.byte_pointer = "\x00\x00"
-//     _ : compiler.byte = compiler.emit_bytes(%70)
-//     _ : mizu.u64 = compiler.indicate_return(mizu.u64)
-// }
+    else_arm : block = {
+        _ : void = std.if(is_int, int_arm, fail_arm)
+    }
+    _ : void = std.if(is_f64, float_arm, else_arm)
+}
+
+mizu_add_t : type = (a: mizu.u64, b: mizu.u64) -> mizu.u64
+_ : _ = std.functions.always_inline(mizu_add_t)
+mizu_add : (a: mizu.u64, b: mizu.u64) -> mizu.u64 = {
+    rega : compiler.assembler.register = compiler.assembler.register_for(mizu.u64, a)
+    regb : compiler.assembler.register = compiler.assembler.register_for(mizu.u64, b)
+    regret : compiler.assembler.register = compiler.assembler.return_register(mizu.u64)
+    %69 : compiler.byte_pointer = "\x25\x00\x00\x00\x00\x00\x00\x00"
+    _ : compiler.byte = compiler.emit_bytes(%69)
+    _ : compiler.assembler.register = inline mizu.emit_register(regret)
+    _ : compiler.assembler.register = inline mizu.emit_register(rega)
+    _ : compiler.assembler.register = inline mizu.emit_register(regb)
+    %70 : compiler.byte_pointer = "\x00\x00"
+    _ : compiler.byte = compiler.emit_bytes(%70)
+    _ : mizu.u64 = compiler.indicate_return(mizu.u64)
+}

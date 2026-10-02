@@ -237,19 +237,25 @@ extern(C) void* typeIs(Opcode* pc, ulong* registers, RegistersAndStack* env, uby
 	mixin(mizuNext);
 }
 
+/// `sema.typeSizeBits` rather than the `TypeDefinition` directly, the way
+/// `fieldOffsetBits` below reads through `sema.fieldOffsetBits`: a pointer
+/// carries a `Pointer` and no laid-out definition, so reading the component
+/// answers zero for every pointer type there is.
 extern(C) void* typeSizeBits(Opcode* pc, ulong* registers, RegistersAndStack* env, ubyte* sp) @trusted {
+	import doir.pipeline.sema.type_properties : sizeOf = typeSizeBits;
+
 	auto mod = &storedModule(env);
 	immutable e = resolveAlias(*mod, cast(EntityId) registers[pc.a]);
-	registers[pc.out_] = hasComponent!TypeDefinition(*mod, e)
-		? getComponent!TypeDefinition(*mod, e).size : 0;
+	registers[pc.out_] = sizeOf(*mod, e);
 	mixin(mizuNext);
 }
 
 extern(C) void* typeAlignBits(Opcode* pc, ulong* registers, RegistersAndStack* env, ubyte* sp) @trusted {
+	import doir.pipeline.sema.type_properties : alignmentOf = typeAlignmentBits;
+
 	auto mod = &storedModule(env);
 	immutable e = resolveAlias(*mod, cast(EntityId) registers[pc.a]);
-	registers[pc.out_] = hasComponent!TypeDefinition(*mod, e)
-		? getComponent!TypeDefinition(*mod, e).alignment : 0;
+	registers[pc.out_] = alignmentOf(*mod, e);
 	mixin(mizuNext);
 }
 
@@ -694,6 +700,40 @@ extern(C) void* parameter(Opcode* pc, ulong* registers, RegistersAndStack* env, 
 }
 
 
+// --- type identity ----------------------------------------------------------
+
+/// A-Res: whether two types are the *same* entity once the alias chains are
+/// followed. Identity, not agreement - `type_equivalent(f64, u64)` in an
+/// assembler layer where both are `base_type(64, 64)` is false where
+/// `type_convertible` is true, which is the distinction a program dispatching
+/// on a deduced type needs and the one S-Struct alone cannot make.
+///
+/// Appended below `parameter` for the reason stated there: these ids are baked
+/// into `mizu.doir`, so a new instruction goes at the end.
+extern(C) void* typeEquivalent(Opcode* pc, ulong* registers, RegistersAndStack* env, ubyte* sp) @trusted {
+	auto mod = &storedModule(env);
+	immutable a = resolveAlias(*mod, cast(EntityId) registers[pc.a]);
+	immutable b = resolveAlias(*mod, cast(EntityId) registers[pc.b]);
+	registers[pc.out_] = a == b ? 1 : 0;
+	mixin(mizuNext);
+}
+
+/// S-Struct, answered by `sema.typesAgree` rather than by a second comparison
+/// beside it: a program asking whether one type converts to another is asking
+/// what the type checker would accept, and two answers to that would drift.
+/// Its one-sidedness about ignorance comes along - a type whose layout nothing
+/// has folded yet agrees with everything - so this is only as sharp as what ran
+/// before it (A-Ident).
+extern(C) void* typeConvertible(Opcode* pc, ulong* registers, RegistersAndStack* env, ubyte* sp) @trusted {
+	import doir.pipeline.sema.type_check : typesAgree;
+
+	auto mod = &storedModule(env);
+	registers[pc.out_] = typesAgree(*mod,
+		cast(EntityId) registers[pc.a], cast(EntityId) registers[pc.b]) ? 1 : 0;
+	mixin(mizuNext);
+}
+
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -899,5 +939,37 @@ unittest { // the queries fold to numbers the compiler can read back
 	assert(folded(mod, root, "size") == 16);
 	assert(folded(mod, root, "align") == 8);
 	assert(folded(mod, root, "isty") == 1);
+	diagnostics().clear();
+}
+
+unittest { // A-Res identity against S-Struct agreement: one layout, two types
+	Module mod;
+	EntityId root;
+	scope(exit) freeModule(mod);
+
+	assert(compileWithMizu(
+		"%64 : mizu.comptime.u64 = 64\n"
+		~ "%8 : mizu.comptime.u64 = 8\n"
+		~ "word : type = mizu.doir.type_base(%64, %64)\n"
+		~ "other : type = mizu.doir.type_base(%64, %64)\n"
+		~ "small : type = mizu.doir.type_base(%8, %8)\n"
+		~ "handle : alias = word\n"
+		~ "same : u64 = mizu.doir.type_equivalent(word, handle)\n"
+		~ "twins : u64 = mizu.doir.type_equivalent(word, other)\n"
+		~ "fits : u64 = mizu.doir.type_convertible(word, other)\n"
+		~ "narrow : u64 = mizu.doir.type_convertible(word, small)\n", mod, root));
+
+	static real folded(ref Module mod, EntityId root, const(char)[] name) {
+		immutable e = resolveLookupName(mod, internIn(mod, name), root);
+		assert(e != invalidEntity);
+		assert(hasComponent!ComptimeNumber(mod, e));
+		return getComponent!ComptimeNumber(mod, e).value;
+	}
+
+	assert(folded(mod, root, "same") == 1);   // through the alias (A-Res)
+	// The distinction the pair exists for: same layout, not the same type.
+	assert(folded(mod, root, "twins") == 0);
+	assert(folded(mod, root, "fits") == 1);
+	assert(folded(mod, root, "narrow") == 0);
 	diagnostics().clear();
 }

@@ -682,6 +682,11 @@ $B_(i+1) = "Parent"(B_i)$, terminating at the root.
   meaningful operation rather than a curiosity. A type's identity is its layout
   together with its discriminator, and nothing else -- not the entity that
   happens to carry it, and not the name it was declared under.
+  `types.convertible` is what reads the rule; `types.equivalent` asks the
+  sharper question beside it --
+  A-Res identity, the same entity once the aliases are followed -- because the
+  rule alone cannot distinguish two types of one layout, and a function
+  dispatching on a deduced parameter has to.
 ]
 
 #rule("S-Field", "Field offsets", "impl",

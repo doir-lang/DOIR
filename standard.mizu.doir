@@ -167,6 +167,17 @@ std : namespace = {
 		export field_offset_bits : alias = mizu.doir.field_offset_bits
 		_ : type = comptime(field_function)
 
+		// Asks two types rather than one, and answers about the pair: A-Res
+		// identity, or S-Struct agreement. Both are needed because S-Struct
+		// cannot tell them apart - `f64` and `u64` are both `base_type(64, 64)`
+		// here, so they are inter-convertible and are still not one type, and a
+		// function dispatching on a deduced `T` has to ask the sharper question
+		// first.
+		export compare_function : alias = mizu.type_compare_t
+		export equivalent : alias = mizu.doir.type_equivalent
+		export convertible : alias = mizu.doir.type_convertible
+		_ : type = comptime(compare_function)
+
 		// Every query sharing this signature asks a question *about a type*,
 		// and a type is compile time known (C-Type), so every answer is. Saying
 		// so is not decoration: `sema.bubbleComptime` runs once, in
@@ -214,6 +225,14 @@ std : namespace = {
 			%3 : index = 3
 			offset_bits : index = field_offset_bits(field)
 			offset : index = compiler.shift_right(offset_bits, %3)
+			// `mizu.add` is register-register and `offset` is a folded constant:
+			// it gets an assigned register but nothing ever writes it, so the
+			// add read whatever the last instruction had left there. The
+			// transition is what emits the load, and `materializeImmediates`
+			// takes the destination off the value it is handed - so the load
+			// lands in `offset`'s own register and the add below still names
+			// `offset`.
+			_ : index = transition_comptime_to_runtime(offset)
 			ptr : _ = mizu.add(object, offset)
 			_ : _ = return(ptr)
 		}
@@ -758,16 +777,30 @@ std : namespace = {
 
 	pointers : namespace = {
 		// TODO: `load` and `store` dispatch on the size of `T` across the four
-		// `stack_load_u*` / `stack_store_u*`. These are the 64 bit case.
-		export load : alias = mizu.stack_load_u64
-		export store : alias = mizu.stack_store_u64
+		// `pointer_load_u*` / `pointer_store_u*`. These are the 64 bit case.
+		//
+		// `pointer_*` and not `stack_*`: the stack pair takes an offset from
+		// `sp`, so handing it an address - which is what `types.field_pointer`
+		// and `stack.allocate` give back - added a pointer to the stack pointer
+		// and walked off the stack. The `pointer_*` family is the same code
+		// with the register read as the address it is.
+		export load : alias = mizu.pointer_load_u64
 
-		// TODO: Mizu has no instruction that dereferences a pointer. The
-		// closest is `unsafe.copy_memory`, which reads its *output* register as
-		// the destination pointer and so cannot be bound at all under the
-		// calling convention `mizu.doir` emits. A `pointer_load_u{8,16,32,64}`
-		// / `pointer_store_u{8,16,32,64}` family - the `stack_load_*` code with
-		// `sp + offset` replaced by the register - is what these two want.
+		// Not an alias, for the one reason: `pointer_store_u64` takes its
+		// destination *last*, the way `stack_store_u64` takes its offset last,
+		// and `standard.doir` declares this one with the pointer first. The
+		// swap has to happen on one side or the other and a body here is the
+		// cheaper of the two - it inlines to the same single instruction.
+		store_t : type = (pointer : index, value : index) -> index
+		_ : type = functions.always_inline(store_t)
+		// Emits; never runs. Without this a store through a compile time known
+		// address would be handed to the evaluator, which would write into the
+		// comptime VM's memory instead of emitting.
+		_ : type = functions.never_comptime(store_t)
+		export store : store_t = {
+			r : _ = mizu.pointer_store_u64(value, pointer)
+			_ : _ = return(r)
+		}
 
 		// Registers are already immutable (SSA); memory reached through a
 		// pointer is the only thing that is not.
@@ -1404,6 +1437,22 @@ schedule : compiler.byte_pointer = """
 		// point 3 above does, means paying it here instead - without this line
 		// each label emits eight bytes rather than sixteen and every
 		// instruction after it decodes against the wrong boundary.
+		breadthFirst(inlineFunctions),
+		breadthFirst(computeCompilerNamespace!false),
+		// A third encode round, for an immediate that is *derived*:
+		// `types.field_pointer` transitions `field_offset_bits(field) >> 3`, and
+		// `compiler.shift_right` is `computeCompilerNamespace`'s to fold and
+		// nobody else's - the evaluator declines every `compiler.*` callee. So
+		// at the round above the value was a standing call rather than a number
+		// and `materializeImmediates` declined it; the line before this one is
+		// what made it a number. Then the inliner and the fold it owes, exactly
+		// as the first two rounds owed them.
+		//
+		// It cannot move up to join them: folding the arithmetic any earlier
+		// means folding `compiler.truncate_to_byte` too, and `mizu.doir`'s label
+		// encoder truncates an id that `materializeLabels` has not handed out
+		// yet.
+		depthFirst(materializeImmediates),
 		breadthFirst(inlineFunctions),
 		breadthFirst(computeCompilerNamespace!false),
 		breadthFirst(computeCompilerNamespace!true)

@@ -335,6 +335,23 @@ private ulong argumentValue(ref Module mod, EntityId e) @trusted {
 	immutable type = resolveCached(mod, "type", 1, true);
 	immutable blockType = resolveCached(mod, "block", 1, true);
 
+	// Before the number clauses, and that order is load-bearing. A type built
+	// by a comptime call - `types.pointer(vec2)`, `compiler.base_type(64, 64)` -
+	// is one `typePointer`/`typeBase` collapsed onto its own call, so the result
+	// register holds that entity's id and `attachComptimeNumberI64` writes it
+	// back as a `ComptimeNumber`. `canon.sort` then renumbers the entity and
+	// leaves the number alone, because a `ComptimeNumber` is a value and
+	// nothing marks which values are ids. Reading it afterwards hands the VM a
+	// stale id, and a stale id is some unrelated entity with no `TypeDefinition`
+	// - so `size_bits` answered 0 for every type a comptime call produced.
+	//
+	// `TypeDefinition` as well as `TypeOf == type`: an instruction that builds
+	// a type leaves the definition and no declared type.
+	if (hasComponent!TypeDefinition(mod, e) || isAggregateField(mod, e)
+		|| (hasComponent!TypeOf(mod, e)
+			&& (getComponent!TypeOf(mod, e).related[0] == blockType
+				|| getComponent!TypeOf(mod, e).related[0] == type)))
+		return resolveAlias(mod, e);
 	if (hasComponent!Number(mod, e))
 		return cast(ulong) getComponent!Number(mod, e).value;
 	if (hasComponent!ComptimeNumber(mod, e))
@@ -343,13 +360,6 @@ private ulong argumentValue(ref Module mod, EntityId e) @trusted {
 		return cast(ulong) cast(size_t) getComponent!DString(mod, e).value.view.ptr;
 	if (hasComponent!ComptimeString(mod, e))
 		return cast(ulong) cast(size_t) getComponent!ComptimeString(mod, e).value.view.ptr;
-	// `TypeDefinition` as well as `TypeOf == type`: an instruction that builds
-	// a type leaves the definition and no declared type.
-	if (hasComponent!TypeDefinition(mod, e) || isAggregateField(mod, e)
-		|| (hasComponent!TypeOf(mod, e)
-			&& (getComponent!TypeOf(mod, e).related[0] == blockType
-				|| getComponent!TypeOf(mod, e).related[0] == type)))
-		return resolveAlias(mod, e);
 
 	// Unreachable: `collectRegion` only completes when every argument is one of
 	// the above or another call in the region, and a region is what gets here.

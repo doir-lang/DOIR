@@ -71,6 +71,13 @@ mizu : namespace = {
 	type_query_t : type = (T : type) -> u64
 	_ : type = compiler.always_inline(type_query_t)
 	_ : type = compiler.never_monomorphize(type_query_t)
+	// Two types in, a truth value out: `equivalent` is A-Res identity and
+	// `convertible` is S-Struct agreement, and the pair exists because the
+	// rule cannot tell them apart - two types of one layout are
+	// inter-convertible and are still not the same type.
+	type_compare_t : type = (a : type, b : type) -> u64
+	_ : type = compiler.always_inline(type_compare_t)
+	_ : type = compiler.never_monomorphize(type_compare_t)
 	// Asks a *field* rather than a type, so `u64` in rather than `type` in:
 	// what the register carries is the field's entity, the same crossing
 	// every reflection instruction below makes. Plain `u64` rather than a
@@ -881,10 +888,10 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	convert_to_f32 : one_parameters_t = {
+	pointer_load_u64 : one_parameters_effect_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%107 : compiler.byte_pointer = "\x31\x00\x00\x00\x00\x00\x00\x00"
+		%107 : compiler.byte_pointer = "\x64\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%107)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
@@ -893,22 +900,24 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	convert_signed_to_f32 : one_parameters_t = {
+	pointer_store_u64 : two_parameters_effect_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
+		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%109 : compiler.byte_pointer = "\x32\x00\x00\x00\x00\x00\x00\x00"
+		%109 : compiler.byte_pointer = "\x65\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%109)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
-		%110 : compiler.byte_pointer = "\x00\x00\x00\x00"
+		_ : compiler.assembler.register = inline emit_register(regb)
+		%110 : compiler.byte_pointer = "\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%110)
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	convert_from_f32 : one_parameters_t = {
+	pointer_load_u32 : one_parameters_effect_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%111 : compiler.byte_pointer = "\x33\x00\x00\x00\x00\x00\x00\x00"
+		%111 : compiler.byte_pointer = "\x66\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%111)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
@@ -917,37 +926,37 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	convert_signed_from_f32 : one_parameters_t = {
+	pointer_store_u32 : two_parameters_effect_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
+		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%113 : compiler.byte_pointer = "\x34\x00\x00\x00\x00\x00\x00\x00"
+		%113 : compiler.byte_pointer = "\x67\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%113)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
-		%114 : compiler.byte_pointer = "\x00\x00\x00\x00"
+		_ : compiler.assembler.register = inline emit_register(regb)
+		%114 : compiler.byte_pointer = "\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%114)
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	add_f32 : two_parameters_t = {
+	pointer_load_u16 : one_parameters_effect_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
-		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%115 : compiler.byte_pointer = "\x35\x00\x00\x00\x00\x00\x00\x00"
+		%115 : compiler.byte_pointer = "\x68\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%115)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
-		_ : compiler.assembler.register = inline emit_register(regb)
-		%116 : compiler.byte_pointer = "\x00\x00"
+		%116 : compiler.byte_pointer = "\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%116)
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	subtract_f32 : two_parameters_t = {
+	pointer_store_u16 : two_parameters_effect_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%117 : compiler.byte_pointer = "\x36\x00\x00\x00\x00\x00\x00\x00"
+		%117 : compiler.byte_pointer = "\x69\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%117)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
@@ -957,25 +966,23 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	multiply_f32 : two_parameters_t = {
+	pointer_load_u8 : one_parameters_effect_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
-		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%119 : compiler.byte_pointer = "\x37\x00\x00\x00\x00\x00\x00\x00"
+		%119 : compiler.byte_pointer = "\x6a\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%119)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
-		_ : compiler.assembler.register = inline emit_register(regb)
-		%120 : compiler.byte_pointer = "\x00\x00"
+		%120 : compiler.byte_pointer = "\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%120)
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	divide_f32 : two_parameters_t = {
+	pointer_store_u8 : two_parameters_effect_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%121 : compiler.byte_pointer = "\x38\x00\x00\x00\x00\x00\x00\x00"
+		%121 : compiler.byte_pointer = "\x6b\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%121)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
@@ -985,38 +992,34 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	max_f32 : two_parameters_t = {
+	convert_to_f32 : one_parameters_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
-		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%123 : compiler.byte_pointer = "\x39\x00\x00\x00\x00\x00\x00\x00"
+		%123 : compiler.byte_pointer = "\x31\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%123)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
-		_ : compiler.assembler.register = inline emit_register(regb)
-		%124 : compiler.byte_pointer = "\x00\x00"
+		%124 : compiler.byte_pointer = "\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%124)
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	min_f32 : two_parameters_t = {
+	convert_signed_to_f32 : one_parameters_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
-		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%125 : compiler.byte_pointer = "\x3a\x00\x00\x00\x00\x00\x00\x00"
+		%125 : compiler.byte_pointer = "\x32\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%125)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
-		_ : compiler.assembler.register = inline emit_register(regb)
-		%126 : compiler.byte_pointer = "\x00\x00"
+		%126 : compiler.byte_pointer = "\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%126)
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	sqrt_f32 : one_parameters_t = {
+	convert_from_f32 : one_parameters_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%127 : compiler.byte_pointer = "\x3b\x00\x00\x00\x00\x00\x00\x00"
+		%127 : compiler.byte_pointer = "\x33\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%127)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
@@ -1025,25 +1028,23 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	set_if_equal_f32 : two_parameters_t = {
+	convert_signed_from_f32 : one_parameters_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
-		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%129 : compiler.byte_pointer = "\x3c\x00\x00\x00\x00\x00\x00\x00"
+		%129 : compiler.byte_pointer = "\x34\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%129)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
-		_ : compiler.assembler.register = inline emit_register(regb)
-		%130 : compiler.byte_pointer = "\x00\x00"
+		%130 : compiler.byte_pointer = "\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%130)
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	set_if_not_equal_f32 : two_parameters_t = {
+	add_f32 : two_parameters_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%131 : compiler.byte_pointer = "\x3d\x00\x00\x00\x00\x00\x00\x00"
+		%131 : compiler.byte_pointer = "\x35\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%131)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
@@ -1053,11 +1054,11 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	set_if_less_f32 : two_parameters_t = {
+	subtract_f32 : two_parameters_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%133 : compiler.byte_pointer = "\x3e\x00\x00\x00\x00\x00\x00\x00"
+		%133 : compiler.byte_pointer = "\x36\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%133)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
@@ -1067,11 +1068,11 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	set_if_greater_equal_f32 : two_parameters_t = {
+	multiply_f32 : two_parameters_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%135 : compiler.byte_pointer = "\x3f\x00\x00\x00\x00\x00\x00\x00"
+		%135 : compiler.byte_pointer = "\x37\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%135)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
@@ -1081,46 +1082,52 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	set_if_negative_f32 : one_parameters_t = {
+	divide_f32 : two_parameters_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
+		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%137 : compiler.byte_pointer = "\x40\x00\x00\x00\x00\x00\x00\x00"
+		%137 : compiler.byte_pointer = "\x38\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%137)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
-		%138 : compiler.byte_pointer = "\x00\x00\x00\x00"
+		_ : compiler.assembler.register = inline emit_register(regb)
+		%138 : compiler.byte_pointer = "\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%138)
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	set_if_positive_f32 : one_parameters_t = {
+	max_f32 : two_parameters_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
+		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%139 : compiler.byte_pointer = "\x41\x00\x00\x00\x00\x00\x00\x00"
+		%139 : compiler.byte_pointer = "\x39\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%139)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
-		%140 : compiler.byte_pointer = "\x00\x00\x00\x00"
+		_ : compiler.assembler.register = inline emit_register(regb)
+		%140 : compiler.byte_pointer = "\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%140)
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	set_if_infinity_f32 : one_parameters_t = {
+	min_f32 : two_parameters_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
+		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%141 : compiler.byte_pointer = "\x42\x00\x00\x00\x00\x00\x00\x00"
+		%141 : compiler.byte_pointer = "\x3a\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%141)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
-		%142 : compiler.byte_pointer = "\x00\x00\x00\x00"
+		_ : compiler.assembler.register = inline emit_register(regb)
+		%142 : compiler.byte_pointer = "\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%142)
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	set_if_nan_f32 : one_parameters_t = {
+	sqrt_f32 : one_parameters_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%143 : compiler.byte_pointer = "\x43\x00\x00\x00\x00\x00\x00\x00"
+		%143 : compiler.byte_pointer = "\x3b\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%143)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
@@ -1129,58 +1136,66 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	convert_f32_to_f64 : one_parameters_t = {
+	set_if_equal_f32 : two_parameters_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
+		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%145 : compiler.byte_pointer = "\x44\x00\x00\x00\x00\x00\x00\x00"
+		%145 : compiler.byte_pointer = "\x3c\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%145)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
-		%146 : compiler.byte_pointer = "\x00\x00\x00\x00"
+		_ : compiler.assembler.register = inline emit_register(regb)
+		%146 : compiler.byte_pointer = "\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%146)
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	convert_f64_to_f32 : one_parameters_t = {
+	set_if_not_equal_f32 : two_parameters_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
+		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%147 : compiler.byte_pointer = "\x45\x00\x00\x00\x00\x00\x00\x00"
+		%147 : compiler.byte_pointer = "\x3d\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%147)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
-		%148 : compiler.byte_pointer = "\x00\x00\x00\x00"
+		_ : compiler.assembler.register = inline emit_register(regb)
+		%148 : compiler.byte_pointer = "\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%148)
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	convert_to_f64 : one_parameters_t = {
+	set_if_less_f32 : two_parameters_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
+		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%149 : compiler.byte_pointer = "\x46\x00\x00\x00\x00\x00\x00\x00"
+		%149 : compiler.byte_pointer = "\x3e\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%149)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
-		%150 : compiler.byte_pointer = "\x00\x00\x00\x00"
+		_ : compiler.assembler.register = inline emit_register(regb)
+		%150 : compiler.byte_pointer = "\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%150)
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	convert_signed_to_f64 : one_parameters_t = {
+	set_if_greater_equal_f32 : two_parameters_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
+		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%151 : compiler.byte_pointer = "\x47\x00\x00\x00\x00\x00\x00\x00"
+		%151 : compiler.byte_pointer = "\x3f\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%151)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
-		%152 : compiler.byte_pointer = "\x00\x00\x00\x00"
+		_ : compiler.assembler.register = inline emit_register(regb)
+		%152 : compiler.byte_pointer = "\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%152)
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	convert_from_f64 : one_parameters_t = {
+	set_if_negative_f32 : one_parameters_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%153 : compiler.byte_pointer = "\x48\x00\x00\x00\x00\x00\x00\x00"
+		%153 : compiler.byte_pointer = "\x40\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%153)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
@@ -1189,10 +1204,10 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	convert_signed_from_f64 : one_parameters_t = {
+	set_if_positive_f32 : one_parameters_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%155 : compiler.byte_pointer = "\x49\x00\x00\x00\x00\x00\x00\x00"
+		%155 : compiler.byte_pointer = "\x41\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%155)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
@@ -1201,94 +1216,82 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	add_f64 : two_parameters_t = {
+	set_if_infinity_f32 : one_parameters_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
-		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%157 : compiler.byte_pointer = "\x4a\x00\x00\x00\x00\x00\x00\x00"
+		%157 : compiler.byte_pointer = "\x42\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%157)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
-		_ : compiler.assembler.register = inline emit_register(regb)
-		%158 : compiler.byte_pointer = "\x00\x00"
+		%158 : compiler.byte_pointer = "\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%158)
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	subtract_f64 : two_parameters_t = {
+	set_if_nan_f32 : one_parameters_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
-		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%159 : compiler.byte_pointer = "\x4b\x00\x00\x00\x00\x00\x00\x00"
+		%159 : compiler.byte_pointer = "\x43\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%159)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
-		_ : compiler.assembler.register = inline emit_register(regb)
-		%160 : compiler.byte_pointer = "\x00\x00"
+		%160 : compiler.byte_pointer = "\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%160)
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	multiply_f64 : two_parameters_t = {
+	convert_f32_to_f64 : one_parameters_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
-		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%161 : compiler.byte_pointer = "\x4c\x00\x00\x00\x00\x00\x00\x00"
+		%161 : compiler.byte_pointer = "\x44\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%161)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
-		_ : compiler.assembler.register = inline emit_register(regb)
-		%162 : compiler.byte_pointer = "\x00\x00"
+		%162 : compiler.byte_pointer = "\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%162)
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	divide_f64 : two_parameters_t = {
+	convert_f64_to_f32 : one_parameters_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
-		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%163 : compiler.byte_pointer = "\x4d\x00\x00\x00\x00\x00\x00\x00"
+		%163 : compiler.byte_pointer = "\x45\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%163)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
-		_ : compiler.assembler.register = inline emit_register(regb)
-		%164 : compiler.byte_pointer = "\x00\x00"
+		%164 : compiler.byte_pointer = "\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%164)
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	max_f64 : two_parameters_t = {
+	convert_to_f64 : one_parameters_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
-		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%165 : compiler.byte_pointer = "\x4e\x00\x00\x00\x00\x00\x00\x00"
+		%165 : compiler.byte_pointer = "\x46\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%165)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
-		_ : compiler.assembler.register = inline emit_register(regb)
-		%166 : compiler.byte_pointer = "\x00\x00"
+		%166 : compiler.byte_pointer = "\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%166)
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	min_f64 : two_parameters_t = {
+	convert_signed_to_f64 : one_parameters_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
-		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%167 : compiler.byte_pointer = "\x4f\x00\x00\x00\x00\x00\x00\x00"
+		%167 : compiler.byte_pointer = "\x47\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%167)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
-		_ : compiler.assembler.register = inline emit_register(regb)
-		%168 : compiler.byte_pointer = "\x00\x00"
+		%168 : compiler.byte_pointer = "\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%168)
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	sqrt_f64 : one_parameters_t = {
+	convert_from_f64 : one_parameters_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%169 : compiler.byte_pointer = "\x50\x00\x00\x00\x00\x00\x00\x00"
+		%169 : compiler.byte_pointer = "\x48\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%169)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
@@ -1297,25 +1300,23 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	set_if_equal_f64 : two_parameters_t = {
+	convert_signed_from_f64 : one_parameters_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
-		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%171 : compiler.byte_pointer = "\x51\x00\x00\x00\x00\x00\x00\x00"
+		%171 : compiler.byte_pointer = "\x49\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%171)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
-		_ : compiler.assembler.register = inline emit_register(regb)
-		%172 : compiler.byte_pointer = "\x00\x00"
+		%172 : compiler.byte_pointer = "\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%172)
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	set_if_not_equal_f64 : two_parameters_t = {
+	add_f64 : two_parameters_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%173 : compiler.byte_pointer = "\x52\x00\x00\x00\x00\x00\x00\x00"
+		%173 : compiler.byte_pointer = "\x4a\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%173)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
@@ -1325,11 +1326,11 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	set_if_less_f64 : two_parameters_t = {
+	subtract_f64 : two_parameters_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%175 : compiler.byte_pointer = "\x53\x00\x00\x00\x00\x00\x00\x00"
+		%175 : compiler.byte_pointer = "\x4b\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%175)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
@@ -1339,11 +1340,11 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	set_if_greater_equal_f64 : two_parameters_t = {
+	multiply_f64 : two_parameters_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%177 : compiler.byte_pointer = "\x54\x00\x00\x00\x00\x00\x00\x00"
+		%177 : compiler.byte_pointer = "\x4c\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%177)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
@@ -1353,46 +1354,52 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	set_if_negative_f64 : one_parameters_t = {
+	divide_f64 : two_parameters_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
+		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%179 : compiler.byte_pointer = "\x55\x00\x00\x00\x00\x00\x00\x00"
+		%179 : compiler.byte_pointer = "\x4d\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%179)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
-		%180 : compiler.byte_pointer = "\x00\x00\x00\x00"
+		_ : compiler.assembler.register = inline emit_register(regb)
+		%180 : compiler.byte_pointer = "\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%180)
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	set_if_positive_f64 : one_parameters_t = {
+	max_f64 : two_parameters_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
+		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%181 : compiler.byte_pointer = "\x56\x00\x00\x00\x00\x00\x00\x00"
+		%181 : compiler.byte_pointer = "\x4e\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%181)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
-		%182 : compiler.byte_pointer = "\x00\x00\x00\x00"
+		_ : compiler.assembler.register = inline emit_register(regb)
+		%182 : compiler.byte_pointer = "\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%182)
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	set_if_infinity_f64 : one_parameters_t = {
+	min_f64 : two_parameters_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
+		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%183 : compiler.byte_pointer = "\x57\x00\x00\x00\x00\x00\x00\x00"
+		%183 : compiler.byte_pointer = "\x4f\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%183)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
-		%184 : compiler.byte_pointer = "\x00\x00\x00\x00"
+		_ : compiler.assembler.register = inline emit_register(regb)
+		%184 : compiler.byte_pointer = "\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%184)
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
-	set_if_nan_f64 : one_parameters_t = {
+	sqrt_f64 : one_parameters_t = {
 		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-		%185 : compiler.byte_pointer = "\x58\x00\x00\x00\x00\x00\x00\x00"
+		%185 : compiler.byte_pointer = "\x50\x00\x00\x00\x00\x00\x00\x00"
 		_ : compiler.byte = compiler.emit_bytes(%185)
 		_ : compiler.assembler.register = inline emit_register(regret)
 		_ : compiler.assembler.register = inline emit_register(rega)
@@ -1401,111 +1408,113 @@ mizu : namespace = {
 		_ : u64 = compiler.indicate_return(u64)
 	}
 
+	set_if_equal_f64 : two_parameters_t = {
+		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
+		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
+		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
+		%187 : compiler.byte_pointer = "\x51\x00\x00\x00\x00\x00\x00\x00"
+		_ : compiler.byte = compiler.emit_bytes(%187)
+		_ : compiler.assembler.register = inline emit_register(regret)
+		_ : compiler.assembler.register = inline emit_register(rega)
+		_ : compiler.assembler.register = inline emit_register(regb)
+		%188 : compiler.byte_pointer = "\x00\x00"
+		_ : compiler.byte = compiler.emit_bytes(%188)
+		_ : u64 = compiler.indicate_return(u64)
+	}
+
+	set_if_not_equal_f64 : two_parameters_t = {
+		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
+		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
+		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
+		%189 : compiler.byte_pointer = "\x52\x00\x00\x00\x00\x00\x00\x00"
+		_ : compiler.byte = compiler.emit_bytes(%189)
+		_ : compiler.assembler.register = inline emit_register(regret)
+		_ : compiler.assembler.register = inline emit_register(rega)
+		_ : compiler.assembler.register = inline emit_register(regb)
+		%190 : compiler.byte_pointer = "\x00\x00"
+		_ : compiler.byte = compiler.emit_bytes(%190)
+		_ : u64 = compiler.indicate_return(u64)
+	}
+
+	set_if_less_f64 : two_parameters_t = {
+		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
+		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
+		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
+		%191 : compiler.byte_pointer = "\x53\x00\x00\x00\x00\x00\x00\x00"
+		_ : compiler.byte = compiler.emit_bytes(%191)
+		_ : compiler.assembler.register = inline emit_register(regret)
+		_ : compiler.assembler.register = inline emit_register(rega)
+		_ : compiler.assembler.register = inline emit_register(regb)
+		%192 : compiler.byte_pointer = "\x00\x00"
+		_ : compiler.byte = compiler.emit_bytes(%192)
+		_ : u64 = compiler.indicate_return(u64)
+	}
+
+	set_if_greater_equal_f64 : two_parameters_t = {
+		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
+		regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
+		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
+		%193 : compiler.byte_pointer = "\x54\x00\x00\x00\x00\x00\x00\x00"
+		_ : compiler.byte = compiler.emit_bytes(%193)
+		_ : compiler.assembler.register = inline emit_register(regret)
+		_ : compiler.assembler.register = inline emit_register(rega)
+		_ : compiler.assembler.register = inline emit_register(regb)
+		%194 : compiler.byte_pointer = "\x00\x00"
+		_ : compiler.byte = compiler.emit_bytes(%194)
+		_ : u64 = compiler.indicate_return(u64)
+	}
+
+	set_if_negative_f64 : one_parameters_t = {
+		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
+		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
+		%195 : compiler.byte_pointer = "\x55\x00\x00\x00\x00\x00\x00\x00"
+		_ : compiler.byte = compiler.emit_bytes(%195)
+		_ : compiler.assembler.register = inline emit_register(regret)
+		_ : compiler.assembler.register = inline emit_register(rega)
+		%196 : compiler.byte_pointer = "\x00\x00\x00\x00"
+		_ : compiler.byte = compiler.emit_bytes(%196)
+		_ : u64 = compiler.indicate_return(u64)
+	}
+
+	set_if_positive_f64 : one_parameters_t = {
+		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
+		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
+		%197 : compiler.byte_pointer = "\x56\x00\x00\x00\x00\x00\x00\x00"
+		_ : compiler.byte = compiler.emit_bytes(%197)
+		_ : compiler.assembler.register = inline emit_register(regret)
+		_ : compiler.assembler.register = inline emit_register(rega)
+		%198 : compiler.byte_pointer = "\x00\x00\x00\x00"
+		_ : compiler.byte = compiler.emit_bytes(%198)
+		_ : u64 = compiler.indicate_return(u64)
+	}
+
+	set_if_infinity_f64 : one_parameters_t = {
+		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
+		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
+		%199 : compiler.byte_pointer = "\x57\x00\x00\x00\x00\x00\x00\x00"
+		_ : compiler.byte = compiler.emit_bytes(%199)
+		_ : compiler.assembler.register = inline emit_register(regret)
+		_ : compiler.assembler.register = inline emit_register(rega)
+		%200 : compiler.byte_pointer = "\x00\x00\x00\x00"
+		_ : compiler.byte = compiler.emit_bytes(%200)
+		_ : u64 = compiler.indicate_return(u64)
+	}
+
+	set_if_nan_f64 : one_parameters_t = {
+		rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
+		regret : compiler.assembler.register = compiler.assembler.return_register(u64)
+		%201 : compiler.byte_pointer = "\x58\x00\x00\x00\x00\x00\x00\x00"
+		_ : compiler.byte = compiler.emit_bytes(%201)
+		_ : compiler.assembler.register = inline emit_register(regret)
+		_ : compiler.assembler.register = inline emit_register(rega)
+		%202 : compiler.byte_pointer = "\x00\x00\x00\x00"
+		_ : compiler.byte = compiler.emit_bytes(%202)
+		_ : u64 = compiler.indicate_return(u64)
+	}
+
 	doir : namespace = {
 		set_module : one_parameters_t = {
 			rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
-			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-			%187 : compiler.byte_pointer = "\x85\x00\x00\x00\x00\x00\x00\x00"
-			_ : compiler.byte = compiler.emit_bytes(%187)
-			_ : compiler.assembler.register = inline emit_register(regret)
-			_ : compiler.assembler.register = inline emit_register(rega)
-			%188 : compiler.byte_pointer = "\x00\x00\x00\x00"
-			_ : compiler.byte = compiler.emit_bytes(%188)
-			_ : u64 = compiler.indicate_return(u64)
-		}
-
-		attach_comptime_number_i64 : two_parameters_t = {
-			rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
-			regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
-			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-			%189 : compiler.byte_pointer = "\x86\x00\x00\x00\x00\x00\x00\x00"
-			_ : compiler.byte = compiler.emit_bytes(%189)
-			_ : compiler.assembler.register = inline emit_register(regret)
-			_ : compiler.assembler.register = inline emit_register(rega)
-			_ : compiler.assembler.register = inline emit_register(regb)
-			%190 : compiler.byte_pointer = "\x00\x00"
-			_ : compiler.byte = compiler.emit_bytes(%190)
-			_ : u64 = compiler.indicate_return(u64)
-		}
-
-		execute : execute_t = {
-			rega : compiler.assembler.register = compiler.assembler.register_for(block, blk)
-			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-			%191 : compiler.byte_pointer = "\x87\x00\x00\x00\x00\x00\x00\x00"
-			_ : compiler.byte = compiler.emit_bytes(%191)
-			_ : compiler.assembler.register = inline emit_register(regret)
-			_ : compiler.assembler.register = inline emit_register(rega)
-			%192 : compiler.byte_pointer = "\x00\x00\x00\x00"
-			_ : compiler.byte = compiler.emit_bytes(%192)
-			_ : u64 = compiler.indicate_return(u64)
-		}
-
-		execute_if : execute_if_t = {
-			rega : compiler.assembler.register = compiler.assembler.register_for(block, blk)
-			regb : compiler.assembler.register = compiler.assembler.register_for(u64, condition)
-			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-			%193 : compiler.byte_pointer = "\x88\x00\x00\x00\x00\x00\x00\x00"
-			_ : compiler.byte = compiler.emit_bytes(%193)
-			_ : compiler.assembler.register = inline emit_register(regret)
-			_ : compiler.assembler.register = inline emit_register(rega)
-			_ : compiler.assembler.register = inline emit_register(regb)
-			%194 : compiler.byte_pointer = "\x00\x00"
-			_ : compiler.byte = compiler.emit_bytes(%194)
-			_ : u64 = compiler.indicate_return(u64)
-		}
-
-		reflect : reflect_t = {
-			rega : compiler.assembler.register = compiler.assembler.register_for(type, T)
-			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-			%195 : compiler.byte_pointer = "\x89\x00\x00\x00\x00\x00\x00\x00"
-			_ : compiler.byte = compiler.emit_bytes(%195)
-			_ : compiler.assembler.register = inline emit_register(regret)
-			_ : compiler.assembler.register = inline emit_register(rega)
-			%196 : compiler.byte_pointer = "\x00\x00\x00\x00"
-			_ : compiler.byte = compiler.emit_bytes(%196)
-			_ : u64 = compiler.indicate_return(u64)
-		}
-
-		unreflect_alias : unreflect_alias_t = {
-			rega : compiler.assembler.register = compiler.assembler.register_for(u64, e)
-			regret : compiler.assembler.register = compiler.assembler.return_register(type)
-			%197 : compiler.byte_pointer = "\x8a\x00\x00\x00\x00\x00\x00\x00"
-			_ : compiler.byte = compiler.emit_bytes(%197)
-			_ : compiler.assembler.register = inline emit_register(regret)
-			_ : compiler.assembler.register = inline emit_register(rega)
-			%198 : compiler.byte_pointer = "\x00\x00\x00\x00"
-			_ : compiler.byte = compiler.emit_bytes(%198)
-			_ : type = compiler.indicate_return(type)
-		}
-
-		type_base : base_type_t = {
-			rega : compiler.assembler.register = compiler.assembler.register_for(comptime.u64, size_bits)
-			regb : compiler.assembler.register = compiler.assembler.register_for(comptime.u64, align_bits)
-			regret : compiler.assembler.register = compiler.assembler.return_register(type)
-			%199 : compiler.byte_pointer = "\x8b\x00\x00\x00\x00\x00\x00\x00"
-			_ : compiler.byte = compiler.emit_bytes(%199)
-			_ : compiler.assembler.register = inline emit_register(regret)
-			_ : compiler.assembler.register = inline emit_register(rega)
-			_ : compiler.assembler.register = inline emit_register(regb)
-			%200 : compiler.byte_pointer = "\x00\x00"
-			_ : compiler.byte = compiler.emit_bytes(%200)
-			_ : type = compiler.indicate_return(type)
-		}
-
-		type_is : type_query_t = {
-			rega : compiler.assembler.register = compiler.assembler.register_for(type, T)
-			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-			%201 : compiler.byte_pointer = "\x8c\x00\x00\x00\x00\x00\x00\x00"
-			_ : compiler.byte = compiler.emit_bytes(%201)
-			_ : compiler.assembler.register = inline emit_register(regret)
-			_ : compiler.assembler.register = inline emit_register(rega)
-			%202 : compiler.byte_pointer = "\x00\x00\x00\x00"
-			_ : compiler.byte = compiler.emit_bytes(%202)
-			_ : u64 = compiler.indicate_return(u64)
-		}
-
-		type_size_bits : type_query_t = {
-			rega : compiler.assembler.register = compiler.assembler.register_for(type, T)
 			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 			%203 : compiler.byte_pointer = "\x8d\x00\x00\x00\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%203)
@@ -1516,58 +1525,60 @@ mizu : namespace = {
 			_ : u64 = compiler.indicate_return(u64)
 		}
 
-		type_align_bits : type_query_t = {
-			rega : compiler.assembler.register = compiler.assembler.register_for(type, T)
+		attach_comptime_number_i64 : two_parameters_t = {
+			rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
+			regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 			%205 : compiler.byte_pointer = "\x8e\x00\x00\x00\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%205)
 			_ : compiler.assembler.register = inline emit_register(regret)
 			_ : compiler.assembler.register = inline emit_register(rega)
-			%206 : compiler.byte_pointer = "\x00\x00\x00\x00"
+			_ : compiler.assembler.register = inline emit_register(regb)
+			%206 : compiler.byte_pointer = "\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%206)
 			_ : u64 = compiler.indicate_return(u64)
 		}
 
-		type_set_flags : two_parameters_t = {
-			rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
-			regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
+		execute : execute_t = {
+			rega : compiler.assembler.register = compiler.assembler.register_for(block, blk)
 			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 			%207 : compiler.byte_pointer = "\x8f\x00\x00\x00\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%207)
 			_ : compiler.assembler.register = inline emit_register(regret)
 			_ : compiler.assembler.register = inline emit_register(rega)
-			_ : compiler.assembler.register = inline emit_register(regb)
-			%208 : compiler.byte_pointer = "\x00\x00"
+			%208 : compiler.byte_pointer = "\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%208)
 			_ : u64 = compiler.indicate_return(u64)
 		}
 
-		type_comptime : type_modifier_t = {
-			rega : compiler.assembler.register = compiler.assembler.register_for(type, T)
-			regret : compiler.assembler.register = compiler.assembler.return_register(type)
+		execute_if : execute_if_t = {
+			rega : compiler.assembler.register = compiler.assembler.register_for(block, blk)
+			regb : compiler.assembler.register = compiler.assembler.register_for(u64, condition)
+			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 			%209 : compiler.byte_pointer = "\x90\x00\x00\x00\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%209)
 			_ : compiler.assembler.register = inline emit_register(regret)
 			_ : compiler.assembler.register = inline emit_register(rega)
-			%210 : compiler.byte_pointer = "\x00\x00\x00\x00"
+			_ : compiler.assembler.register = inline emit_register(regb)
+			%210 : compiler.byte_pointer = "\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%210)
-			_ : type = compiler.indicate_return(type)
+			_ : u64 = compiler.indicate_return(u64)
 		}
 
-		type_union : type_modifier_t = {
+		reflect : reflect_t = {
 			rega : compiler.assembler.register = compiler.assembler.register_for(type, T)
-			regret : compiler.assembler.register = compiler.assembler.return_register(type)
+			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 			%211 : compiler.byte_pointer = "\x91\x00\x00\x00\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%211)
 			_ : compiler.assembler.register = inline emit_register(regret)
 			_ : compiler.assembler.register = inline emit_register(rega)
 			%212 : compiler.byte_pointer = "\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%212)
-			_ : type = compiler.indicate_return(type)
+			_ : u64 = compiler.indicate_return(u64)
 		}
 
-		type_never_monomorphize : type_modifier_t = {
-			rega : compiler.assembler.register = compiler.assembler.register_for(type, T)
+		unreflect_alias : unreflect_alias_t = {
+			rega : compiler.assembler.register = compiler.assembler.register_for(u64, e)
 			regret : compiler.assembler.register = compiler.assembler.return_register(type)
 			%213 : compiler.byte_pointer = "\x92\x00\x00\x00\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%213)
@@ -1578,93 +1589,95 @@ mizu : namespace = {
 			_ : type = compiler.indicate_return(type)
 		}
 
-		type_always_inline : type_modifier_t = {
-			rega : compiler.assembler.register = compiler.assembler.register_for(type, T)
+		type_base : base_type_t = {
+			rega : compiler.assembler.register = compiler.assembler.register_for(comptime.u64, size_bits)
+			regb : compiler.assembler.register = compiler.assembler.register_for(comptime.u64, align_bits)
 			regret : compiler.assembler.register = compiler.assembler.return_register(type)
 			%215 : compiler.byte_pointer = "\x93\x00\x00\x00\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%215)
 			_ : compiler.assembler.register = inline emit_register(regret)
 			_ : compiler.assembler.register = inline emit_register(rega)
-			%216 : compiler.byte_pointer = "\x00\x00\x00\x00"
+			_ : compiler.assembler.register = inline emit_register(regb)
+			%216 : compiler.byte_pointer = "\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%216)
 			_ : type = compiler.indicate_return(type)
 		}
 
-		type_always_flatten : type_modifier_t = {
+		type_is : type_query_t = {
 			rega : compiler.assembler.register = compiler.assembler.register_for(type, T)
-			regret : compiler.assembler.register = compiler.assembler.return_register(type)
+			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 			%217 : compiler.byte_pointer = "\x94\x00\x00\x00\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%217)
 			_ : compiler.assembler.register = inline emit_register(regret)
 			_ : compiler.assembler.register = inline emit_register(rega)
 			%218 : compiler.byte_pointer = "\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%218)
-			_ : type = compiler.indicate_return(type)
+			_ : u64 = compiler.indicate_return(u64)
 		}
 
-		type_no_comptime : type_modifier_t = {
+		type_size_bits : type_query_t = {
 			rega : compiler.assembler.register = compiler.assembler.register_for(type, T)
-			regret : compiler.assembler.register = compiler.assembler.return_register(type)
+			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 			%219 : compiler.byte_pointer = "\x95\x00\x00\x00\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%219)
 			_ : compiler.assembler.register = inline emit_register(regret)
 			_ : compiler.assembler.register = inline emit_register(rega)
 			%220 : compiler.byte_pointer = "\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%220)
-			_ : type = compiler.indicate_return(type)
+			_ : u64 = compiler.indicate_return(u64)
 		}
 
-		type_pure : type_modifier_t = {
+		type_align_bits : type_query_t = {
 			rega : compiler.assembler.register = compiler.assembler.register_for(type, T)
-			regret : compiler.assembler.register = compiler.assembler.return_register(type)
+			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 			%221 : compiler.byte_pointer = "\x96\x00\x00\x00\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%221)
 			_ : compiler.assembler.register = inline emit_register(regret)
 			_ : compiler.assembler.register = inline emit_register(rega)
 			%222 : compiler.byte_pointer = "\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%222)
-			_ : type = compiler.indicate_return(type)
+			_ : u64 = compiler.indicate_return(u64)
 		}
 
-		type_make_unique : type_modifier_t = {
-			rega : compiler.assembler.register = compiler.assembler.register_for(type, T)
-			regret : compiler.assembler.register = compiler.assembler.return_register(type)
+		type_set_flags : two_parameters_t = {
+			rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
+			regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
+			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 			%223 : compiler.byte_pointer = "\x97\x00\x00\x00\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%223)
 			_ : compiler.assembler.register = inline emit_register(regret)
 			_ : compiler.assembler.register = inline emit_register(rega)
-			%224 : compiler.byte_pointer = "\x00\x00\x00\x00"
+			_ : compiler.assembler.register = inline emit_register(regb)
+			%224 : compiler.byte_pointer = "\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%224)
-			_ : type = compiler.indicate_return(type)
+			_ : u64 = compiler.indicate_return(u64)
 		}
 
-		type_set_attribute_id : type_with_number_t = {
+		type_comptime : type_modifier_t = {
 			rega : compiler.assembler.register = compiler.assembler.register_for(type, T)
-			regb : compiler.assembler.register = compiler.assembler.register_for(comptime.u64, n)
 			regret : compiler.assembler.register = compiler.assembler.return_register(type)
 			%225 : compiler.byte_pointer = "\x98\x00\x00\x00\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%225)
 			_ : compiler.assembler.register = inline emit_register(regret)
 			_ : compiler.assembler.register = inline emit_register(rega)
-			_ : compiler.assembler.register = inline emit_register(regb)
-			%226 : compiler.byte_pointer = "\x00\x00"
+			%226 : compiler.byte_pointer = "\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%226)
 			_ : type = compiler.indicate_return(type)
 		}
 
-		type_attribute_id : type_query_t = {
+		type_union : type_modifier_t = {
 			rega : compiler.assembler.register = compiler.assembler.register_for(type, T)
-			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
+			regret : compiler.assembler.register = compiler.assembler.return_register(type)
 			%227 : compiler.byte_pointer = "\x99\x00\x00\x00\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%227)
 			_ : compiler.assembler.register = inline emit_register(regret)
 			_ : compiler.assembler.register = inline emit_register(rega)
 			%228 : compiler.byte_pointer = "\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%228)
-			_ : u64 = compiler.indicate_return(u64)
+			_ : type = compiler.indicate_return(type)
 		}
 
-		type_pointer : type_modifier_t = {
+		type_never_monomorphize : type_modifier_t = {
 			rega : compiler.assembler.register = compiler.assembler.register_for(type, T)
 			regret : compiler.assembler.register = compiler.assembler.return_register(type)
 			%229 : compiler.byte_pointer = "\x9a\x00\x00\x00\x00\x00\x00\x00"
@@ -1676,84 +1689,82 @@ mizu : namespace = {
 			_ : type = compiler.indicate_return(type)
 		}
 
-		type_array : type_with_number_t = {
+		type_always_inline : type_modifier_t = {
 			rega : compiler.assembler.register = compiler.assembler.register_for(type, T)
-			regb : compiler.assembler.register = compiler.assembler.register_for(comptime.u64, n)
 			regret : compiler.assembler.register = compiler.assembler.return_register(type)
 			%231 : compiler.byte_pointer = "\x9b\x00\x00\x00\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%231)
 			_ : compiler.assembler.register = inline emit_register(regret)
 			_ : compiler.assembler.register = inline emit_register(rega)
-			_ : compiler.assembler.register = inline emit_register(regb)
-			%232 : compiler.byte_pointer = "\x00\x00"
+			%232 : compiler.byte_pointer = "\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%232)
 			_ : type = compiler.indicate_return(type)
 		}
 
-		entity_rename : two_parameters_t = {
-			rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
-			regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
-			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
+		type_always_flatten : type_modifier_t = {
+			rega : compiler.assembler.register = compiler.assembler.register_for(type, T)
+			regret : compiler.assembler.register = compiler.assembler.return_register(type)
 			%233 : compiler.byte_pointer = "\x9c\x00\x00\x00\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%233)
 			_ : compiler.assembler.register = inline emit_register(regret)
 			_ : compiler.assembler.register = inline emit_register(rega)
-			_ : compiler.assembler.register = inline emit_register(regb)
-			%234 : compiler.byte_pointer = "\x00\x00"
+			%234 : compiler.byte_pointer = "\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%234)
-			_ : u64 = compiler.indicate_return(u64)
+			_ : type = compiler.indicate_return(type)
 		}
 
-		intern_name : one_parameters_t = {
-			rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
-			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
+		type_no_comptime : type_modifier_t = {
+			rega : compiler.assembler.register = compiler.assembler.register_for(type, T)
+			regret : compiler.assembler.register = compiler.assembler.return_register(type)
 			%235 : compiler.byte_pointer = "\x9d\x00\x00\x00\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%235)
 			_ : compiler.assembler.register = inline emit_register(regret)
 			_ : compiler.assembler.register = inline emit_register(rega)
 			%236 : compiler.byte_pointer = "\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%236)
-			_ : u64 = compiler.indicate_return(u64)
+			_ : type = compiler.indicate_return(type)
 		}
 
-		label_to_immediate : one_parameters_t = {
-			rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
-			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
+		type_pure : type_modifier_t = {
+			rega : compiler.assembler.register = compiler.assembler.register_for(type, T)
+			regret : compiler.assembler.register = compiler.assembler.return_register(type)
 			%237 : compiler.byte_pointer = "\x9e\x00\x00\x00\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%237)
 			_ : compiler.assembler.register = inline emit_register(regret)
 			_ : compiler.assembler.register = inline emit_register(rega)
 			%238 : compiler.byte_pointer = "\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%238)
-			_ : u64 = compiler.indicate_return(u64)
+			_ : type = compiler.indicate_return(type)
 		}
 
-		source_location_file : one_parameters_t = {
-			rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
-			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
+		type_make_unique : type_modifier_t = {
+			rega : compiler.assembler.register = compiler.assembler.register_for(type, T)
+			regret : compiler.assembler.register = compiler.assembler.return_register(type)
 			%239 : compiler.byte_pointer = "\x9f\x00\x00\x00\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%239)
 			_ : compiler.assembler.register = inline emit_register(regret)
 			_ : compiler.assembler.register = inline emit_register(rega)
 			%240 : compiler.byte_pointer = "\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%240)
-			_ : u64 = compiler.indicate_return(u64)
+			_ : type = compiler.indicate_return(type)
 		}
 
-		source_location_start_byte : one_parameters_t = {
-			rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
-			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
+		type_set_attribute_id : type_with_number_t = {
+			rega : compiler.assembler.register = compiler.assembler.register_for(type, T)
+			regb : compiler.assembler.register = compiler.assembler.register_for(comptime.u64, n)
+			regret : compiler.assembler.register = compiler.assembler.return_register(type)
 			%241 : compiler.byte_pointer = "\xa0\x00\x00\x00\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%241)
 			_ : compiler.assembler.register = inline emit_register(regret)
 			_ : compiler.assembler.register = inline emit_register(rega)
-			%242 : compiler.byte_pointer = "\x00\x00\x00\x00"
+			_ : compiler.assembler.register = inline emit_register(regb)
+			%242 : compiler.byte_pointer = "\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%242)
-			_ : u64 = compiler.indicate_return(u64)
+			_ : type = compiler.indicate_return(type)
 		}
 
-		source_location_end_byte : one_parameters_t = {
-			rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
+		type_attribute_id : type_query_t = {
+			rega : compiler.assembler.register = compiler.assembler.register_for(type, T)
 			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 			%243 : compiler.byte_pointer = "\xa1\x00\x00\x00\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%243)
@@ -1764,43 +1775,47 @@ mizu : namespace = {
 			_ : u64 = compiler.indicate_return(u64)
 		}
 
-		source_location_start_line : one_parameters_t = {
-			rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
-			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
+		type_pointer : type_modifier_t = {
+			rega : compiler.assembler.register = compiler.assembler.register_for(type, T)
+			regret : compiler.assembler.register = compiler.assembler.return_register(type)
 			%245 : compiler.byte_pointer = "\xa2\x00\x00\x00\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%245)
 			_ : compiler.assembler.register = inline emit_register(regret)
 			_ : compiler.assembler.register = inline emit_register(rega)
 			%246 : compiler.byte_pointer = "\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%246)
-			_ : u64 = compiler.indicate_return(u64)
+			_ : type = compiler.indicate_return(type)
 		}
 
-		source_location_start_column : one_parameters_t = {
-			rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
-			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
+		type_array : type_with_number_t = {
+			rega : compiler.assembler.register = compiler.assembler.register_for(type, T)
+			regb : compiler.assembler.register = compiler.assembler.register_for(comptime.u64, n)
+			regret : compiler.assembler.register = compiler.assembler.return_register(type)
 			%247 : compiler.byte_pointer = "\xa3\x00\x00\x00\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%247)
 			_ : compiler.assembler.register = inline emit_register(regret)
 			_ : compiler.assembler.register = inline emit_register(rega)
-			%248 : compiler.byte_pointer = "\x00\x00\x00\x00"
+			_ : compiler.assembler.register = inline emit_register(regb)
+			%248 : compiler.byte_pointer = "\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%248)
-			_ : u64 = compiler.indicate_return(u64)
+			_ : type = compiler.indicate_return(type)
 		}
 
-		source_location_end_line : one_parameters_t = {
+		entity_rename : two_parameters_t = {
 			rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
+			regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 			%249 : compiler.byte_pointer = "\xa4\x00\x00\x00\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%249)
 			_ : compiler.assembler.register = inline emit_register(regret)
 			_ : compiler.assembler.register = inline emit_register(rega)
-			%250 : compiler.byte_pointer = "\x00\x00\x00\x00"
+			_ : compiler.assembler.register = inline emit_register(regb)
+			%250 : compiler.byte_pointer = "\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%250)
 			_ : u64 = compiler.indicate_return(u64)
 		}
 
-		source_location_end_column : one_parameters_t = {
+		intern_name : one_parameters_t = {
 			rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 			%251 : compiler.byte_pointer = "\xa5\x00\x00\x00\x00\x00\x00\x00"
@@ -1812,50 +1827,44 @@ mizu : namespace = {
 			_ : u64 = compiler.indicate_return(u64)
 		}
 
-		diagnostic_info : two_parameters_t = {
+		label_to_immediate : one_parameters_t = {
 			rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
-			regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 			%253 : compiler.byte_pointer = "\xa6\x00\x00\x00\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%253)
 			_ : compiler.assembler.register = inline emit_register(regret)
 			_ : compiler.assembler.register = inline emit_register(rega)
-			_ : compiler.assembler.register = inline emit_register(regb)
-			%254 : compiler.byte_pointer = "\x00\x00"
+			%254 : compiler.byte_pointer = "\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%254)
 			_ : u64 = compiler.indicate_return(u64)
 		}
 
-		diagnostic_warning : two_parameters_t = {
+		source_location_file : one_parameters_t = {
 			rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
-			regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 			%255 : compiler.byte_pointer = "\xa7\x00\x00\x00\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%255)
 			_ : compiler.assembler.register = inline emit_register(regret)
 			_ : compiler.assembler.register = inline emit_register(rega)
-			_ : compiler.assembler.register = inline emit_register(regb)
-			%256 : compiler.byte_pointer = "\x00\x00"
+			%256 : compiler.byte_pointer = "\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%256)
 			_ : u64 = compiler.indicate_return(u64)
 		}
 
-		diagnostic_error : two_parameters_t = {
+		source_location_start_byte : one_parameters_t = {
 			rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
-			regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
 			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 			%257 : compiler.byte_pointer = "\xa8\x00\x00\x00\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%257)
 			_ : compiler.assembler.register = inline emit_register(regret)
 			_ : compiler.assembler.register = inline emit_register(rega)
-			_ : compiler.assembler.register = inline emit_register(regb)
-			%258 : compiler.byte_pointer = "\x00\x00"
+			%258 : compiler.byte_pointer = "\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%258)
 			_ : u64 = compiler.indicate_return(u64)
 		}
 
-		field_offset_bits : field_query_t = {
-			rega : compiler.assembler.register = compiler.assembler.register_for(u64, field)
+		source_location_end_byte : one_parameters_t = {
+			rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 			%259 : compiler.byte_pointer = "\xa9\x00\x00\x00\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%259)
@@ -1866,8 +1875,8 @@ mizu : namespace = {
 			_ : u64 = compiler.indicate_return(u64)
 		}
 
-		argument_count : entity_query_t = {
-			rega : compiler.assembler.register = compiler.assembler.register_for(u64, e)
+		source_location_start_line : one_parameters_t = {
+			rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 			%261 : compiler.byte_pointer = "\xaa\x00\x00\x00\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%261)
@@ -1878,17 +1887,119 @@ mizu : namespace = {
 			_ : u64 = compiler.indicate_return(u64)
 		}
 
-		argument : entity_with_number_t = {
-			rega : compiler.assembler.register = compiler.assembler.register_for(u64, e)
-			regb : compiler.assembler.register = compiler.assembler.register_for(u64, n)
+		source_location_start_column : one_parameters_t = {
+			rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
 			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
 			%263 : compiler.byte_pointer = "\xab\x00\x00\x00\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%263)
 			_ : compiler.assembler.register = inline emit_register(regret)
 			_ : compiler.assembler.register = inline emit_register(rega)
-			_ : compiler.assembler.register = inline emit_register(regb)
-			%264 : compiler.byte_pointer = "\x00\x00"
+			%264 : compiler.byte_pointer = "\x00\x00\x00\x00"
 			_ : compiler.byte = compiler.emit_bytes(%264)
+			_ : u64 = compiler.indicate_return(u64)
+		}
+
+		source_location_end_line : one_parameters_t = {
+			rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
+			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
+			%265 : compiler.byte_pointer = "\xac\x00\x00\x00\x00\x00\x00\x00"
+			_ : compiler.byte = compiler.emit_bytes(%265)
+			_ : compiler.assembler.register = inline emit_register(regret)
+			_ : compiler.assembler.register = inline emit_register(rega)
+			%266 : compiler.byte_pointer = "\x00\x00\x00\x00"
+			_ : compiler.byte = compiler.emit_bytes(%266)
+			_ : u64 = compiler.indicate_return(u64)
+		}
+
+		source_location_end_column : one_parameters_t = {
+			rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
+			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
+			%267 : compiler.byte_pointer = "\xad\x00\x00\x00\x00\x00\x00\x00"
+			_ : compiler.byte = compiler.emit_bytes(%267)
+			_ : compiler.assembler.register = inline emit_register(regret)
+			_ : compiler.assembler.register = inline emit_register(rega)
+			%268 : compiler.byte_pointer = "\x00\x00\x00\x00"
+			_ : compiler.byte = compiler.emit_bytes(%268)
+			_ : u64 = compiler.indicate_return(u64)
+		}
+
+		diagnostic_info : two_parameters_t = {
+			rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
+			regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
+			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
+			%269 : compiler.byte_pointer = "\xae\x00\x00\x00\x00\x00\x00\x00"
+			_ : compiler.byte = compiler.emit_bytes(%269)
+			_ : compiler.assembler.register = inline emit_register(regret)
+			_ : compiler.assembler.register = inline emit_register(rega)
+			_ : compiler.assembler.register = inline emit_register(regb)
+			%270 : compiler.byte_pointer = "\x00\x00"
+			_ : compiler.byte = compiler.emit_bytes(%270)
+			_ : u64 = compiler.indicate_return(u64)
+		}
+
+		diagnostic_warning : two_parameters_t = {
+			rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
+			regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
+			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
+			%271 : compiler.byte_pointer = "\xaf\x00\x00\x00\x00\x00\x00\x00"
+			_ : compiler.byte = compiler.emit_bytes(%271)
+			_ : compiler.assembler.register = inline emit_register(regret)
+			_ : compiler.assembler.register = inline emit_register(rega)
+			_ : compiler.assembler.register = inline emit_register(regb)
+			%272 : compiler.byte_pointer = "\x00\x00"
+			_ : compiler.byte = compiler.emit_bytes(%272)
+			_ : u64 = compiler.indicate_return(u64)
+		}
+
+		diagnostic_error : two_parameters_t = {
+			rega : compiler.assembler.register = compiler.assembler.register_for(u64, a)
+			regb : compiler.assembler.register = compiler.assembler.register_for(u64, b)
+			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
+			%273 : compiler.byte_pointer = "\xb0\x00\x00\x00\x00\x00\x00\x00"
+			_ : compiler.byte = compiler.emit_bytes(%273)
+			_ : compiler.assembler.register = inline emit_register(regret)
+			_ : compiler.assembler.register = inline emit_register(rega)
+			_ : compiler.assembler.register = inline emit_register(regb)
+			%274 : compiler.byte_pointer = "\x00\x00"
+			_ : compiler.byte = compiler.emit_bytes(%274)
+			_ : u64 = compiler.indicate_return(u64)
+		}
+
+		field_offset_bits : field_query_t = {
+			rega : compiler.assembler.register = compiler.assembler.register_for(u64, field)
+			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
+			%275 : compiler.byte_pointer = "\xb1\x00\x00\x00\x00\x00\x00\x00"
+			_ : compiler.byte = compiler.emit_bytes(%275)
+			_ : compiler.assembler.register = inline emit_register(regret)
+			_ : compiler.assembler.register = inline emit_register(rega)
+			%276 : compiler.byte_pointer = "\x00\x00\x00\x00"
+			_ : compiler.byte = compiler.emit_bytes(%276)
+			_ : u64 = compiler.indicate_return(u64)
+		}
+
+		argument_count : entity_query_t = {
+			rega : compiler.assembler.register = compiler.assembler.register_for(u64, e)
+			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
+			%277 : compiler.byte_pointer = "\xb2\x00\x00\x00\x00\x00\x00\x00"
+			_ : compiler.byte = compiler.emit_bytes(%277)
+			_ : compiler.assembler.register = inline emit_register(regret)
+			_ : compiler.assembler.register = inline emit_register(rega)
+			%278 : compiler.byte_pointer = "\x00\x00\x00\x00"
+			_ : compiler.byte = compiler.emit_bytes(%278)
+			_ : u64 = compiler.indicate_return(u64)
+		}
+
+		argument : entity_with_number_t = {
+			rega : compiler.assembler.register = compiler.assembler.register_for(u64, e)
+			regb : compiler.assembler.register = compiler.assembler.register_for(u64, n)
+			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
+			%279 : compiler.byte_pointer = "\xb3\x00\x00\x00\x00\x00\x00\x00"
+			_ : compiler.byte = compiler.emit_bytes(%279)
+			_ : compiler.assembler.register = inline emit_register(regret)
+			_ : compiler.assembler.register = inline emit_register(rega)
+			_ : compiler.assembler.register = inline emit_register(regb)
+			%280 : compiler.byte_pointer = "\x00\x00"
+			_ : compiler.byte = compiler.emit_bytes(%280)
 			_ : u64 = compiler.indicate_return(u64)
 		}
 
@@ -1896,13 +2007,41 @@ mizu : namespace = {
 			rega : compiler.assembler.register = compiler.assembler.register_for(u64, e)
 			regb : compiler.assembler.register = compiler.assembler.register_for(u64, n)
 			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
-			%265 : compiler.byte_pointer = "\xac\x00\x00\x00\x00\x00\x00\x00"
-			_ : compiler.byte = compiler.emit_bytes(%265)
+			%281 : compiler.byte_pointer = "\xb4\x00\x00\x00\x00\x00\x00\x00"
+			_ : compiler.byte = compiler.emit_bytes(%281)
 			_ : compiler.assembler.register = inline emit_register(regret)
 			_ : compiler.assembler.register = inline emit_register(rega)
 			_ : compiler.assembler.register = inline emit_register(regb)
-			%266 : compiler.byte_pointer = "\x00\x00"
-			_ : compiler.byte = compiler.emit_bytes(%266)
+			%282 : compiler.byte_pointer = "\x00\x00"
+			_ : compiler.byte = compiler.emit_bytes(%282)
+			_ : u64 = compiler.indicate_return(u64)
+		}
+
+		type_equivalent : type_compare_t = {
+			rega : compiler.assembler.register = compiler.assembler.register_for(type, a)
+			regb : compiler.assembler.register = compiler.assembler.register_for(type, b)
+			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
+			%283 : compiler.byte_pointer = "\xb5\x00\x00\x00\x00\x00\x00\x00"
+			_ : compiler.byte = compiler.emit_bytes(%283)
+			_ : compiler.assembler.register = inline emit_register(regret)
+			_ : compiler.assembler.register = inline emit_register(rega)
+			_ : compiler.assembler.register = inline emit_register(regb)
+			%284 : compiler.byte_pointer = "\x00\x00"
+			_ : compiler.byte = compiler.emit_bytes(%284)
+			_ : u64 = compiler.indicate_return(u64)
+		}
+
+		type_convertible : type_compare_t = {
+			rega : compiler.assembler.register = compiler.assembler.register_for(type, a)
+			regb : compiler.assembler.register = compiler.assembler.register_for(type, b)
+			regret : compiler.assembler.register = compiler.assembler.return_register(u64)
+			%285 : compiler.byte_pointer = "\xb6\x00\x00\x00\x00\x00\x00\x00"
+			_ : compiler.byte = compiler.emit_bytes(%285)
+			_ : compiler.assembler.register = inline emit_register(regret)
+			_ : compiler.assembler.register = inline emit_register(rega)
+			_ : compiler.assembler.register = inline emit_register(regb)
+			%286 : compiler.byte_pointer = "\x00\x00"
+			_ : compiler.byte = compiler.emit_bytes(%286)
 			_ : u64 = compiler.indicate_return(u64)
 		}
 

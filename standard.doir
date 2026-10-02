@@ -107,6 +107,17 @@ std : namespace = {
 		export size_bits : size_function
 		export align_bits : size_function
 
+		// Asks two types and answers about the pair. Both are needed because
+		// S-Struct cannot tell them apart: `equivalent` is A-Res identity -
+		// the same entity once the aliases are followed - and `convertible` is
+		// the rule itself, so two types of one layout are convertible and are
+		// still not one type. `u1` because an answer is a truth value whatever
+		// it was asked about, as every `is_*` in `operations` is.
+		compare_function : type = (a: type, b: type) -> u1
+		_ : type = comptime(compare_function)
+		export equivalent : compare_function
+		export convertible : compare_function
+
 		// Asks a *field* rather than a type: where it begins inside the
 		// aggregate that declares it, in bits. Its argument is the field
 		// declaration a dotted `vec2.x` resolves to (R-Qual descends into an

@@ -28,7 +28,7 @@ import mizu.lookup : notFound;
 /// Every instruction to bind, in the order the generated file lists them.
 /// These are `doirLookup` names (D spellings); `snakeCase` below converts
 /// each one for the DOIR side.
-private static immutable string[92] program = [
+private static immutable string[100] program = [
 	"findLabel",
 	"debugPrint",
 	"debugPrintBinary",
@@ -81,6 +81,10 @@ private static immutable string[92] program = [
 	// both read `out_` as the *destination pointer* rather than writing a
 	// result to it, and every binding here puts the assembler's return
 	// register there. They need a shape of their own before they can be bound.
+	// The `pointer{Load,Store}*` family below is what dereferences a pointer
+	// instead: the `stack_load_*` / `stack_store_*` operands with an address
+	// in place of the offset, so `out_` stays an output and the shapes here
+	// already fit.
 	"allocate",
 	"freeAllocated",
 	"allocateFatPointer",
@@ -88,6 +92,14 @@ private static immutable string[92] program = [
 	"pointerToStack",
 	"pointerToStackBottom",
 	"pointerToRegister",
+	"pointerLoadU64",
+	"pointerStoreU64",
+	"pointerLoadU32",
+	"pointerStoreU32",
+	"pointerLoadU16",
+	"pointerStoreU16",
+	"pointerLoadU8",
+	"pointerStoreU8",
 
 	// `mizu.instructions.f32`.
 	"convertToF32",
@@ -137,7 +149,7 @@ private static immutable string[92] program = [
 /// DOIR's own four, which the generated file nests in a `doir` namespace of
 /// its own so they read as `mizu.doir.execute` rather than sitting beside
 /// Mizu's instructions as `mizu.doir_execute`.
-private static immutable string[40] doirProgram = [
+private static immutable string[42] doirProgram = [
 	"setModule",
 	"attachComptimeNumberI64",
 	"execute",
@@ -187,9 +199,11 @@ private static immutable string[40] doirProgram = [
 	"argumentCount",
 	"argument",
 	"parameter",
+	"typeEquivalent",
+	"typeConvertible",
 ];
 
-private static immutable string[50] singleOperandOps = [
+private static immutable string[54] singleOperandOps = [
 	"debugPrint", "debugPrintBinary", "convertToU64", "convertToU32", "convertToU16",
 	"convertToU8", "stackLoadU64", "stackLoadU32", "stackLoadU16", "stackLoadU8",
 	"stackPush", "stackPop", "offsetOfStackBottom", "jumpRelative", "jumpTo",
@@ -197,6 +211,7 @@ private static immutable string[50] singleOperandOps = [
 
 	"allocate", "freeAllocated", "pointerToStack", "pointerToStackBottom",
 	"pointerToRegister",
+	"pointerLoadU64", "pointerLoadU32", "pointerLoadU16", "pointerLoadU8",
 
 	"convertToF32", "convertSignedToF32", "convertFromF32", "convertSignedFromF32",
 	"sqrtF32", "setIfNegativeF32", "setIfPositiveF32", "setIfInfinityF32", "setIfNanF32",
@@ -233,6 +248,12 @@ private static immutable string[1] fieldQueryOps = [
 /// `(T : type) -> u64`: asks a type something instead of editing it.
 private static immutable string[4] typeQueryOps = [
 	"typeIs", "typeSizeBits", "typeAlignBits", "typeAttributeId",
+];
+
+/// `(a : type, b : type) -> u64`: asks how two types stand to each other -
+/// A-Res identity, or S-Struct agreement.
+private static immutable string[2] typeCompareOps = [
+	"typeEquivalent", "typeConvertible",
 ];
 
 /// `(T : type, n : comptime.u64) -> type`.
@@ -277,7 +298,7 @@ private static immutable string[2] entityWithNumberOps = [
 /// Arithmetic, comparisons and conversions are absent on purpose. Folding
 /// those is what makes `standard.mizu.doir`'s dispatch work - read a type's
 /// tag, compare it, pick a block - and a comparison has no effect to lose.
-private static immutable string[31] effectOps = [
+private static immutable string[39] effectOps = [
 	"debugPrint", "debugPrintBinary",
 
 	"halt", "breakpoint", "findLabel",
@@ -291,6 +312,11 @@ private static immutable string[31] effectOps = [
 
 	"allocate", "freeAllocated", "allocateFatPointer", "freeFatPointer",
 	"pointerToStack", "pointerToStackBottom", "pointerToRegister",
+	// For the reason the `stack*` line above is here, and more sharply: these
+	// read and write memory through an address the register carries, and at
+	// compile time that address belongs to the comptime VM.
+	"pointerLoadU64", "pointerStoreU64", "pointerLoadU32", "pointerStoreU32",
+	"pointerLoadU16", "pointerStoreU16", "pointerLoadU8", "pointerStoreU8",
 ];
 
 private static immutable string[3] immediateOps = [
@@ -577,6 +603,21 @@ private void emitInstruction(const(char)[] name) {
 		--indent;
 		line("}");
 
+	} else if (isIn(typeCompareOps, name)) {
+		tabs(); printName(name); printf(" : type_compare_t = {\n");
+		++indent;
+		line("rega : compiler.assembler.register = compiler.assembler.register_for(type, a)");
+		line("regb : compiler.assembler.register = compiler.assembler.register_for(type, b)");
+		line("regret : compiler.assembler.register = compiler.assembler.return_register(u64)");
+		emitOpcodeId(name);
+		line("_ : compiler.assembler.register = inline emit_register(regret)");
+		line("_ : compiler.assembler.register = inline emit_register(rega)");
+		line("_ : compiler.assembler.register = inline emit_register(regb)");
+		emitU16(0);
+		line("_ : u64 = compiler.indicate_return(u64)");
+		--indent;
+		line("}");
+
 	} else if (isIn(typeWithNumberOps, name)) {
 		tabs(); printName(name); printf(" : type_with_number_t = {\n");
 		++indent;
@@ -830,6 +871,13 @@ extern(C) int main(int argc, char** argv) @trusted {
 	line("type_query_t : type = (T : type) -> u64");
 	line("_ : type = compiler.always_inline(type_query_t)");
 	line("_ : type = compiler.never_monomorphize(type_query_t)");
+	line("// Two types in, a truth value out: `equivalent` is A-Res identity and");
+	line("// `convertible` is S-Struct agreement, and the pair exists because the");
+	line("// rule cannot tell them apart - two types of one layout are");
+	line("// inter-convertible and are still not the same type.");
+	line("type_compare_t : type = (a : type, b : type) -> u64");
+	line("_ : type = compiler.always_inline(type_compare_t)");
+	line("_ : type = compiler.never_monomorphize(type_compare_t)");
 	line("// Asks a *field* rather than a type, so `u64` in rather than `type` in:");
 	line("// what the register carries is the field's entity, the same crossing");
 	line("// every reflection instruction below makes. Plain `u64` rather than a");
